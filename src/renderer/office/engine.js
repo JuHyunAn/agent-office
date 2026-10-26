@@ -2,7 +2,9 @@
 // DOM·Canvas 를 쓰지 않는다. 그림은 테마(themes/*)가 snapshot() 결과를 받아 그린다.
 
 import { roleOf, displayType } from './roles.js';
-import { toolPhrase, toolPose, clip, baseName } from './phrases.js';
+import { toolPhrase, toolPose, clip, baseName, activitySummary } from './phrases.js';
+import { Navigation } from './navigation.js';
+import { createAppearance } from './appearance.js';
 
 export const TIMING = {
   speed: 150, // 논리 좌표 px/초
@@ -18,7 +20,7 @@ export const TIMING = {
 };
 
 const CHAT = ['☕ 커피 맛있네요', '💬 아까 그 버그 말이죠…', '😴 잠깐만 쉴게요', '🍪 간식 드실래요?', '📈 오늘 순조롭네요', '🎧 음악 듣는 중', '🌿 화분 물 줬어요'];
-const SITTING_ROOMS = new Set(['lead', 'analysis', 'planning', 'dev', 'review']);
+const SITTING_ROOMS = new Set(['lead', 'analysis', 'planning', 'dev', 'review', 'skills']);
 
 function hash(s) {
   let h = 0;
@@ -29,6 +31,7 @@ function hash(s) {
 export class OfficeEngine {
   constructor(layout, opts = {}) {
     this.layout = layout;
+    this.navigation = layout.walkBounds ? new Navigation(layout) : null;
     this.random = opts.random || Math.random;
     this.timing = { ...TIMING, ...(opts.timing || {}) };
     this.roleOverrides = opts.roleOverrides || {};
@@ -72,6 +75,7 @@ export class OfficeEngine {
     for (const a of this.agents.values()) {
       if (a.sessionId !== sessionId || a.status === 'leaving') continue;
       this.interrupt(a);
+      a.skill = null;
       a.status = 'leaving';
       a.queue.push({ op: 'say', text: '👋 퇴근합니다', kind: 'info', ms: 3000 }, { op: 'leave' });
     }
@@ -81,14 +85,18 @@ export class OfficeEngine {
   // 테마가 바뀌면 배치도도 바뀐다 — 사람은 그대로 두고 같은 방의 새 자리로 옮긴다.
   setLayout(layout) {
     this.layout = layout;
+    this.navigation = layout.walkBounds ? new Navigation(layout) : null;
     this.seats.clear();
     for (const a of this.agents.values()) {
-      const room = a.seat ? a.seat.room : (a.isLead ? 'lead' : a.role);
+      const previous = a.seat ? a.seat.room : (a.isLead ? 'lead' : a.role);
+      const room = layout.rooms[previous] ? previous : (a.isLead ? 'lead' : a.role);
+      if (!layout.rooms.skills) a.skill = null;
       a.seat = null;
       this.allocSeat(a, room);
       a.x = a.seat.x;
       a.y = a.seat.y;
       a.path = [];
+      for (const op of a.queue) if (op.room && !layout.rooms[op.room]) op.room = room;
     }
   }
 
@@ -112,6 +120,7 @@ export class OfficeEngine {
       if (a.isLead || a.status !== 'working' || a.path.length || a.queue.length) continue;
       if (this.time - (a.lastEventAt ?? 0) <= this.timing.subagentSilentMs) continue;
       a.task = '응답 없음 · 휴식';
+      a.skill = null;
       a.queue.push({ op: 'goSeat', room: 'rest' }, { op: 'status', status: 'resting' });
       a.status = 'resting';
       a.restSince = this.time;
@@ -135,12 +144,26 @@ export class OfficeEngine {
         label: a.label,
         sessionLabel: this.sessions.get(a.sessionId)?.label || '',
         colorIndex: a.colorIndex,
+        appearance: a.appearance,
         status: a.status,
         task: a.task,
-        bubble: a.bubble ? { text: a.bubble.text, kind: a.bubble.kind } : null,
+        skill: a.skill || null,
+        bubble: this.workBubble(a),
       });
     }
     return out;
+  }
+
+  workBubble(a) {
+    if (a.bubble && a.bubble.kind === 'alert') return { text: a.bubble.text, kind: a.bubble.kind };
+    if (a.status === 'working') {
+      const lines = [];
+      if (a.assignment) lines.push(clip(a.assignment, 28));
+      const activity = a.activity || (a.skill ? `${a.skill} 스킬 작업 중` : '맡은 작업 준비 중');
+      if (!lines.length || lines[0] !== activity) lines.push(clip(activity, 36));
+      return { text: lines.join('\n'), kind: 'work', summary: true };
+    }
+    return a.bubble ? { text: a.bubble.text, kind: a.bubble.kind } : null;
   }
 
   roomAt(x, y) {
@@ -204,6 +227,7 @@ export class OfficeEngine {
       key, sessionId, isLead, type, label, role,
       name: label,
       colorIndex: hash(displayType(type)) % 8,
+      appearance: createAppearance(this.random),
       x: e.x, y: e.y,
       facing: 'right',
       path: [], queue: [], waitUntil: 0,
@@ -228,10 +252,13 @@ export class OfficeEngine {
 
   onPrompt(s, ev) {
     const lead = this.ensureLead(s);
+    this.finishSkill(lead);
     this.wake(lead);
     lead.status = 'working';
     lead.workPose = 'type';
     lead.task = clip(ev.prompt, 60);
+    lead.assignment = clip(ev.prompt, 28);
+    lead.activity = '요청 내용을 확인 중';
     this.say(lead, `📥 업무 접수: ${clip(ev.prompt, 18)}`, 'info', 5000);
     this.pushFeed(`${s.label}: 새 요청 — ${clip(ev.prompt, 40)}`);
   }
@@ -241,6 +268,20 @@ export class OfficeEngine {
     const input = ev.tool_input || {};
     const actor = ev.agent_id ? this.ensureSub(s, ev.agent_id, ev.agent_type) : this.ensureLead(s);
     this.wake(actor);
+    actor.activity = activitySummary(tool, input);
+
+    if (tool === 'Skill' && input.skill && this.layout.rooms.skills) {
+      this.interrupt(actor);
+      actor.skill = clip(input.skill, 140);
+      actor.finishedAt = null;
+      actor.status = 'working'; actor.workPose = 'type';
+      actor.task = `스킬 작업: ${actor.skill}`;
+      this.allocSeat(actor, 'skills');
+      actor.queue.push({ op: 'goSeat', room: 'skills' });
+      this.say(actor, `🧩 ${clip(actor.skill, 22)}`, 'work', 6000);
+      this.pushFeed(`${s.label}: ${actor.label} · 스킬 ${actor.skill}`);
+      return;
+    }
 
     if (!ev.agent_id && (tool === 'Agent' || tool === 'Task')) {
       s.pending.push({ type: input.subagent_type || '', desc: input.description || '' });
@@ -269,6 +310,8 @@ export class OfficeEngine {
     const pi = s.pending.findIndex((p) => displayType(p.type) === dt);
     const p = pi >= 0 ? s.pending.splice(pi, 1)[0] : null;
     a.task = p && p.desc ? clip(p.desc, 60) : `${dt || '에이전트'} 작업`;
+    a.assignment = p && p.desc ? clip(p.desc, 28) : '';
+    a.activity = '맡은 작업 준비 중';
     a.status = 'working';
     this.say(a, `🚶 출근 · ${clip(a.task, 16)}`, 'info', 4000);
     this.pushFeed(`${s.label}: ${a.label} 시작 — ${a.task}`);
@@ -286,6 +329,7 @@ export class OfficeEngine {
     const a = this.agents.get(`${s.id}:${ev.agent_id}`);
     const summary = clip(ev.last_assistant_message, 50);
     if (!a) { this.pushFeed(`${s.label}: ${displayType(ev.agent_type)} 완료${summary ? ' — ' + summary : ''}`); return; }
+    a.skill = null;
     a.finishedAt = this.time;
     a.status = 'reporting';
     a.task = '작업 완료 · 보고';
@@ -311,12 +355,31 @@ export class OfficeEngine {
     this.pushFeed(`${s.label}: ${text}`);
   }
 
-  onStop(s) {
+  onStop(s, ev = {}) {
+    if (ev.agent_id) {
+      const actor = this.agents.get(`${s.id}:${ev.agent_id}`);
+      if (actor) this.finishSkill(actor);
+      return;
+    }
     const lead = this.ensureLead(s);
+    this.finishSkill(lead);
     // 결과 공유 연출 중이면 끝난 뒤 「대기」로 돌아가게 예약한다.
     if (lead.status === 'sharing') lead.returnStatus = 'idle'; else lead.status = 'idle';
     lead.task = '다음 요청 대기 중';
     this.say(lead, '✅ 답변 완료', 'done', 6000);
+  }
+
+  finishSkill(a) {
+    if (!a.skill) return;
+    a.skill = null;
+    if (a.status === 'sharing' || a.status === 'reporting') {
+      for (const op of a.queue) if (op.op === 'goSeat' && op.room === 'skills') op.room = a.isLead ? 'lead' : a.role;
+      return;
+    }
+    this.interrupt(a);
+    const room = a.isLead ? 'lead' : a.role;
+    this.allocSeat(a, room);
+    a.queue.push({ op: 'goSeat', room });
   }
 
   findByName(s, name, except) {
@@ -343,7 +406,7 @@ export class OfficeEngine {
       from.queue.push({ op: 'goSeat', room: 'rest' }, { op: 'status', status: 'resting' });
     } else {
       from.returnStatus = null;
-      from.queue.push({ op: 'goSeat', room: from.isLead ? 'lead' : from.role }, { op: 'status', status: '@return' });
+      from.queue.push({ op: 'goSeat', room: from.skill ? 'skills' : (from.isLead ? 'lead' : from.role) }, { op: 'status', status: '@return' });
     }
     const s = this.sessions.get(from.sessionId);
     this.pushFeed(`${s ? s.label + ': ' : ''}${from.label} → ${to.label} 결과 전달${exact ? '' : ' (추정)'}`);
@@ -351,7 +414,7 @@ export class OfficeEngine {
 
   // 쉬던 사람이 일을 받으면 자기 자리로 돌아간다.
   wake(a, status = 'working') {
-    const home = a.isLead ? 'lead' : a.role;
+    const home = a.skill ? 'skills' : (a.isLead ? 'lead' : a.role);
     if (a.status === 'sharing' || a.status === 'reporting' || a.status === 'leaving') return;
     if (a.status === 'resting' || a.status === 'away') {
       this.interrupt(a);
@@ -415,6 +478,15 @@ export class OfficeEngine {
 
   // 방 → 문 → 복도 → 문 → 방. 배치도가 「위·아래 줄 방 + 가운데 복도」라는 전제.
   route(a, to, toRoom) {
+    if (this.navigation) {
+      const path = this.navigation.findPath(a, to);
+      // A reserved sofa seat is reached from its walkable approach cell.
+      if (path.length && toRoom && this.layout.rooms[toRoom]?.seats.some(s => s.x === to.x && s.y === to.y)) {
+        const last = path[path.length - 1];
+        if (last.x !== to.x || last.y !== to.y) path.push({ x: to.x, y: to.y });
+      }
+      return path;
+    }
     const rooms = this.layout.rooms;
     const hy = this.layout.hallway.y;
     const fromRoom = this.roomAt(a.x, a.y);

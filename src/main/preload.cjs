@@ -10,6 +10,7 @@ const on = (channel) => (cb) => {
 
 contextBridge.exposeInMainWorld('office', {
   status: () => ipcRenderer.invoke('app:status'),
+  getWeather: () => ipcRenderer.invoke('weather:current'),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
   createPty: (opts) => ipcRenderer.invoke('pty:create', opts),
   writePty: (tabId, data) => ipcRenderer.send('pty:write', { tabId, data }),

@@ -9,6 +9,30 @@ export function baseName(p) {
   return String(p ?? '').split(/[\\/]/).filter(Boolean).pop() || '';
 }
 
+// A short, deterministic summary from observed tool metadata; no extra model call.
+export function activitySummary(name, input = {}) {
+  const file = clip(baseName(input.file_path || input.notebook_path), 22);
+  switch (name) {
+    case 'Read': return `${file || '자료'} 내용 검토 중`;
+    case 'Edit': case 'MultiEdit': case 'NotebookEdit': return `${file || '코드'} 수정 중`;
+    case 'Write': return `${file || '파일'} 작성 중`;
+    case 'Grep': case 'Glob': return `${clip(input.pattern || '관련 코드', 20)} 찾는 중`;
+    case 'WebSearch': return `${clip(input.query || '참고 자료', 22)} 조사 중`;
+    case 'WebFetch': return '웹 자료 확인 중';
+    case 'Skill': return `${clip(input.skill, 28)} 스킬 작업 중`;
+    case 'Agent': case 'Task': return `${clip(input.description || '하위 작업', 25)} 역할 분담 중`;
+    case 'SendMessage': return `${clip(input.to || '동료', 18)}에게 결과 공유 중`;
+    case 'Bash': case 'PowerShell':
+      if (input.description) return clip(input.description, 36);
+      if (/\b(npm (run )?test|pytest|gradlew?\S* .*test|dotnet test|node --test)\b/i.test(input.command || '')) return '테스트 실행 중';
+      if (/\bgit\s+(status|diff|log)\b/.test(input.command || '')) return '변경 내역 확인 중';
+      return `${clip(input.command || '명령', 27)} 실행 중`;
+    case 'TodoWrite': case 'TaskCreate': case 'TaskUpdate': return '작업 순서와 진행 상황 정리 중';
+    case 'AskUserQuestion': return '사용자에게 확인할 내용 정리 중';
+    default: return `${clip(String(name || '도구').split('__').pop(), 25)} 사용 중`;
+  }
+}
+
 export function toolPhrase(name, input = {}) {
   const i = input && typeof input === 'object' ? input : {};
   switch (name) {

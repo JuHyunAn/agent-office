@@ -7,7 +7,8 @@
   "main": "src/main/main.cjs",
   "scripts": {
     "start": "node scripts/start.mjs",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test \"test/*.test.js\"",
+    "test:renderer": "node scripts/check-renderer.cjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

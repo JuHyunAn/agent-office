@@ -47,9 +47,47 @@ const state = {
   entered: false,
 };
 
-let theme = getTheme(store.get('ao.theme', 'mockup'));
-const engine = new OfficeEngine(theme.layout, { onFeed: addFeed });
-const view = new OfficeView($('#office'), engine, theme, { tooltip: $('#tooltip') });
+let theme = getTheme(store.get('ao.theme', 'pixel-office'));
+const engine = new OfficeEngine(theme.layout, { onFeed: addFeed, timing: { leadIdleToRestMs: 20000, restBeforeLeaveMs: Infinity } });
+const view = new OfficeView($('#office'), engine, theme, { tooltip: $('#tooltip'), onState({ zoom, playerTask, headcount, environment, interactionMenu, heldItem }) {
+  $('#zoom-level').textContent = `${zoom}%`;
+  $('#zoom-out').disabled = zoom <= 100;
+  $('#player-state').textContent = playerTask || '사무실을 둘러보세요';
+  $('#headcount').textContent = `에이전트 ${headcount}명`;
+  $('#environment-state').textContent = environment.label;
+  $('#held-item').textContent = heldItem ? `☕ ${heldItem}` : '';
+  $('#held-item').hidden = !heldItem;
+  renderInteractionMenu(interactionMenu);
+} });
+let displayedMenu = null;
+function renderInteractionMenu(menu) {
+  const key = menu?.itemId || null;
+  if (displayedMenu === key) return;
+  displayedMenu = key;
+  const panel = $('#interaction-menu'); panel.hidden = !menu; panel.replaceChildren();
+  if (!menu) return;
+  panel.append(el('div', { class: 'menu-heading' }, el('h3', { id: 'interaction-title' }, '커피 · 음료'),
+    el('button', { class: 'menu-close', type: 'button', 'aria-label': '음료 선택 닫기', onclick: () => view.closeInteractionMenu() }, '×')),
+  el('div', { class: 'drink-choices' }, menu.choices.map(drink => el('button', {
+    class: 'drink-choice', type: 'button', 'data-drink': drink.id,
+    onclick: () => { if (view.chooseDrink(drink.id)) $('#office').focus({ preventScroll: true }); },
+  }, el('img', { class: 'drink-thumbnail', src: drink.image, alt: '', width: '36', height: '40' }),
+  el('span', {}, drink.label)))));
+  panel.querySelector('.drink-choice')?.focus({ preventScroll: true });
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && view.life?.menu) { e.preventDefault(); view.closeInteractionMenu(); } });
+async function refreshWeather() {
+  try { view.environment.setWeather(await api.getWeather()); }
+  catch { /* Retain the last observation until it expires. */ }
+}
+refreshWeather();
+const weatherTimer = setInterval(refreshWeather, 10 * 60 * 1000);
+window.addEventListener('beforeunload', () => clearInterval(weatherTimer), { once: true });
+$('#weather-credit').addEventListener('click', e => { e.preventDefault(); api.openExternal('https://open-meteo.com/'); });
+$('#zoom-in').addEventListener('click', () => view.zoomBy(1.25));
+$('#zoom-out').addEventListener('click', () => view.zoomBy(0.8));
+$('#zoom-fit').addEventListener('click', () => view.fit());
+$('#focus-player').addEventListener('click', () => view.focusPlayer());
 
 const TERM_OPTS = {
   fontFamily: '"Cascadia Mono", Consolas, "D2Coding", "Malgun Gothic", monospace',
@@ -233,7 +271,7 @@ function renderThemes() {
 
 function updateHeadcount() {
   const n = engine.snapshot().filter((a) => a.status !== 'leaving').length;
-  $('#headcount').textContent = `근무 중 ${n}명`;
+  $('#headcount').textContent = `에이전트 ${n}명`;
 }
 
 // ───────────────────────── 활동 피드 ─────────────────────────

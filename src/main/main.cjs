@@ -14,6 +14,8 @@ const hookSettings = require('./hookSettings.cjs');
 const claudeCli = require('./claudeCli.cjs');
 const { PtyManager } = require('./ptyManager.cjs');
 const { cleanEnv } = require('./env.cjs');
+const { createWeatherService } = require('./weather.cjs');
+const getWeather = createWeatherService();
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const DEFAULT_PORT = 47821;
@@ -206,6 +208,7 @@ if (!app.requestSingleInstanceLock()) {
     writeSessionSettings();
 
     ipcMain.handle('app:status', () => status());
+    ipcMain.handle('weather:current', () => getWeather());
     ipcMain.handle('dialog:pickFolder', async () => {
       const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '작업 폴더 선택' });
       return r.canceled ? null : r.filePaths[0];

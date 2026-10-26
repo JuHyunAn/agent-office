@@ -12,16 +12,16 @@
   <!-- 진입 화면: Claude Code 설치·로그인 확인 -->
   <section id="gate" class="gate">
     <div class="gate-card">
-      <div class="gate-logo">🏢</div>
+      <div class="gate-logo"><span class="brand-mark" aria-hidden="true"></span></div>
       <h1>Agent Office</h1>
-      <p class="gate-sub">Claude Code 에이전트들이 일하는 사무실</p>
+      <p class="gate-sub">작은 에이전트들이 모여, 큰 일을 만드는 곳.</p>
       <div id="gate-body" class="gate-body">Claude Code 확인 중…</div>
       <div id="gate-term" class="gate-term" hidden></div>
     </div>
   </section>
 
   <header class="topbar">
-    <span class="brand">🏢 Agent Office</span>
+    <span class="brand"><span class="brand-mark" aria-hidden="true"></span>AGENT OFFICE</span>
     <span id="account" class="pill">계정 확인 중</span>
     <button id="global-hooks" class="pill pill-btn" title="VS Code·터미널 등 다른 곳의 Claude Code 세션도 사무실에 표시">다른 세션 보기: 확인 중</button>
     <span id="headcount" class="pill">근무 중 0명</span>
@@ -33,17 +33,25 @@
 
   <main class="layout">
     <section class="office-pane">
-      <div class="office-stage"><canvas id="office"></canvas></div>
-      <ul id="feed" class="feed"></ul>
+      <div class="office-toolbar">
+        <div><span class="eyebrow">A LIVING WORKSPACE</span><h2>오늘도, 활기찬 오피스</h2><div class="environment-line"><span id="environment-state">서울 · 날씨 연결 중</span><a id="weather-credit" href="https://open-meteo.com/" title="서울 날씨 제공: Open-Meteo">Open-Meteo</a></div></div>
+        <div class="office-controls"><button id="zoom-out" title="축소" aria-label="축소">−</button><span id="zoom-level">100%</span><button id="zoom-in" title="확대" aria-label="확대">＋</button><button id="zoom-fit">전체 보기</button><button id="focus-player">내 캐릭터</button></div>
+      </div>
+      <div class="office-stage"><canvas id="office" tabindex="0" aria-label="사무실. 바닥을 클릭해 이동하고 가구를 클릭해 이용하세요."></canvas><section id="interaction-menu" class="interaction-menu" role="dialog" aria-labelledby="interaction-title" hidden></section></div>
+      <div class="life-bar"><span class="player-chip">나</span><span id="player-state">바닥을 클릭해 이동하세요</span><span id="held-item" class="held-item" hidden></span><span class="camera-hint">확대 후 드래그 &nbsp; 휠 · 확대 &nbsp; 가구 클릭 · 이용</span></div>
+      <div class="feed-panel"><div class="feed-heading"><span class="eyebrow">OFFICE LOG</span><span>활동 기록</span></div><ul id="feed" class="feed"></ul></div>
     </section>
 
     <section class="cli-pane">
+      <div class="terminal-heading"><span class="eyebrow">TERMINAL</span><span>Claude Code</span><span class="terminal-local">로컬 세션</span></div>
       <nav class="tabbar">
         <div id="tabs" class="tabs"></div>
         <button id="new-tab" class="tab-add" title="새 탭">＋</button>
       </nav>
       <div id="panes" class="panes">
         <div id="empty" class="empty">
+          <span class="empty-terminal" aria-hidden="true">&gt;_</span>
+          <h2>오늘은 어떤 일을 해볼까요?</h2>
           <p>오른쪽 위 <b>＋</b> 를 눌러 작업 폴더를 열면<br>공식 Claude Code 가 이 자리에서 실행됩니다.</p>
           <button id="empty-new" class="btn primary">작업 폴더 열기</button>
         </div>
