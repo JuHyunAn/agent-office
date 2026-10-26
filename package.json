@@ -1,0 +1,18 @@
+{
+  "name": "agent-office",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code 에이전트를 사무실 캐릭터로 보여 주는 데스크톱 앱",
+  "type": "module",
+  "main": "src/main/main.cjs",
+  "scripts": {
+    "start": "node scripts/start.mjs",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "electron": "^45.0.0",
+    "node-pty": "^1.1.0"
+  }
+}

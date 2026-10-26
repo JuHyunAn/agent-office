@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'">
+  <title>Agent Office</title>
+  <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- 진입 화면: Claude Code 설치·로그인 확인 -->
+  <section id="gate" class="gate">
+    <div class="gate-card">
+      <div class="gate-logo">🏢</div>
+      <h1>Agent Office</h1>
+      <p class="gate-sub">Claude Code 에이전트들이 일하는 사무실</p>
+      <div id="gate-body" class="gate-body">Claude Code 확인 중…</div>
+      <div id="gate-term" class="gate-term" hidden></div>
+    </div>
+  </section>
+
+  <header class="topbar">
+    <span class="brand">🏢 Agent Office</span>
+    <span id="account" class="pill">계정 확인 중</span>
+    <button id="global-hooks" class="pill pill-btn" title="VS Code·터미널 등 다른 곳의 Claude Code 세션도 사무실에 표시">다른 세션 보기: 확인 중</button>
+    <span id="headcount" class="pill">근무 중 0명</span>
+    <span class="spacer"></span>
+    <label class="theme-pick">테마
+      <select id="theme-select"></select>
+    </label>
+  </header>
+
+  <main class="layout">
+    <section class="office-pane">
+      <div class="office-stage"><canvas id="office"></canvas></div>
+      <ul id="feed" class="feed"></ul>
+    </section>
+
+    <section class="cli-pane">
+      <nav class="tabbar">
+        <div id="tabs" class="tabs"></div>
+        <button id="new-tab" class="tab-add" title="새 탭">＋</button>
+      </nav>
+      <div id="panes" class="panes">
+        <div id="empty" class="empty">
+          <p>오른쪽 위 <b>＋</b> 를 눌러 작업 폴더를 열면<br>공식 Claude Code 가 이 자리에서 실행됩니다.</p>
+          <button id="empty-new" class="btn primary">작업 폴더 열기</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="tooltip" class="tooltip" hidden></div>
+
+  <dialog id="newtab" class="dialog">
+    <form method="dialog" class="dialog-inner">
+      <h2>새 탭 열기</h2>
+      <section>
+        <h3>작업 폴더</h3>
+        <button type="button" id="pick-folder" class="btn primary">📁 폴더 선택…</button>
+        <ul id="recent" class="list"></ul>
+      </section>
+      <section>
+        <h3>다른 곳에서 실행 중인 세션</h3>
+        <p id="external-hint" class="hint"></p>
+        <ul id="external" class="list"></ul>
+      </section>
+      <div class="dialog-actions"><button class="btn">닫기</button></div>
+    </form>
+  </dialog>
+
+  <script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
