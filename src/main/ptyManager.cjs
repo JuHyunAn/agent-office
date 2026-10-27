@@ -39,6 +39,10 @@ class PtyManager {
     try { p.kill(); } catch { /* 이미 종료 */ }
   }
 
+  count() {
+    return this.map.size;
+  }
+
   killAll() {
     for (const id of [...this.map.keys()]) this.kill(id);
   }

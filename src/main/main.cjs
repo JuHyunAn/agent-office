@@ -3,7 +3,7 @@
 // IDE 안에서 실행하면 ELECTRON_RUN_AS_NODE=1 이 따라와 Electron 이 Node 로 뜬다 (scripts/start.mjs 도 지운다).
 delete process.env.ELECTRON_RUN_AS_NODE;
 
-const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, Tray, Menu } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -18,6 +18,7 @@ const { createWeatherService } = require('./weather.cjs');
 const getWeather = createWeatherService();
 
 const ROOT = path.resolve(__dirname, '..', '..');
+const ICON = path.join(ROOT, 'icon', 'app.ico');
 const DEFAULT_PORT = 47821;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TAB_RE = /^[a-z0-9-]{1,40}$/;
@@ -27,6 +28,8 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 let win = null;
+let tray = null;
+let quitting = false; // 트레이 「종료」·app.quit() 때만 창을 실제로 닫는다
 let hook = null;
 let config = null;
 let claude = null;
@@ -130,7 +133,7 @@ function createWindow() {
     minHeight: 680,
     backgroundColor: '#17171c',
     title: 'Agent Office',
-    icon: path.join(ROOT, 'icon', 'app.ico'), // 제목 표시줄·작업 표시줄 (개발 실행에도 같은 아이콘)
+    icon: ICON, // 제목 표시줄·작업 표시줄 (개발 실행에도 같은 아이콘)
     autoHideMenuBar: true,
     show: !process.env.AGENT_OFFICE_SMOKE,
     webPreferences: {
@@ -146,8 +149,50 @@ function createWindow() {
     return { action: 'deny' };
   });
   win.loadURL('app://office/src/renderer/index.html');
+  // 실수로 창을 닫아도 Claude 세션·사무실은 계속 돈다 — 창만 숨기고, 종료는 트레이 메뉴에서 한다.
+  win.on('close', (e) => {
+    if (quitting) return;
+    e.preventDefault();
+    win.hide();
+  });
+  win.on('session-end', () => { quitting = true; }); // Windows 로그오프·종료는 막지 않는다
   win.on('closed', () => { win = null; });
   if (process.env.AGENT_OFFICE_SMOKE) runSmoke();
+}
+
+function showWindow() {
+  if (!win) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  win.focus();
+}
+
+async function quitFromTray() {
+  const running = ptys.count();
+  if (running) {
+    const opts = {
+      type: 'question',
+      buttons: ['종료', '취소'],
+      defaultId: 1,
+      cancelId: 1,
+      title: 'Agent Office 종료',
+      message: `실행 중인 Claude Code 세션 ${running}개가 함께 종료됩니다. 종료할까요?`,
+    };
+    const r = win && win.isVisible() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+    if (r.response !== 0) return;
+  }
+  app.quit();
+}
+
+function createTray() {
+  tray = new Tray(ICON);
+  tray.setToolTip('Agent Office');
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: 'Agent Office 열기', click: showWindow },
+    { type: 'separator' },
+    { label: '종료', click: () => { quitFromTray(); } },
+  ]));
+  tray.on('click', showWindow);
 }
 
 // 창을 띄우지 않고 실제 경로를 한 번 점검한다: 화면 로드 → 터미널에서 claude 실행 → hook 수신.
@@ -174,6 +219,11 @@ function runSmoke() {
       await fetch(`http://127.0.0.1:${hook.port}/hook?k=${config.token}&src=session`, { method: 'POST', body });
       await new Promise((r) => setTimeout(r, 500));
       report.headcount = await win.webContents.executeJavaScript("document.querySelector('#headcount').textContent");
+      // 창을 닫아도 앱·세션은 계속 돈다 (실제 종료는 트레이 메뉴).
+      win.close();
+      await new Promise((r) => setTimeout(r, 300));
+      report.closeKeepsRunning = !!win && !win.isDestroyed();
+      report.tray = !!tray && !tray.isDestroyed();
     } catch (e) {
       report.error = String(e && e.stack || e);
     }
@@ -185,7 +235,7 @@ function runSmoke() {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  app.on('second-instance', showWindow); // 다시 실행하면 숨겨 둔 창을 연다
 
   app.whenReady().then(async () => {
     protocol.handle('app', (req) => {
@@ -217,6 +267,7 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.handle('hooks:global:set', (_e, { enabled }) => setGlobalHooks(!!enabled));
     ipcMain.handle('shell:open', (_e, url) => { if (/^https?:\/\//.test(String(url))) shell.openExternal(url); });
 
+    createTray();
     createWindow();
   }).catch((err) => {
     dialog.showErrorBox('Agent Office 시작 실패', String(err && err.stack || err));
@@ -224,6 +275,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.on('before-quit', () => {
+    quitting = true;
     ptys.killAll();
     if (hook) hook.server.close();
   });
