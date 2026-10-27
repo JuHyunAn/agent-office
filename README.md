@@ -10,9 +10,22 @@ npm install
 npm start        # IDE 터미널에서도 동작 (ELECTRON_RUN_AS_NODE 를 지우고 실행)
 npm test         # 엔진·hook 처리 단위 테스트
 npm run test:renderer # 합성 이벤트로 Electron 화면·픽셀 액션 검증 및 캡처
+npm run dist     # Windows 설치 파일 생성 → dist/
 ```
 
 필요: Node 20+, Claude Code CLI (`npm install -g @anthropic-ai/claude-code`). 로그인은 공식 Claude Code 가 한다.
+
+## 설치 파일 (다른 PC)
+
+`npm run dist` 가 `dist/` 에 두 가지를 만든다 (Windows x64).
+
+- `AgentOffice-Setup-<버전>.exe` — 설치형. 관리자 권한 없이 사용자 폴더에 설치하고 시작 메뉴·바탕화면 바로가기와 제거 기능을 만든다.
+- `AgentOffice-Portable-<버전>.exe` — 무설치. 실행할 때마다 임시 폴더에 풀어서 실행하므로 시작이 느리다.
+
+받는 PC에는 **Claude Code CLI 만** 있으면 된다 (Node·npm 은 앱에 포함). 처음 실행해 로그인하지 않았으면 앱 안에서 공식 로그인을 띄운다.
+코드 서명이 없어 처음 실행할 때 Windows SmartScreen 경고가 뜬다 → 「추가 정보」 → 「실행」.
+사용자 데이터(커스터마이징 사무실·테마 선택·최근 폴더)는 PC·Windows 사용자별 `%APPDATA%\agent-office` 에 저장되며 개발 실행(`npm start`)과 같은 위치를 쓴다. 다른 PC 로 옮겨지지 않는다.
+터미널 모듈(node-pty)은 미리 빌드된 Windows 바이너리를 쓰므로 받는 PC 에 빌드 도구가 필요 없다.
 
 ## 동작 방식
 
@@ -68,4 +81,4 @@ test/           node:test 단위 테스트
 
 - 실행 중인 VS Code 세션 **안으로** 지시를 넣는 공식 방법은 없다 — 같은 폴더에서 새 세션을 열거나 복제해서 이어받는다.
 - 결과 공유 연출은 시간 근접으로 추정한다 (메인 Claude 를 거치는 실제 흐름과 다를 수 있음).
-- 배포용 설치 파일(electron-builder 등)은 아직 없다.
+- 설치 파일은 코드 서명·앱 아이콘(기본 Electron 아이콘 사용)·자동 업데이트가 없다.

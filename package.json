@@ -9,12 +9,43 @@
     "start": "node scripts/start.mjs",
     "test": "node --test \"test/*.test.js\"",
     "test:renderer": "node scripts/check-renderer.cjs",
-    "test:custom": "node scripts/check-custom-office.cjs"
+    "test:custom": "node scripts/check-custom-office.cjs",
+    "dist": "electron-builder --win"
+  },
+  "build": {
+    "appId": "local.agent-office",
+    "productName": "Agent Office",
+    "electronDist": "node_modules/electron/dist",
+    "npmRebuild": false,
+    "electronFuses": { "runAsNode": false },
+    "directories": { "output": "dist" },
+    "files": ["src/**/*", "icon/app.ico", "package.json"],
+    "asarUnpack": ["node_modules/node-pty/**"],
+    "win": {
+      "icon": "icon/app.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "icon/app.ico",
+      "uninstallerIcon": "icon/app.ico",
+      "installerHeaderIcon": "icon/app.ico",
+      "artifactName": "AgentOffice-Setup-${version}.${ext}"
+    },
+    "portable": { "artifactName": "AgentOffice-Portable-${version}.${ext}" }
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
-    "electron": "^45.0.0",
     "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "electron": "^45.0.0",
+    "electron-builder": "26.17.0"
   }
 }

@@ -134,6 +134,7 @@ function createWindow() {
     minHeight: 680,
     backgroundColor: '#17171c',
     title: 'Agent Office',
+    icon: path.join(ROOT, 'icon', 'app.ico'), // 제목 표시줄·작업 표시줄 (개발 실행에도 같은 아이콘)
     autoHideMenuBar: true,
     show: !process.env.AGENT_OFFICE_SMOKE,
     webPreferences: {
