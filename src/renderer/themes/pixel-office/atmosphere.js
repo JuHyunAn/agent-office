@@ -1,15 +1,11 @@
 import layout from './layout.js';
+import { drawSimpleWindow, drawSimpleWindowWeather } from './simple-windows.js';
 
-// 후면과 측면의 큰 유리창은 주변 도시와 같은 화면 좌표를 사용한다.
+// 후면 통창은 모든 픽셀 테마가 공유하고 왼쪽 외벽은 창문 없는 벽으로 둔다.
 export const WINDOWS = ['analysis', 'planning', 'lead', 'skills'].map(key => {
   const r = layout.rooms[key];
   return { axis: 'x', x: r.x + 24, y: 63, w: r.w - 48, bottom: 16, top: 132 };
 });
-WINDOWS.push(
-  { axis: 'y', x: 31, y: 88, w: 376, bottom: 16, top: 132 },
-  { axis: 'y', x: 31, y: 690, w: 456, bottom: 16, top: 132 },
-  { axis: 'y', x: 31, y: 1390, w: 352, bottom: 16, top: 116 },
-);
 
 export function windowPoints(pane, project) {
   const x2 = pane.x + (pane.axis === 'x' ? pane.w : 0), y2 = pane.y + (pane.axis === 'y' ? pane.w : 0);
@@ -47,6 +43,7 @@ function glow(ctx, x, y, rx, ry, rgb, strength) {
 
 export function createAtmosphere({ width, height, detail, project }) {
   let shade, warmLights, sunlight, floorShadows, overcast;
+  const simpleViews = new Map();
   const layer = draw => {
     const canvas = document.createElement('canvas'); canvas.width = width * detail; canvas.height = height * detail;
     const ctx = canvas.getContext('2d'); ctx.scale(detail, detail); draw(ctx); return canvas;
@@ -124,12 +121,23 @@ export function createAtmosphere({ width, height, detail, project }) {
       });
     },
 
-    drawWindows(ctx, t, env, background) {
+    drawWindows(ctx, t, env, background, style) {
+      if (style === 'simple') {
+        const key = `${Boolean(env.night)}:${['rain', 'snow', 'fog', 'cloudy'].includes(env.condition)}`;
+        if (!simpleViews.has(key)) simpleViews.set(key, layer(c => {
+          for (const pane of WINDOWS) {
+            c.save(); trace(c, windowPoints(pane, project)); c.clip();
+            drawSimpleWindow(c, pane, project, env); c.restore();
+          }
+        }));
+        background = simpleViews.get(key);
+      }
       for (const pane of WINDOWS) {
         const points = windowPoints(pane, project);
         ctx.save(); trace(ctx, points); ctx.clip();
         // 창문 안팎에 같은 도시 비트맵을 그려 풍경의 위치와 강수 움직임을 연결한다.
         ctx.imageSmoothingEnabled = false; ctx.drawImage(background, 0, 0, width, height);
+        if (style === 'simple') drawSimpleWindowWeather(ctx, pane, project, t, env);
         const left = Math.min(...points.map(p => p.x)), right = Math.max(...points.map(p => p.x));
         const topY = Math.min(...points.map(p => p.y)), bottomY = Math.max(...points.map(p => p.y));
         const violet = env.neon && env.condition !== 'rain';

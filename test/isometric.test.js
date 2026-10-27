@@ -4,6 +4,7 @@ import theme, { projectPoint } from '../src/renderer/themes/pixel-office/theme.j
 import { OfficeView } from '../src/renderer/office/view.js';
 import baseLayout from '../src/renderer/themes/mockup/layout.js';
 import plainTheme from '../src/renderer/themes/pixel-office/plain.js';
+import citypopTheme from '../src/renderer/themes/pixel-office/citypop.js';
 
 test('확장된 사선 테마의 10개 구역과 좌석이 투영 영역 안에 있다', () => {
   assert.equal(Object.keys(theme.layout.rooms).length, 10);
@@ -84,7 +85,7 @@ test('도시·배경 없음 전환은 생활 상태·카메라·진행 중 상�
     view.life = { player: { x: 600, y: 700, heldItem: { id: 'latte', until: 45000 } }, menu: { id: 'lounge-coffee' } };
     view.resize(); view.zoomBy(2);
     const life = view.life, camera = view.camera;
-    for (const next of [plainTheme, theme]) {
+    for (const next of [plainTheme, citypopTheme, theme]) {
       await view.setTheme({ ...next, load: null });
       assert.equal(view.theme.id, next.id);
       assert.strictEqual(view.life, life); assert.strictEqual(view.camera, camera);

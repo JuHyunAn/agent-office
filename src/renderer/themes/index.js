@@ -2,8 +2,9 @@
 import mockup from './mockup/theme.js';
 import pixelOffice from './pixel-office/theme.js';
 import plainOffice from './pixel-office/plain.js';
+import citypopOffice from './pixel-office/citypop.js';
 
-export const THEMES = [pixelOffice, plainOffice, mockup];
+export const THEMES = [pixelOffice, plainOffice, citypopOffice, mockup];
 
 export function getTheme(id) {
   return THEMES.find((t) => t.id === id) || THEMES[0];

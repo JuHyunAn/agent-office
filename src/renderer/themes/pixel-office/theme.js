@@ -3,10 +3,11 @@ import { drawCharacter } from './sprites.js';
 import { createAtmosphere } from './atmosphere.js';
 import { loadDrinkImages } from './drink-images.js';
 import { createExterior, loadCityImages } from './exterior.js';
+import { polygon, line, PIXEL_DETAIL } from './raster.js';
 
 const WIDTH = 1600;
 const HEIGHT = 1000;
-const DETAIL = 2;
+const DETAIL = PIXEL_DETAIL;
 const PAPER = '#edf2eb';
 const INK = '#4a4741';
 const atmosphere = createAtmosphere({ width: WIDTH, height: HEIGHT, detail: DETAIL, project: projectPoint });
@@ -23,38 +24,6 @@ const BUBBLES = {
 // Engine coordinates -> pixels in the low-resolution scene.
 export function projectPoint(x, y, z = 0) {
   return { x: Math.round((780 + (x - y) * 0.36) * DETAIL) / DETAIL, y: Math.round((125 + (x + y) * 0.18 - z) * DETAIL) / DETAIL };
-}
-
-// Rasterized polygons and lines avoid smoothed vector edges in the pixel scene.
-function polygon(ctx, points, color) {
-  ctx.fillStyle = color;
-  const minY = Math.ceil(Math.min(...points.map(p => p.y)) * DETAIL) / DETAIL;
-  const maxY = Math.ceil(Math.max(...points.map(p => p.y)) * DETAIL) / DETAIL;
-  for (let y = minY; y < maxY; y += 1 / DETAIL) {
-    const xs = [];
-    for (let i = 0; i < points.length; i++) {
-      const a = points[i], b = points[(i + 1) % points.length];
-      if ((a.y <= y && b.y > y) || (b.y <= y && a.y > y)) xs.push(a.x + (y - a.y) * (b.x - a.x) / (b.y - a.y));
-    }
-    xs.sort((a, b) => a - b);
-    for (let i = 0; i + 1 < xs.length; i += 2) ctx.fillRect(Math.round(xs[i] * DETAIL) / DETAIL, y, Math.max(1 / DETAIL, (Math.round(xs[i + 1] * DETAIL) - Math.round(xs[i] * DETAIL)) / DETAIL), 1 / DETAIL);
-  }
-}
-
-function line(ctx, a, b, color) {
-  let x = Math.round(a.x * DETAIL), y = Math.round(a.y * DETAIL);
-  const bx = Math.round(b.x * DETAIL), by = Math.round(b.y * DETAIL);
-  const dx = Math.abs(bx - x), dy = -Math.abs(by - y);
-  const sx = x < bx ? 1 : -1, sy = y < by ? 1 : -1;
-  let error = dx + dy;
-  ctx.fillStyle = color;
-  for (;;) {
-    ctx.fillRect(x / DETAIL, y / DETAIL, 1 / DETAIL, 1 / DETAIL);
-    if (x === bx && y === by) break;
-    const e = error * 2;
-    if (e >= dy) { error += dy; x += sx; }
-    if (e <= dx) { error += dx; y += sy; }
-  }
 }
 
 function plane(ctx, x, y, w, d, z, color) {
@@ -294,6 +263,7 @@ function arcade(ctx, x, y) {
 }
 
 function doorPanel(ctx, item, amount) {
+  if (item.id === 'elevator') { elevatorPanel(ctx, item, amount); return; }
   const tone = item.room === 'ceo' ? '#5b788b' : '#5c9eae';
   box(ctx, item.x - 6, item.y, 6, 12, 0, 74, '#d5d9c6', '#8c9b99', '#7e8b8c');
   box(ctx, item.x + item.w, item.y, 6, 12, 0, 74, '#d5d9c6', '#8c9b99', '#7e8b8c');
@@ -305,6 +275,33 @@ function doorPanel(ctx, item, amount) {
     line(ctx, projectPoint(left + 10, item.y + 9, 21), projectPoint(left + 44, item.y + 9, 51), '#d0e7e2');
   }
   plane(ctx, item.x - 2, item.y - 8, item.w + 4, 26, 1, '#d8c796');
+}
+
+function elevatorPanel(ctx, item, amount) {
+  const x = item.x + item.w + 1, start = item.y + 8, end = item.y + item.d - 8;
+  const face = (y, width, z, height, color) => polygon(ctx, [projectPoint(x, y, z), projectPoint(x, y + width, z),
+    projectPoint(x, y + width, z + height), projectPoint(x, y, z + height)], color);
+  face(start, end - start, 1, 111, '#303e46');
+  face(start + 5, end - start - 10, 6, 101, '#657475');
+  face(start + 10, end - start - 20, 10, 93, '#7e8b85');
+  face(start + 8, end - start - 16, 40, 2, '#c2c8b6');
+  // 문은 벽 속으로 수납되며, 열린 부분으로 엘리베이터 내부가 드러난다.
+  const half = (end - start) / 2, remaining = half * (1 - amount);
+  for (const y of [start, end - remaining]) {
+    if (remaining <= 0) continue;
+    face(y, remaining, 2, 109, '#9eafb0');
+    face(y + 1, Math.max(0, remaining - 2), 4, 105, '#bdc9c4');
+    for (let stripe = 7; stripe < remaining - 3; stripe += 14) face(y + stripe, 2, 5, 103, '#dae0ce');
+  }
+  for (const y of [item.y, end]) box(ctx, item.x, y, 12, 8, 0, 116, '#e4dfc6', '#8d9b96', '#849892');
+  box(ctx, item.x, item.y, 12, item.d, 112, 6, '#ebe4c9', '#a3ada0', '#8b9e97');
+  face(start, end - start, 109, 3, '#f3deb0');
+  face(start + 45, 38, 121, 13, '#3e565c');
+  face(start + 55, 5, 124, 7, amount > 0 ? '#b8e7bb' : '#e7ca8a');
+  face(start + 66, 8, 124, 2, '#c5dbbe');
+  face(item.y + item.d + 9, 11, 48, 20, '#657f82');
+  face(item.y + item.d + 12, 5, 56, 5, amount > 0 ? '#b9e7bb' : '#e9d5a5');
+  plane(ctx, 26, start, 18, end - start, 1, '#c2bfac');
 }
 
 function executiveDesk(ctx) {
@@ -385,7 +382,7 @@ function buildFloor() {
     const r = layout.rooms[key], door = r.door;
     box(ctx, r.x, r.y - 8, door.x - 60 - r.x, 8, 0, 72, '#e8e0ca', '#bebcbd', '#a6adb0');
     box(ctx, door.x + 60, r.y - 8, r.x + r.w - door.x - 60, 8, 0, 72, '#e8e0ca', '#bebcbd', '#a6adb0');
-    box(ctx, r.x - 8, r.y, 8, r.h, 0, key === 'ceo' ? 132 : 65, '#e9e4cf', '#c1c1b4', '#98aca9');
+    if (key === 'restroom') box(ctx, r.x - 8, r.y, 8, r.h, 0, 65, '#e9e4cf', '#c1c1b4', '#98aca9');
     box(ctx, r.x, r.y + r.h - 6, r.w, 6, 0, 12, '#d4d6c4', '#acb5a1', '#91a48f');
   }
   plane(ctx, 32, 510, 2056, 132, 1, '#b5c7b9');
@@ -395,11 +392,11 @@ function buildFloor() {
   const mat = layout.interactions.find(i => i.id === 'stretch');
   rug(ctx, mat.x, mat.y, mat.w, mat.d, '#94b7c9', '#d8e5d3');
   rug(ctx, 1638, 886, 390, 280, '#dba992', '#f2d5ad');
-  box(ctx, -32, 548, 64, 64, -16, 6, '#c5c8ac', '#b1b49c', '#939c86');
-  box(ctx, 0, 548, 32, 64, -10, 6, '#d5d8bc', '#c1c4a7', '#a3ad96');
   box(ctx, 32, 56, 2056, 8, 0, 142, '#e3e1cb', '#c8ceba', '#9eafa0');
   box(ctx, 24, 64, 8, 440, 0, 142, '#e7e3cd', '#d4d8c4', '#a6b5a2');
-  box(ctx, 24, 648, 8, 552, 0, 142, '#e7e3cd', '#d4d8c4', '#a6b5a2');
+  box(ctx, 24, 648, 8, 1152, 0, 142, '#e7e3cd', '#d4d8c4', '#a6b5a2');
+  box(ctx, 24, 504, 8, 144, 118, 24, '#e7e3cd', '#d4d8c4', '#a6b5a2');
+  box(ctx, 24, 1200, 8, 160, -16, 16, '#d5d4c0', '#a9a58d', '#888f80');
   for (const x of [32, 540, 1060, 1580, 2080]) box(ctx, x - 8, 54, 16, 18, 0, 150, '#eeead7', '#b6c3be', '#8da7ae');
   box(ctx, 32, 54, 2056, 12, 140, 10, '#ede9d5', '#c3cbbd', '#a6b7b4');
   for (const [x1, y1, x2, y2] of [[32, 1200, 216, 1200], [344, 1200, 1776, 1200], [1904, 1200, 2088, 1200],
@@ -574,9 +571,9 @@ export default {
     const sunny = !environment.night && ['clear', 'unknown'].includes(environment.condition);
     const showExterior = this.exteriorVisible !== false;
     if (!showExterior) { pixel.fillStyle = this.sceneBackground(environment); pixel.fillRect(0, 0, WIDTH, HEIGHT); }
-    const backdrop = exterior.drawBackground(pixel, t, environment, showExterior);
+    const backdrop = this.windowStyle === 'simple' ? null : exterior.drawBackground(pixel, t, environment, showExterior);
     pixel.drawImage(sunny ? floorCache : shadedFloorCache, 0, 0, WIDTH, HEIGHT);
-    atmosphere.drawWindows(pixel, t, environment, backdrop);
+    atmosphere.drawWindows(pixel, t, environment, backdrop, this.windowStyle);
     const hover = layout.interactions.find(p => p.id === state.hoveredItem);
     if (hover) plane(pixel, hover.x - 7, hover.y - 7, hover.w + 14, hover.d + 14, 3, '#f3d786');
     if (state.destination) {
@@ -594,7 +591,7 @@ export default {
       pixel.fillStyle = '#e6dc9e'; pixel.fillRect(p.x - 12 + step * 7, p.y - 4, 4, 4);
       text(pixel, `${skillWorkers.length}명 스킬 협업 중`, p.x - 48, p.y - 20, '#f2edcb', '10px "Malgun Gothic", sans-serif');
     }
-    const doors = layout.interactions.filter(i => i.door).map(item => ({ depth: item.x + item.w / 2 + item.y, draw(c) {
+    const doors = layout.interactions.filter(i => i.door).map(item => ({ depth: item.x + item.w / 2 + item.y + (item.axis === 'y' ? item.d / 2 : 0), draw(c) {
       doorPanel(c, item, state.doors?.find(d => d.id === item.id)?.amount || 0);
     } }));
     const items = [...objects, ...doors, ...agents.map(a => ({ depth: a.x + a.y, draw(c) {

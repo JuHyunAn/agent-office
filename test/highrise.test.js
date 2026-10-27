@@ -4,8 +4,9 @@ import { TOWER_FACES } from '../src/renderer/themes/pixel-office/exterior.js';
 import { WINDOWS, windowPoints } from '../src/renderer/themes/pixel-office/atmosphere.js';
 import theme, { projectPoint } from '../src/renderer/themes/pixel-office/theme.js';
 
-test('통창의 도시 좌표는 사무실 투영과 일치하고 후면·측면이 모두 존재한다', () => {
-  assert.ok(WINDOWS.some(p => p.axis === 'x') && WINDOWS.some(p => p.axis === 'y'));
+test('공통 통창은 후면 네 곳에만 있고 왼쪽 외벽에는 창문이 없다', () => {
+  assert.equal(WINDOWS.length, 4);
+  assert.ok(WINDOWS.every(p => p.axis === 'x'));
   for (const pane of WINDOWS) {
     const points = windowPoints(pane, projectPoint);
     assert.equal(points.length, 4);

@@ -66,6 +66,8 @@ const interactions = [
   { id: 'laptop', label: '내 노트북', room: 'cafe', x: 1730, y: 940, w: 112, d: 72, height: 22, stand: { x: 1780, y: 918 }, action: 'laptop', description: '클릭하면 노트북을 펴고 잠시 작업해요.' },
   { id: 'sofa', label: '라운지 소파', room: 'rest', x: 1112, y: 982, w: 190, d: 78, height: 26, stand: { x: 1202, y: 1084 }, seat: { x: 1202, y: 1018 }, action: 'sit', description: '클릭하면 소파에 앉아 편하게 쉬어요.' },
   { id: 'coffee', label: '커피 바', room: 'cafe', x: 1632, y: 706, w: 150, d: 54, height: 48, stand: { x: 1700, y: 812 }, action: 'drink', description: '따뜻한 커피 한 잔으로 쉬어 가세요.' },
+  { id: 'elevator', label: '중앙 엘리베이터', x: 24, y: 504, w: 8, d: 144, height: 112, axis: 'y',
+    stand: { x: 96, y: 576 }, action: 'elevator', door: true, description: '가까이 다가가면 문이 열리고, 멀어지면 닫혀요.' },
   { id: 'ceo-door', label: '대표실 출입문', room: 'ceo', x: 220, y: 1356, w: 120, d: 8, height: 70,
     stand: { x: 280, y: 1420 }, action: 'visit', door: true, description: '클릭하면 문을 열고 별채 대표실로 들어가요.' },
   { id: 'restroom-door', label: '화장실 출입문', room: 'restroom', x: 1780, y: 1356, w: 120, d: 8, height: 70,

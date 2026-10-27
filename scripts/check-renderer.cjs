@@ -201,6 +201,7 @@ if (!process.versions.electron) {
 
     const lightingCheck = await win.webContents.executeJavaScript(`(async()=>{
       const {default:theme,projectPoint}=await import('./themes/pixel-office/theme.js');
+      const {default:plainTheme}=await import('./themes/pixel-office/plain.js');
       const {createAtmosphere,WINDOWS,DESK_LIGHTS}=await import('./themes/pixel-office/atmosphere.js');
       const {createExterior}=await import('./themes/pixel-office/exterior.js');
       const canvas=document.createElement('canvas');canvas.width=3200;canvas.height=2000;
@@ -215,11 +216,11 @@ if (!process.versions.electron) {
       const a=createAtmosphere({width:1600,height:1000,detail:2,project:projectPoint});
       const exterior=createExterior({width:1600,height:1000,project:projectPoint});
       const precipitation=[];c.setTransform(2,0,0,2,0,0);
-      for(const condition of ['rain','snow']){
+      for(const style of [undefined,'simple']) for(const condition of ['rain','snow']){
         const env={night:true,condition};let backdrop=exterior.drawBackground(c,0,env);
-        c.clearRect(0,0,1600,1000);a.drawWindows(c,0,env,backdrop);const before=c.getImageData(0,0,3200,2000).data;
+        c.clearRect(0,0,1600,1000);a.drawWindows(c,0,env,backdrop,style);const before=c.getImageData(0,0,3200,2000).data;
         backdrop=exterior.drawBackground(c,360,env);
-        c.clearRect(0,0,1600,1000);a.drawWindows(c,360,env,backdrop);const after=c.getImageData(0,0,3200,2000).data;
+        c.clearRect(0,0,1600,1000);a.drawWindows(c,360,env,backdrop,style);const after=c.getImageData(0,0,3200,2000).data;
         let changed=0,escaped=0;
         for(let i=0;i<before.length;i+=4)if(before[i]!==after[i]||before[i+1]!==after[i+1]||before[i+2]!==after[i+2]){
           changed++;const x=(i/4%3200)/2,y=Math.floor(i/4/3200)/2;
@@ -228,23 +229,24 @@ if (!process.versions.electron) {
         c.setTransform(1,0,0,1,0,0);
         const interiorPoints=[...Object.values(theme.layout.rooms).map(r=>theme.project(r.x+r.w/2,r.y+r.h/2)),theme.project(1000,576)];
         const samples=()=>interiorPoints.map(p=>c.getImageData(p.x-8,p.y-8,16,16).data);
-        theme.drawScene(c,[],0,{environment:env});
+        const activeTheme=style==='simple'?plainTheme:theme;
+        activeTheme.drawScene(c,[],0,{environment:env});
         const indoorBefore=samples(),outdoorBefore=c.getImageData(0,0,400,300).data;
-        theme.drawScene(c,[],360,{environment:env});
+        activeTheme.drawScene(c,[],360,{environment:env});
         const indoorAfter=samples(),outdoorAfter=c.getImageData(0,0,400,300).data;
         const indoorChanged=indoorBefore.reduce((total,pixels,index)=>total+Number(pixels.some((v,j)=>v!==indoorAfter[index][j])),0);
         const outdoorChanged=outdoorBefore.some((v,j)=>v!==outdoorAfter[j]);
-        precipitation.push({condition,changed,escaped,indoorChanged,outdoorChanged});
+        precipitation.push({style:style||'city',condition,changed,escaped,indoorChanged,outdoorChanged});
         c.setTransform(2,0,0,2,0,0);
       }
       return {day,night,windows:WINDOWS.length,deskLights:DESK_LIGHTS.length,precipitation};
     })()`);
-    assert.equal(lightingCheck.windows,7);
+    assert.equal(lightingCheck.windows,4);
     assert.equal(lightingCheck.deskLights,18);
     assert.ok(lightingCheck.night.floor < lightingCheck.day.floor * 0.6,JSON.stringify(lightingCheck));
     assert.ok(lightingCheck.night.desk / lightingCheck.day.desk > lightingCheck.night.floor / lightingCheck.day.floor + 0.1,JSON.stringify(lightingCheck));
     assert.ok(lightingCheck.precipitation.every(p=>p.changed>100&&p.escaped===0),JSON.stringify(lightingCheck));
-    assert.ok(lightingCheck.precipitation.every(p=>p.indoorChanged===0&&p.outdoorChanged),JSON.stringify(lightingCheck));
+    assert.ok(lightingCheck.precipitation.every(p=>p.indoorChanged===0&&p.outdoorChanged===(p.style==='city')),JSON.stringify(lightingCheck));
 
     const neonCheck = await win.webContents.executeJavaScript(`(async()=>{
       const {default:theme}=await import('./themes/pixel-office/theme.js');
@@ -294,6 +296,35 @@ if (!process.versions.electron) {
       return {uniform,cityDifferent:city.some((value,i)=>value!==plain[i]),interiorIdentical:inside.every((value,i)=>value===cityInside[i])};
     })()`);
     assert.ok(plainCheck.uniform&&plainCheck.cityDifferent&&plainCheck.interiorIdentical,JSON.stringify(plainCheck));
+    await selectTheme('pixel-office-citypop');
+    const citypopCheck=await win.webContents.executeJavaScript(`(async()=>{
+      const {getTheme}=await import('./themes/index.js'),theme=getTheme('pixel-office-citypop');
+      const {drawCityscape}=await import('./themes/pixel-office/cityscape.js');
+      const background=document.createElement('canvas');background.width=3200;background.height=2000;
+      const bc=background.getContext('2d');bc.scale(2,2);drawCityscape(bc,{width:1600,height:1000});
+      window.__citypopBackground=background.toDataURL('image/png').split(',')[1];
+      const order=[...document.querySelector('#theme-select').options].map(o=>o.value);
+      const canvas=document.createElement('canvas');canvas.width=3200;canvas.height=2000;const c=canvas.getContext('2d');
+      const render=(night,condition,t=0)=>{theme.drawScene(c,[],t,{environment:{night,neon:night,condition}});return c.getImageData(0,0,3200,2000).data;};
+      const day=render(false,'clear'),night=render(true,'clear');
+      const fixedDawn=day.every((value,i)=>value===night[i]);
+      getTheme('pixel-office').drawScene(c,[],0,{environment:{night:true,neon:true,condition:'clear'}});
+      const normal=c.getImageData(0,0,3200,2000).data;let changed=0;
+      for(let i=0;i<normal.length;i+=4)if(day[i]!==normal[i]||day[i+1]!==normal[i+1]||day[i+2]!==normal[i+2])changed++;
+      const weather=[];
+      for(const condition of ['rain','snow']){
+        render(false,condition,0);const outside=c.getImageData(0,0,400,250).data,p=theme.project(1000,576),inside=c.getImageData(p.x-5,p.y-5,10,10).data;
+        render(false,condition,360);const nextOutside=c.getImageData(0,0,400,250).data,nextInside=c.getImageData(p.x-5,p.y-5,10,10).data;
+        weather.push({condition,moving:outside.some((value,i)=>value!==nextOutside[i]),indoorStable:inside.every((value,i)=>value===nextInside[i])});
+      }
+      window.__view.fit();window.__view.draw(performance.now());
+      return {order,fixedDawn,changed,weather};
+    })()`);
+    assert.equal(citypopCheck.order[2],'pixel-office-citypop');
+    assert.ok(citypopCheck.fixedDawn&&citypopCheck.changed>500000,JSON.stringify(citypopCheck));
+    assert.ok(citypopCheck.weather.every(w=>w.moving&&w.indoorStable),JSON.stringify(citypopCheck));
+    await pause(100);fs.writeFileSync(path.join(OUT,'office-citypop.png'),(await win.webContents.capturePage()).toPNG());
+    fs.writeFileSync(path.join(OUT,'citypop-background.png'),Buffer.from(await win.webContents.executeJavaScript('window.__citypopBackground'),'base64'));
     await selectTheme('pixel-office');
     const weatherVideo = await win.webContents.executeJavaScript(`(async()=>{
       const v=window.__view,originalClock=v.environment.now;
@@ -361,6 +392,17 @@ if (!process.versions.electron) {
     assert.equal(skillTip.hidden,false);assert.match(skillTip.text,/documents:documents/);assert.match(skillTip.text,/spreadsheets:Spreadsheets/);
     await fs.promises.writeFile(path.join(OUT,'office-skills.png'),(await win.webContents.capturePage()).toPNG());
     const annexes=[];
+    await click(await inputPoint('item','elevator'));
+    const elevatorCheck=await win.webContents.executeJavaScript(`(()=>{const v=window.__view;
+      for(let i=0;i<2000&&!v.life.player.action;i++)v.life.update(50);
+      return {action:v.life.player.action,amount:v.life.doors.find(d=>d.id==='elevator').amount};})()`);
+    assert.equal(elevatorCheck.action,'elevator');assert.equal(elevatorCheck.amount,1);
+    await pause(100);
+    fs.writeFileSync(path.join(OUT,'office-elevator-open.png'),(await win.webContents.capturePage()).toPNG());
+    await win.webContents.executeJavaScript(`(()=>{const v=window.__view;v.life.moveTo({x:500,y:576});for(let i=0;i<160;i++)v.life.update(50);})()`);
+    assert.equal(await win.webContents.executeJavaScript(`window.__view.life.doors.find(d=>d.id==='elevator').amount`),0);
+    await pause(100);
+    fs.writeFileSync(path.join(OUT,'office-elevator-closed.png'),(await win.webContents.capturePage()).toPNG());
     for (const id of ['restroom-door','ceo-door']) {
       await click(await inputPoint('item',id));
       const entered=await win.webContents.executeJavaScript(`(()=>{const v=window.__view;
@@ -396,7 +438,7 @@ if (!process.versions.electron) {
     const selectedCoffee=await win.webContents.executeJavaScript(`({hidden:document.querySelector('#interaction-menu').hidden,id:window.__view.life.player.heldItem?.id,image:window.__view.life.player.heldItem?.image,action:window.__view.life.player.action})`);
     assert.equal(selectedCoffee.hidden,true);assert.equal(selectedCoffee.id,'soda');assert.equal(selectedCoffee.action,'drink');assert.match(selectedCoffee.image,/\/soda\.png$/);
     await pause(100);fs.writeFileSync(path.join(OUT,'office-coffee-carry.png'),(await win.webContents.capturePage()).toPNG());
-    await selectTheme('pixel-office-plain');await selectTheme('pixel-office');
+    await selectTheme('pixel-office-plain');await selectTheme('pixel-office-citypop');await selectTheme('pixel-office');
     assert.equal(await win.webContents.executeJavaScript(`window.__view.life.player.heldItem?.id`),'soda');
     await click(await inputPoint('floor'));
     assert.equal(await win.webContents.executeJavaScript(`window.__view.life.player.heldItem?.id`),'soda');
@@ -479,7 +521,7 @@ if (!process.versions.electron) {
     assert.ok(small.canvasWidth > 0);
     await fs.promises.writeFile(path.join(OUT, 'office-1100.png'), (await win.webContents.capturePage()).toPNG());
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({status,small,spriteChanges:spriteCheck.changes,artCheck,lightingCheck,neonCheck,themeSwitch,plainCheck,interactionCheck,consoleErrors:errors,output:OUT}, null, 2));
+    console.log(JSON.stringify({status,small,spriteChanges:spriteCheck.changes,artCheck,lightingCheck,neonCheck,themeSwitch,plainCheck,citypopCheck,interactionCheck,consoleErrors:errors,output:OUT}, null, 2));
     clearTimeout(watchdog);
     app.exit(0);
   }).catch(e => { console.error(e.stack || e); console.error(JSON.stringify({ consoleErrors: errors })); clearTimeout(watchdog); app.exit(1); });

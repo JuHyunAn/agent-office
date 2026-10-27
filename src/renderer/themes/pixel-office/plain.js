@@ -1,10 +1,11 @@
 import pixelOffice from './theme.js';
 
-// 사무실과 창밖 날씨는 공유하고 외부 도시·아래층 외벽만 생략한다.
+// 공통 사무실에 초기 스타일의 단순한 픽셀 창밖 풍경을 사용한다.
 export default {
   ...pixelOffice,
   id: 'pixel-office-plain',
   name: '픽셀 오피스 · 배경 없음',
   exteriorVisible: false,
+  windowStyle: 'simple',
   sceneBackground(env) { return env?.night ? '#25313f' : '#edf2eb'; },
 };

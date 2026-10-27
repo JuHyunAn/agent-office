@@ -10,6 +10,22 @@ import { OfficeEngine } from '../src/renderer/office/engine.js';
 const run = (object, ms) => { for (let i = 0; i < ms; i += 50) object.update(50); };
 const ev = (name, extra = {}) => ({ session_id: 's', hook_event_name: name, ...extra });
 
+test('중앙 엘리베이터는 내 캐릭터와 출입 에이전트에 반응하고 떠나면 닫힌다', () => {
+  const engine = new OfficeEngine(layout), life = new OfficeLife(layout, engine);
+  const door = life.doors.find(d => d.id === 'elevator');
+  life.residents = [];
+  run(life, 400); assert.equal(door.amount, 0);
+  Object.assign(life.player, { x: 96, y: 576 });
+  life.update(100); assert.ok(door.amount > 0 && door.amount < 1);
+  run(life, 300); assert.equal(door.amount, 1);
+  Object.assign(life.player, { x: 500, y: 576 });
+  life.update(100); assert.ok(door.amount > 0 && door.amount < 1);
+  run(life, 300); assert.equal(door.amount, 0);
+  engine.agents.set('arrival', { ...layout.entrance });
+  run(life, 400); assert.equal(door.amount, 1);
+  engine.agents.clear(); run(life, 400); assert.equal(door.amount, 0);
+});
+
 test('확대는 포인터 아래 좌표를 유지하고 화면 이동은 범위 안으로 제한한다', () => {
   const camera = new OfficeCamera(); camera.resize(1000, 700, 2880, 1720);
   const point = camera.toScene(600, 350);

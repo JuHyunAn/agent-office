@@ -10,6 +10,7 @@ const ACTIONS = {
   sit: { pose: 'sit', ms: 10000, text: '☕ 여기서 잠깐 쉬어요' },
   collaborate: { pose: 'talk', ms: 8000, text: '💡 함께 아이디어 정리 중' },
   visit: { pose: 'stand', ms: 4000, text: '🚪 문을 열고 방에 들어왔어요' },
+  elevator: { pose: 'stand', ms: 3000, text: '엘리베이터 문이 열렸어요' },
   brew: { pose: 'brew', ms: 2400, text: '☕ 커피가 내려오는 중…' },
   arcade: { pose: 'play', ms: 8000, text: '🎮 잠깐의 픽셀 게임!' },
   water: { pose: 'water', ms: 5500, text: '🌱 초록 친구에게 물 주는 중' },
@@ -100,7 +101,8 @@ export class OfficeLife {
     const actors = [this.player, ...this.residents, ...this.engine.agents.values()];
     for (const door of this.doors) {
       const item = this.layout.interactions.find(i => i.id === door.id);
-      const near = actors.some(a => Math.hypot(a.x - item.x - item.w / 2, a.y - item.y) < 130);
+      const centerY = item.y + (item.axis === 'y' ? item.d / 2 : 0);
+      const near = actors.some(a => Math.hypot(a.x - item.x - item.w / 2, a.y - centerY) < 130);
       const open = near || door.heldUntil > this.time;
       door.amount = Math.max(0, Math.min(1, door.amount + (open ? 1 : -1) * dt / 320));
     }
