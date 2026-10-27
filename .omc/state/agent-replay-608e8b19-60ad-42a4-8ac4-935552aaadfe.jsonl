@@ -1,0 +1,3 @@
+{"t":0,"agent":"system","event":"skill_invoked","skill_name":"superpowers:test-driven-development"}
+{"t":0,"agent":"a842609","agent_type":"code-reviewer","event":"agent_start","parent_mode":"none"}
+{"t":0,"agent":"a842609","agent_type":"code-reviewer","event":"agent_stop","success":true,"duration_ms":305550}

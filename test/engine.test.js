@@ -128,13 +128,50 @@ test('SendMessage 는 정확한 직접 전달로 표시된다', () => {
   assert.equal(e.roomAt(agent(e, 'x1').x, agent(e, 'x1').y), 'analysis', '일하던 사람은 자기 방으로 돌아온다');
 });
 
-test('휴게실에서 오래 쉬면 퇴근해 사라진다', () => {
-  const { e } = mk({ restBeforeLeaveMs: 10000 });
+const MIN = 60000;
+
+test('하위 에이전트는 작업이 끝나고 20분 동안 일이 없으면 퇴근한다', () => {
+  const { e } = mk();
   e.handleEvent(ev('SubagentStart', { agent_id: 'x1', agent_type: 'Explore' }));
   run(e, 15000);
   e.handleEvent(ev('SubagentStop', { agent_id: 'x1', agent_type: 'Explore' }));
-  run(e, 120000);
+  run(e, 19 * MIN, 250);
+  assert.equal(agent(e, 'x1').status, 'resting', '20분 전에는 휴게실에 남는다');
+  run(e, 2 * MIN, 250);
   assert.equal(agent(e, 'x1'), undefined);
+});
+
+test('팀장은 답변 완료 후 20분 동안 일이 없으면 퇴근하고, 다시 요청이 오면 같은 외형으로 출근한다', () => {
+  const { e } = mk({ leadIdleToRestMs: 20000 });
+  e.handleEvent(ev('UserPromptSubmit', { prompt: 'x' }), { label: 'proj' });
+  e.handleEvent(ev('Stop'), { label: 'proj' });
+  const look = agent(e, 'lead').appearance;
+  run(e, 19 * MIN, 250);
+  assert.equal(agent(e, 'lead').status, 'away');
+  run(e, 2 * MIN, 250);
+  assert.equal(agent(e, 'lead'), undefined);
+  e.handleEvent(ev('UserPromptSubmit', { prompt: '다음 일' }), { label: 'proj' });
+  assert.deepEqual(agent(e, 'lead').appearance, look);
+});
+
+test('백그라운드 에이전트가 일하는 동안 팀장은 퇴근하지 않는다', () => {
+  const { e } = mk({ leadIdleToRestMs: 20000 });
+  e.handleEvent(ev('Stop'));
+  e.handleEvent(ev('SubagentStart', { agent_id: 'bg', agent_type: 'executor' }));
+  for (let i = 0; i < 30; i++) {
+    run(e, MIN, 250);
+    e.handleEvent(ev('PreToolUse', { agent_id: 'bg', agent_type: 'executor', tool_name: 'Read', tool_input: { file_path: 'a.js' } }));
+  }
+  assert.ok(agent(e, 'lead'));
+  assert.notEqual(agent(e, 'lead').status, 'leaving');
+});
+
+test('팀장이 사용자 확인을 기다리는 동안은 20분이 지나도 퇴근하지 않는다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('PermissionRequest', { tool_name: 'Bash' }), { label: 'proj' });
+  run(e, 45 * MIN, 250);
+  assert.ok(agent(e, 'lead'));
+  assert.equal(agent(e, 'lead').bubble.kind, 'alert');
 });
 
 test('권한 요청은 해제될 때까지 남는 경고 말풍선을 띄운다', () => {
@@ -157,13 +194,48 @@ test('한가한 팀장은 휴게실에 갔다가 일이 오면 돌아온다', ()
   assert.equal(e.roomAt(lead.x, lead.y), 'lead');
 });
 
-test('세션이 끝나면 모두 퇴근한다', () => {
+test('세션이 끝나면 모두 휴게실에 모였다가 5분 뒤 다 같이 퇴근한다', () => {
   const { e } = mk();
+  e.handleEvent(ev('UserPromptSubmit', { prompt: 'x' }));
   e.handleEvent(ev('SubagentStart', { agent_id: 'x1', agent_type: 'Explore' }));
+  e.handleEvent(ev('SubagentStart', { agent_id: 'x2', agent_type: 'executor' }));
   run(e, 5000);
   e.endSession(SID);
-  run(e, 60000);
+  run(e, 5 * MIN - 1000, 250);
+  const crew = [...e.agents.values()];
+  assert.equal(crew.length, 3);
+  for (const a of crew) {
+    assert.notEqual(a.status, 'leaving', `${a.label} 는 5분 전에 떠나지 않는다`);
+    assert.equal(e.roomAt(a.x, a.y), 'rest', `${a.label} 는 휴게실에서 기다린다`);
+  }
+  run(e, 2000, 250);
+  assert.ok(crew.every((a) => a.status === 'leaving'), '같은 순간에 함께 퇴근한다');
+  run(e, MIN, 250);
   assert.equal(e.agents.size, 0);
+});
+
+test('끝난 세션에 늦게 도착한 신호로는 아무도 다시 출근하지 않는다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('SubagentStart', { agent_id: 'x1', agent_type: 'Explore' }));
+  e.endSession(SID);
+  e.handleEvent(ev('PreToolUse', { agent_id: 'x1', agent_type: 'Explore', tool_name: 'Read', tool_input: { file_path: 'a.js' } }));
+  e.handleEvent(ev('Stop'));
+  assert.equal(agent(e, 'lead'), undefined);
+  assert.notEqual(agent(e, 'x1').status, 'working');
+  run(e, 7 * MIN, 250);
+  e.handleEvent(ev('SubagentStart', { agent_id: 'x2', agent_type: 'executor' }));
+  assert.equal(e.agents.size, 0);
+});
+
+test('끝난 세션도 다시 시작(SessionStart)하면 정상으로 돌아온다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('Stop'));
+  e.endSession(SID);
+  run(e, 7 * MIN, 250);
+  e.handleEvent(ev('SessionStart', { source: 'resume' }));
+  assert.ok(agent(e, 'lead'));
+  run(e, 7 * MIN, 250);
+  assert.ok(agent(e, 'lead'), '다시 시작한 세션은 5분 뒤 퇴근 예약이 남지 않는다');
 });
 
 test('같은 종류 여러 명은 번호로 구분하고 자리가 겹치지 않는다', () => {
@@ -180,22 +252,140 @@ test('외부 세션은 폴더 이름으로 표시된다', () => {
   assert.equal(agent(e, 'lead').label, '외부 · proj');
 });
 
-test('끝 이벤트 없이 조용해진 외부 세션은 정리된다 (앱 탭 세션은 유지)', () => {
-  const { e } = mk({ externalSessionIdleMs: 60000 });
+test('끝 이벤트 없이 조용해진 외부 세션은 모두 퇴근한 뒤 기록이 정리된다 (앱 탭 세션 기록은 유지)', () => {
+  const { e } = mk({ externalSessionIdleMs: 60000, idleLeaveMs: 120000 });
   e.handleEvent(ev('Stop'));
   e.handleEvent({ ...ev('Stop'), session_id: 'tab-sess' }, { label: '내 탭' });
-  run(e, 200000, 100);
+  run(e, 100000, 100);
+  assert.ok(e.sessions.has(SID), '사람이 남아 있는 동안은 기록을 지우지 않는다');
+  run(e, 100000, 100);
   assert.equal(agent(e, 'lead'), undefined);
-  assert.ok(e.agents.get('tab-sess:lead'));
+  assert.equal(e.sessions.has(SID), false);
+  assert.ok(e.sessions.has('tab-sess'));
 });
 
-test('SubagentStop 이 오지 않은 하위 에이전트는 휴게실로 보낸다', () => {
-  const { e } = mk({ subagentSilentMs: 30000 });
+test('신호가 끊긴 작업 중 하위 에이전트는 20분 뒤 휴게실, 40분 뒤 퇴근한다', () => {
+  const { e } = mk();
   e.handleEvent(ev('SubagentStart', { agent_id: 'x1', agent_type: 'executor' }));
-  run(e, 60000);
+  run(e, 21 * MIN, 250);
   const a = agent(e, 'x1');
   assert.equal(a.status, 'resting');
   assert.equal(e.roomAt(a.x, a.y), 'rest');
+  run(e, 18 * MIN, 250);
+  assert.ok(agent(e, 'x1'), '휴게실로 간 뒤 20분 전에는 남는다');
+  run(e, 3 * MIN, 250);
+  assert.equal(agent(e, 'x1'), undefined);
+});
+
+test('신호가 끊긴 작업 중 팀장도 20분 뒤 휴게실, 40분 뒤 퇴근한다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('UserPromptSubmit', { prompt: '오래 걸리는 일' }));
+  run(e, 21 * MIN, 250);
+  const lead = agent(e, 'lead');
+  assert.equal(lead.status, 'away');
+  assert.equal(e.roomAt(lead.x, lead.y), 'rest');
+  run(e, 18 * MIN, 250);
+  assert.ok(agent(e, 'lead'));
+  run(e, 3 * MIN, 250);
+  assert.equal(agent(e, 'lead'), undefined);
+});
+
+test('확인을 기다리는 하위 에이전트는 신호가 없어도 휴게실로 가지 않는다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('SubagentStart', { agent_id: 'x1', agent_type: 'executor' }), { label: 'proj' });
+  e.handleEvent(ev('PermissionRequest', { agent_id: 'x1', agent_type: 'executor', tool_name: 'Bash' }), { label: 'proj' });
+  run(e, 45 * MIN, 250);
+  assert.equal(agent(e, 'x1').status, 'working');
+  assert.equal(agent(e, 'x1').bubble.kind, 'alert');
+});
+
+test('화면이 멈춘 동안에도 퇴근 시간은 실제 시계로 잰다', () => {
+  let clock = 0;
+  const e = new OfficeEngine(layout, { random: seeded(), now: () => clock });
+  e.handleEvent(ev('SubagentStart', { agent_id: 'busy', agent_type: 'executor' }));
+  e.handleEvent(ev('SubagentStart', { agent_id: 'done', agent_type: 'Explore' }));
+  e.handleEvent(ev('SubagentStop', { agent_id: 'done', agent_type: 'Explore' }));
+  // 창이 최소화돼 update() 가 불리지 않는 30분 동안에도 hook 신호는 계속 들어온다.
+  for (let i = 0; i < 30; i++) {
+    clock += MIN;
+    e.handleEvent(ev('PreToolUse', { agent_id: 'busy', agent_type: 'executor', tool_name: 'Edit', tool_input: { file_path: 'a.js' } }));
+  }
+  e.update(16);
+  assert.equal(agent(e, 'busy').status, 'working', '계속 신호를 보낸 에이전트는 일하는 중으로 남는다');
+  // 창이 돌아오면 멈춰 있던 보고를 마저 하고, 이미 20분이 지났으므로 곧바로 퇴근한다.
+  for (let t = 0; t < MIN; t += 50) { clock += 50; e.update(50); }
+  assert.equal(agent(e, 'done'), undefined);
+  assert.equal(agent(e, 'busy').status, 'working');
+});
+
+test('답변 후 「입력 대기」 알림(idle_prompt)은 팀장 퇴근을 막지 않는다', () => {
+  const { e } = mk({ leadIdleToRestMs: 20000 });
+  e.handleEvent(ev('UserPromptSubmit', { prompt: 'x' }));
+  e.handleEvent(ev('Stop'));
+  run(e, MIN, 250);
+  e.handleEvent(ev('Notification', { notification_type: 'idle_prompt', message: 'Claude is waiting for your input' }));
+  run(e, 22 * MIN, 250);
+  assert.equal(agent(e, 'lead'), undefined);
+});
+
+test('하위 에이전트가 확인을 기다리는 동안 팀장도 퇴근하지 않는다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('UserPromptSubmit', { prompt: 'x' }), { label: 'proj' });
+  e.handleEvent(ev('PreToolUse', { tool_name: 'Agent', tool_input: { subagent_type: 'executor', description: 'y' } }), { label: 'proj' });
+  e.handleEvent(ev('SubagentStart', { agent_id: 'x1', agent_type: 'executor' }), { label: 'proj' });
+  e.handleEvent(ev('PermissionRequest', { agent_id: 'x1', agent_type: 'executor', tool_name: 'Bash' }), { label: 'proj' });
+  run(e, 45 * MIN, 250);
+  assert.ok(agent(e, 'lead'));
+  assert.equal(agent(e, 'lead').status, 'working');
+});
+
+test('확인 대기 중 끊긴 외부 세션도 결국 모두 퇴근하고 기록이 정리된다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('SubagentStart', { agent_id: 'x1', agent_type: 'executor' }));
+  e.handleEvent(ev('PermissionRequest', { agent_id: 'x1', agent_type: 'executor', tool_name: 'Bash' }));
+  run(e, 75 * MIN, 250);
+  assert.equal(e.agents.size, 0);
+  assert.equal(e.sessions.has(SID), false);
+});
+
+test('세션 종료 시각도 실제 시계로 잰다 (창이 멈춘 뒤 종료돼도 5분을 기다린다)', () => {
+  let clock = 0;
+  const e = new OfficeEngine(layout, { random: seeded(), now: () => clock });
+  e.handleEvent(ev('SubagentStart', { agent_id: 'x1', agent_type: 'executor' }), { label: 'proj' });
+  clock += 10 * MIN; // 창이 최소화된 동안 claude 가 종료됨
+  e.endSession(SID);
+  const tick = (ms) => { for (let t = 0; t < ms; t += 50) { clock += 50; e.update(50); } };
+  tick(4 * MIN);
+  assert.notEqual(agent(e, 'x1').status, 'leaving');
+  tick(2 * MIN);
+  assert.ok(!agent(e, 'x1') || agent(e, 'x1').status === 'leaving', '5분이 지나면 퇴근한다');
+});
+
+test('외부 세션 기록이 지워진 뒤 다시 와도 팀장 외형은 같다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('Stop'));
+  const look = agent(e, 'lead').appearance;
+  run(e, 40 * MIN, 250);
+  assert.equal(e.sessions.has(SID), false);
+  e.handleEvent(ev('UserPromptSubmit', { prompt: '다시' }));
+  assert.deepEqual(agent(e, 'lead').appearance, look);
+});
+
+test('퇴근 대기 중 다시 시작한 세션은 「세션 종료」 작업명이 남지 않는다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('SubagentStart', { agent_id: 'x1', agent_type: 'executor' }));
+  e.endSession(SID);
+  e.handleEvent(ev('SessionStart', { source: 'resume' }));
+  assert.ok([...e.agents.values()].every((a) => !a.task.includes('세션 종료')));
+});
+
+test('실제 시계를 써도 update(dt) 로 빨리 감을 수 있다 (화면 검증 스크립트용)', () => {
+  const e = new OfficeEngine(layout, { random: seeded(), now: () => 0 });
+  e.handleEvent(ev('SubagentStart', { agent_id: 'x1', agent_type: 'Explore' }));
+  run(e, 20000);
+  e.handleEvent(ev('SubagentStop', { agent_id: 'x1', agent_type: 'Explore' }));
+  run(e, 40000);
+  assert.equal(agent(e, 'x1').status, 'resting');
 });
 
 test('팀장 결과 공유 중 Stop 이 오면 공유 후 대기 상태가 된다', () => {

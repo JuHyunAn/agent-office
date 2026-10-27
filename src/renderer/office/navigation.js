@@ -13,6 +13,7 @@ export class Navigation {
   }
 
   isWalkable(p) {
+    if (this.layout.isWalkable) return this.layout.isWalkable(p);
     const b = this.layout.walkBounds;
     if (p.x < b.x || p.y < b.y || p.x > b.x + b.w || p.y > b.y + b.h) return false;
     const hall = this.layout.hallway;

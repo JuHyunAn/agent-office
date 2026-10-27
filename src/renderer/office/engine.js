@@ -9,16 +9,20 @@ import { createAppearance } from './appearance.js';
 export const TIMING = {
   speed: 150, // 논리 좌표 px/초
   handoffWindowMs: 30000, // 이 시간 안에 다음 에이전트가 시작하면 「결과 공유」로 연출 (추정)
-  restBeforeLeaveMs: 180000, // 휴게실에서 이만큼 쉬면 퇴근
+  idleLeaveMs: 20 * 60000, // 작업 중이 아닌 상태가 이만큼 이어지면 퇴근
+  sessionEndGraceMs: 5 * 60000, // 세션이 끝나면 휴게실에 모였다가 이만큼 뒤 다 같이 퇴근
   leadIdleToRestMs: 150000, // 팀장이 이만큼 한가하면 휴게실로
   bubbleMs: 4500,
   idleMinMs: 5000,
   idleMaxMs: 12000,
   maxShares: 3,
   externalSessionIdleMs: 30 * 60000, // 앱 탭이 아닌 세션이 이만큼 조용하면 끝난 것으로 본다 (강제 종료·크래시 대비)
-  subagentSilentMs: 20 * 60000, // 하위 에이전트 이벤트가 이만큼 없으면 휴게실로 (SubagentStop 누락 대비)
+  silentWorkMs: 20 * 60000, // 작업 중인데 이벤트가 이만큼 없으면 휴게실로 (Stop 누락 대비) — 그 뒤 idleLeaveMs 가 지나면 퇴근
 };
 
+const ENDED_TASK = '세션 종료 · 퇴근 대기';
+// 사용자가 답해야 진행되는 알림만 퇴근을 막는다 (답변 후 「입력 대기」 알림 등은 제외).
+const NON_BLOCKING_NOTIFICATIONS = new Set(['idle_prompt', 'auth_success']);
 const CHAT = ['☕ 커피 맛있네요', '💬 아까 그 버그 말이죠…', '😴 잠깐만 쉴게요', '🍪 간식 드실래요?', '📈 오늘 순조롭네요', '🎧 음악 듣는 중', '🌿 화분 물 줬어요'];
 const SITTING_ROOMS = new Set(['lead', 'analysis', 'planning', 'dev', 'review', 'skills']);
 
@@ -36,9 +40,13 @@ export class OfficeEngine {
     this.timing = { ...TIMING, ...(opts.timing || {}) };
     this.roleOverrides = opts.roleOverrides || {};
     this.onFeed = opts.onFeed || null;
-    this.time = 0;
+    // now 를 주면 시간이 실제 시계보다 늦지 않는다 — 창이 최소화돼 update() 가 멈춰도 퇴근 시간이 밀리지 않게.
+    this.now = opts.now || null;
+    this.time = this.now ? this.now() : 0;
     this.agents = new Map();
     this.sessions = new Map();
+    this.closed = new Set(); // 퇴근까지 끝난 세션 — 늦게 온 이벤트로 다시 출근시키지 않는다
+    this.leadLooks = new Map(); // 세션별 팀장 외형 — 세션 기록이 지워진 뒤 다시 와도 같은 사람으로
     this.seats = new Map();
     this.feed = [];
   }
@@ -48,11 +56,26 @@ export class OfficeEngine {
   handleEvent(ev, meta = {}) {
     const sid = ev && ev.session_id;
     if (!sid) return;
+    this.sync();
+    if (ev.hook_event_name === 'SessionStart') {
+      // 같은 세션을 다시 시작(/resume 등)하면 퇴근 예약을 거둔다.
+      this.closed.delete(sid);
+      const prev = this.sessions.get(sid);
+      if (prev && prev.endedAt != null) {
+        prev.endedAt = null;
+        for (const a of this.agents.values()) if (a.sessionId === sid && a.task === ENDED_TASK) a.task = '';
+      }
+    } else if (this.closed.has(sid) || this.sessions.get(sid)?.endedAt != null) {
+      return;
+    }
     const s = this.ensureSession(sid, meta, ev);
     s.lastEventAt = this.time;
     this.dispatch(s, ev);
     const sub = ev.agent_id && this.agents.get(`${sid}:${ev.agent_id}`);
     if (sub) sub.lastEventAt = this.time;
+    // 팀장은 세션 안의 누가 일하든 자리를 지킨다 (백그라운드 에이전트 포함).
+    const lead = this.agents.get(`${sid}:lead`);
+    if (lead) lead.lastEventAt = this.time;
   }
 
   dispatch(s, ev) {
@@ -71,15 +94,23 @@ export class OfficeEngine {
     }
   }
 
+  // 세션이 끝나면(탭 삭제·claude 종료·/clear·SessionEnd) 모두 일을 멈추고 휴게실에 모였다가
+  // sessionEndGraceMs 뒤 다 같이 퇴근한다 (expire 가 처리).
   endSession(sessionId) {
+    this.sync(); // app.js 가 직접 부르므로 창이 멈춰 있던 동안의 시간도 반영한다
+    const s = this.sessions.get(sessionId);
+    if (!s) { this.closed.add(sessionId); return; }
+    if (s.endedAt != null) return;
+    s.endedAt = this.time;
     for (const a of this.agents.values()) {
       if (a.sessionId !== sessionId || a.status === 'leaving') continue;
       this.interrupt(a);
       a.skill = null;
-      a.status = 'leaving';
-      a.queue.push({ op: 'say', text: '👋 퇴근합니다', kind: 'info', ms: 3000 }, { op: 'leave' });
+      a.finishedAt = null;
+      if (a.bubble && a.bubble.kind === 'alert') a.bubble = null; // 답할 세션이 없다
+      a.task = ENDED_TASK;
+      this.rest(a);
     }
-    this.sessions.delete(sessionId);
   }
 
   // 테마가 바뀌면 배치도도 바뀐다 — 사람은 그대로 두고 같은 방의 새 자리로 옮긴다.
@@ -100,9 +131,14 @@ export class OfficeEngine {
     }
   }
 
+  sync() {
+    if (this.now) this.time = Math.max(this.time, this.now());
+  }
+
   update(dtMs) {
-    const dt = Math.max(0, Math.min(dtMs, 250));
-    this.time += dt;
+    const dt = Math.max(0, Math.min(dtMs, 250)); // 이동은 한 번에 최대 0.25초만큼만 (창 복귀 시 순간이동 방지)
+    // 실제 시계보다 늦지 않게 따라잡되, update(dt) 로 빨리 감는 것도 허용한다 (시간은 되돌아가지 않음).
+    this.time = this.now ? Math.max(this.time + dt, this.now()) : this.time + dt;
     this.expire();
     for (const a of [...this.agents.values()]) {
       if (a.bubble && a.bubble.until <= this.time) a.bubble = null;
@@ -111,20 +147,59 @@ export class OfficeEngine {
     }
   }
 
-  // 끝 이벤트가 오지 않은 세션·에이전트가 영원히 남지 않게 정리한다.
+  // 퇴근 규칙과, 끝 이벤트가 오지 않은 세션·에이전트 정리.
   expire() {
+    const t = this.timing;
     for (const s of [...this.sessions.values()]) {
-      if (s.external && this.time - s.lastEventAt > this.timing.externalSessionIdleMs) this.endSession(s.id);
+      // 끝 이벤트 없이 조용해진 외부 세션: 확인 요청도 더는 답할 곳이 없다고 보고,
+      // 사람은 아래 퇴근 규칙이 내보내며, 모두 떠난 뒤 기록만 지운다.
+      if (s.endedAt == null && s.external && this.time - s.lastEventAt > t.externalSessionIdleMs) {
+        const crew = [...this.agents.values()].filter((a) => a.sessionId === s.id);
+        for (const a of crew) if (a.bubble && a.bubble.kind === 'alert') a.bubble = null;
+        if (!crew.length) this.sessions.delete(s.id);
+      }
+      if (s.endedAt != null && this.time - s.endedAt >= t.sessionEndGraceMs) {
+        for (const a of this.agents.values()) if (a.sessionId === s.id && a.status !== 'leaving') this.goHome(a);
+        this.sessions.delete(s.id);
+        this.closed.add(s.id);
+      }
     }
-    for (const a of this.agents.values()) {
-      if (a.isLead || a.status !== 'working' || a.path.length || a.queue.length) continue;
-      if (this.time - (a.lastEventAt ?? 0) <= this.timing.subagentSilentMs) continue;
-      a.task = '응답 없음 · 휴식';
-      a.skill = null;
-      a.queue.push({ op: 'goSeat', room: 'rest' }, { op: 'status', status: 'resting' });
-      a.status = 'resting';
-      a.restSince = this.time;
+    for (const a of [...this.agents.values()]) {
+      if (a.status === 'leaving' || this.sessions.get(a.sessionId)?.endedAt != null) continue;
+      if (this.waitingOnUser(a)) continue;
+      // 하위 에이전트가 사용자 확인을 기다리는 동안 팀장도 자리를 지킨다.
+      if (a.isLead && [...this.agents.values()].some((b) => b.sessionId === a.sessionId && this.waitingOnUser(b))) continue;
+      if (a.status === 'working') {
+        if (a.path.length || a.queue.length || this.time - a.lastEventAt <= t.silentWorkMs) continue;
+        a.task = '응답 없음 · 휴식';
+        a.skill = null;
+        a.idleSince = this.time; // 휴게실에 간 때부터 다시 idleLeaveMs 를 잰다 (합계 40분)
+        this.rest(a);
+      } else if (a.status === 'idle' || a.status === 'resting' || a.status === 'away') {
+        if (this.time - Math.max(a.lastEventAt, a.idleSince ?? 0) >= t.idleLeaveMs) this.goHome(a);
+      }
     }
+  }
+
+  // 일을 멈추고 휴게실로 간다 (팀장은 「잠깐 휴식」).
+  rest(a) {
+    const status = a.isLead ? 'away' : 'resting';
+    a.queue.push({ op: 'goSeat', room: 'rest' }, { op: 'status', status });
+    a.status = status;
+    a.restSince = this.time;
+    a.nextIdleAt = this.time + this.idleDelay();
+  }
+
+  waitingOnUser(a) {
+    return !!(a.bubble && a.bubble.kind === 'alert' && a.bubble.blocking);
+  }
+
+  goHome(a) {
+    this.interrupt(a);
+    a.skill = null;
+    if (a.bubble && a.bubble.kind === 'alert') a.bubble = null; // 「퇴근합니다」가 가려지지 않게
+    a.status = 'leaving';
+    a.queue.push({ op: 'say', text: '👋 퇴근합니다', kind: 'info', ms: 3000 }, { op: 'leave' });
   }
 
   snapshot() {
@@ -198,6 +273,8 @@ export class OfficeEngine {
     a = this.newAgent({ key, sessionId: s.id, isLead: true, type: 'lead', label: s.label, role: 'lead' });
     a.status = 'idle';
     a.colorIndex = -1;
+    // 퇴근했다 다시 출근해도 같은 사람으로 보이게 세션별로 외형을 기억한다.
+    if (this.leadLooks.has(s.id)) a.appearance = this.leadLooks.get(s.id); else this.leadLooks.set(s.id, a.appearance);
     this.allocSeat(a, 'lead');
     this.say(a, '👋 출근했습니다', 'info', 2500);
     a.queue.push({ op: 'goSeat', room: 'lead' });
@@ -237,6 +314,8 @@ export class OfficeEngine {
       task: '',
       bubble: null,
       finishedAt: null,
+      lastEventAt: this.time,
+      idleSince: null,
       restSince: null,
       nextIdleAt: 0,
       talkUntil: 0,
@@ -352,6 +431,7 @@ export class OfficeEngine {
     // 확인 요청은 자리로 불러오기만 한다 (팀장을 「작업 중」으로 바꾸지 않음).
     this.wake(actor, actor.isLead ? 'idle' : 'working');
     this.say(actor, text, 'alert', Infinity);
+    actor.bubble.blocking = ev.hook_event_name === 'PermissionRequest' || !NON_BLOCKING_NOTIFICATIONS.has(ev.notification_type);
     this.pushFeed(`${s.label}: ${text}`);
   }
 
@@ -598,11 +678,6 @@ export class OfficeEngine {
     }
 
     if (a.status !== 'resting' && a.status !== 'away') return;
-    if (a.status === 'resting' && this.time - a.restSince > this.timing.restBeforeLeaveMs) {
-      a.status = 'leaving';
-      a.queue.push({ op: 'say', text: '👋 퇴근합니다', kind: 'info', ms: 3000 }, { op: 'leave' });
-      return;
-    }
     if (this.time < a.nextIdleAt) return;
     a.nextIdleAt = this.time + this.idleDelay();
 

@@ -74,6 +74,42 @@
   },
   "hotPaths": [
     {
+      "path": "src/renderer/office/engine.js",
+      "accessCount": 27,
+      "lastAccessed": 1793081177872,
+      "type": "file"
+    },
+    {
+      "path": "test/engine.test.js",
+      "accessCount": 11,
+      "lastAccessed": 1793081191178,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/app.js",
+      "accessCount": 3,
+      "lastAccessed": 1793080817764,
+      "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 3,
+      "lastAccessed": 1793080828699,
+      "type": "directory"
+    },
+    {
+      "path": "src",
+      "accessCount": 2,
+      "lastAccessed": 1793080940281,
+      "type": "directory"
+    },
+    {
+      "path": "src/renderer/office/view.js",
+      "accessCount": 2,
+      "lastAccessed": 1793080949784,
+      "type": "file"
+    },
+    {
       "path": "src/main/main.cjs",
       "accessCount": 1,
       "lastAccessed": 1793063753354,
@@ -122,18 +158,6 @@
       "type": "file"
     },
     {
-      "path": "src/renderer/office/engine.js",
-      "accessCount": 1,
-      "lastAccessed": 1793063760574,
-      "type": "file"
-    },
-    {
-      "path": "src/renderer/app.js",
-      "accessCount": 1,
-      "lastAccessed": 1793063761098,
-      "type": "file"
-    },
-    {
       "path": "src/renderer/office/life.js",
       "accessCount": 1,
       "lastAccessed": 1793063761591,
@@ -158,10 +182,16 @@
       "type": "file"
     },
     {
-      "path": "src/renderer/office/view.js",
+      "path": "CUSTOMIZING.md",
       "accessCount": 1,
-      "lastAccessed": 1793063774881,
+      "lastAccessed": 1793074319167,
       "type": "file"
+    },
+    {
+      "path": "src/main",
+      "accessCount": 1,
+      "lastAccessed": 1793080948759,
+      "type": "directory"
     }
   ],
   "userDirectives": []

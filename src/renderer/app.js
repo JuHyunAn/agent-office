@@ -48,7 +48,7 @@ const state = {
 };
 
 let theme = getTheme(store.get('ao.theme', 'pixel-office'));
-const engine = new OfficeEngine(theme.layout, { onFeed: addFeed, timing: { leadIdleToRestMs: 20000, restBeforeLeaveMs: Infinity } });
+const engine = new OfficeEngine(theme.layout, { onFeed: addFeed, now: () => performance.now(), timing: { leadIdleToRestMs: 20000 } });
 const view = new OfficeView($('#office'), engine, theme, { tooltip: $('#tooltip'), onState({ zoom, playerTask, headcount, environment, interactionMenu, heldItem }) {
   $('#zoom-level').textContent = `${zoom}%`;
   $('#zoom-out').disabled = zoom <= 100;

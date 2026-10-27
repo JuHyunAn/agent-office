@@ -16,7 +16,7 @@ export class OfficeView {
     this.onState = onState;
     this.camera = new OfficeCamera();
     this.environment = new OfficeEnvironment();
-    this.life = theme.layout.interactions ? new OfficeLife(theme.layout, engine) : null;
+    this.life = theme.createLife ? theme.createLife(theme.layout, engine) : theme.layout.interactions ? new OfficeLife(theme.layout, engine) : null;
     this.view = { scale: 1, ox: 0, oy: 0, dpr: 1 };
     this.last = 0;
     this.running = false;
@@ -64,20 +64,23 @@ export class OfficeView {
   // load() 가 실패하면 예외를 그대로 올린다 — 호출자가 이전 테마를 유지한다.
   async setTheme(theme) {
     if (theme.load) await theme.load();
+    this.theme.unmount?.();
     const layoutChanged = theme.layout !== this.theme.layout;
     this.theme = theme;
     if (layoutChanged) {
       this.engine.setLayout(theme.layout);
-      this.life = theme.layout.interactions ? new OfficeLife(theme.layout, this.engine) : null;
+      this.life = theme.createLife ? theme.createLife(theme.layout, this.engine) : theme.layout.interactions ? new OfficeLife(theme.layout, this.engine) : null;
       this.camera = new OfficeCamera();
     }
     this.resize();
+    if (this.running) theme.mount?.(this);
   }
 
   async start() {
     if (this.running) return;
     if (this.theme.load) await this.theme.load();
     this.running = true;
+    this.theme.mount?.(this);
     this.resize();
     this.last = performance.now();
     requestAnimationFrame(this.frame);
@@ -110,6 +113,7 @@ export class OfficeView {
   fit() { this.camera.fit(); this.syncCamera(); }
   chooseDrink(id) { const chosen = this.life?.chooseDrink(id); this.notify(); return chosen; }
   closeInteractionMenu() { this.life?.closeMenu(); this.notify(); }
+  environmentSnapshot() { const actual = this.environment?.snapshot(); return this.theme.resolveEnvironment?.(actual) || actual; }
   focusPlayer() {
     if (!this.life || !this.theme.project) return;
     this.camera.zoomAt(1.8 / this.camera.zoom);
@@ -117,6 +121,7 @@ export class OfficeView {
   }
 
   clickAt(x, y) {
+    if (this.theme.editor?.editing) return;
     if (!this.life || !this.theme.unproject) return;
     const scene = this.camera.toScene(x, y);
     const item = this.theme.hitTest?.(scene.x, scene.y);
@@ -130,7 +135,7 @@ export class OfficeView {
   notify(headcount) {
     if (!this.onState) return;
     const state = { zoom: Math.round(this.camera.zoom * 100), playerTask: this.life?.player.task || '',
-      environment: this.environment?.snapshot(),
+      environment: this.environmentSnapshot(),
       interactionMenu: this.life?.menu || null,
       heldItem: this.life?.player.heldItem ? `${this.life.player.heldItem.label} · ${Math.ceil((this.life.player.heldItem.until - this.life.time) / 1000)}초` : '',
       headcount: headcount ?? this.engine.snapshot().filter(a => a.status !== 'leaving').length };
@@ -159,15 +164,16 @@ export class OfficeView {
     const { scale, ox, oy, dpr } = this.view;
     const L = theme.layout;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.fillStyle = theme.sceneBackground?.(this.environment?.snapshot()) || theme.background || '#17171c';
+    ctx.fillStyle = theme.sceneBackground?.(this.environmentSnapshot()) || theme.background || '#17171c';
     ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+    const backdropDrawn = theme.drawBackdrop?.(ctx, this.canvas.width, this.canvas.height) || false;
     ctx.setTransform(dpr * scale, 0, 0, dpr * scale, dpr * ox, dpr * oy);
 
     const sessions = this.engine.snapshot();
     const agents = [...sessions, ...(this.life?.snapshot() || [])].sort((a, b) => a.y - b.y);
     this.notify(sessions.filter(a => a.status !== 'leaving').length);
     if (theme.drawScene) {
-      theme.drawScene(ctx, agents, t, { environment: this.environment?.snapshot(), effects: this.life?.effects, destination: this.life?.destination, doors: this.life?.doors, hoveredItem: this.hoverAt ? theme.hitTest?.((this.hoverAt.x - ox) / scale, (this.hoverAt.y - oy) / scale)?.id : null });
+      theme.drawScene(ctx, agents, t, { backdropDrawn, environment: this.environmentSnapshot(), effects: this.life?.effects, destination: this.life?.destination, doors: this.life?.doors, hoveredItem: this.hoverAt ? theme.hitTest?.((this.hoverAt.x - ox) / scale, (this.hoverAt.y - oy) / scale)?.id : null });
       this.updateTooltip(agents);
       return;
     }
@@ -185,6 +191,7 @@ export class OfficeView {
 
   updateTooltip(agents) {
     if (!this.tooltip) return;
+    if (this.theme.editor?.editing) { this.tooltip.hidden = true; return; }
     if (!this.hoverAt) { this.tooltip.hidden = true; return; }
     const { scale, ox, oy } = this.view;
     const lx = (this.hoverAt.x - ox) / scale;

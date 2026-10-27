@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node scripts/start.mjs",
     "test": "node --test \"test/*.test.js\"",
-    "test:renderer": "node scripts/check-renderer.cjs"
+    "test:renderer": "node scripts/check-renderer.cjs",
+    "test:custom": "node scripts/check-custom-office.cjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",

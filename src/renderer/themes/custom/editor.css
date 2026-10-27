@@ -1,0 +1,32 @@
+/* 새 테마에서만 왼쪽 사무실 아래에 제작 바를 배치한다. */
+body.custom-office-active .layout { grid-template-rows: minmax(200px, 1fr) auto; }
+body.custom-office-active .office-pane { grid-column: 1; grid-row: 1; }
+body.custom-office-active .office-toolbar { padding: 8px 20px; }
+body.custom-office-active .office-toolbar .eyebrow { display: none; }
+body.custom-office-active .office-toolbar h2 { font-size: 17px; margin: 0; }
+body.custom-office-active .feed-panel { display: none; }
+body.custom-office-active .cli-pane { grid-column: 2; grid-row: 1 / 3; }
+.custom-builder { grid-column: 1; grid-row: 2; min-width: 0; background: #f9f5eb; border-top: 1px solid #d3c7b0; border-right: 1px solid var(--line); box-shadow: 0 -4px 20px #3445340b; padding: 8px 18px 5px; }
+.custom-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.custom-name-editor { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 6px; font-size: 11px; color: #627a75; }
+.custom-name-editor label { display: flex; align-items: center; gap: 8px; }
+.custom-name-editor input { width: 200px; max-width: 100%; padding: 5px 8px; border: 1px solid #d9cfbd; border-radius: 6px; background: #fffcf5; color: #536461; font: inherit; }
+.custom-environment { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 20px; min-height: 94px; padding: 12px 8px; font-size: 11px; color: #627a75; }
+.custom-environment label { display: flex; align-items: center; gap: 6px; }
+.custom-environment select { padding: 3px 6px; font-size: 11px; }
+.custom-builder button, .custom-builder select { border: 1px solid #d9cfbd; border-radius: 6px; padding: 5px 10px; background: #fffcf5; color: #536461; }
+.custom-builder button:hover { background: #edf1e7; border-color: #91aaa0; }
+.custom-builder button:disabled { opacity: .4; cursor: default; }
+.custom-builder button:focus-visible { outline: 2px solid #4c9888; outline-offset: 1px; }
+.custom-builder [data-action="mode"] { background: #416e65; color: #fff8e5; border-color: #416e65; font-weight: bold; }
+.custom-builder [data-action="mode"]:hover { background: #315c53; }
+.custom-builder [aria-pressed="true"] { background: #dfebdf; border-color: #739a89; }
+.custom-meta { color: #8a7966; font-size: 11px; padding: 5px 0 2px; }
+.custom-categories { display: flex; gap: 6px; margin: 2px 0; }
+.custom-categories button { border: 0; padding: 2px 12px; font-size: 11px; }
+.custom-materials { display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; overscroll-behavior: contain; touch-action: none; user-select: none; scrollbar-width: thin; padding: 3px 0 5px; }
+.custom-materials .custom-material { flex: 0 0 98px; height: 83px; padding: 0 4px 4px; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; background: #f1ecdf; cursor: grab; }
+.custom-material canvas { width: 90px; height: 61px; pointer-events: none; image-rendering: pixelated; }
+.custom-material span { font-size: 11px; pointer-events: none; }
+.custom-status { font-size: 11px; color: #627a75; min-height: 17px; padding-top: 2px; }
+@media (max-height: 800px) { body.custom-office-active .layout { grid-template-rows: minmax(170px, 1fr) auto; } .custom-materials .custom-material { height: 65px; } .custom-material canvas { height: 46px; width: 68px; } .custom-builder { padding-top: 4px; } }
