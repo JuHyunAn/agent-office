@@ -87,16 +87,12 @@ async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows }) {
   if (mode === 'login') {
     args = ['auth', 'login'];
   } else {
-    args = ['--settings', sessionSettingsPath];
     if (mode === 'resume') {
       if (!UUID_RE.test(String(resumeId))) throw new Error('잘못된 세션 ID');
-      // 같은 세션을 두 곳에서 이어 쓰면 기록이 섞이므로 항상 복제(fork)해서 이어받는다.
-      args.push('--resume', resumeId, '--fork-session');
     } else {
       sessionId = crypto.randomUUID();
-      args.push('--session-id', sessionId);
     }
-    if (label) args.push('-n', String(label).slice(0, 60));
+    args = claudeCli.tabArgs({ settingsPath: sessionSettingsPath, mode, resumeId, sessionId, label });
   }
   const cmd = claudeCli.commandFor(claude, args);
   ptys.create({ tabId, cwd, cols, rows, file: cmd.file, args: cmd.args, env: cleanEnv({ AGENT_OFFICE_TAB: tabId }) });

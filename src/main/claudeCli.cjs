@@ -64,6 +64,16 @@ function commandFor(loc, args) {
   return { file: 'cmd.exe', args: `/d /s /c "${[loc.cmdShim, ...args].map(cmdQuote).join(' ')}"` };
 }
 
+// 앱 탭에서 띄우는 claude 인자. 기본 모드로 시작하고 Bypass Permissions 는 Shift+Tab 선택지로만 열어 둔다.
+function tabArgs({ settingsPath, mode, resumeId, sessionId, label }) {
+  const args = ['--settings', settingsPath, '--allow-dangerously-skip-permissions'];
+  // 같은 세션을 두 곳에서 이어 쓰면 기록이 섞이므로 항상 복제(fork)해서 이어받는다.
+  if (mode === 'resume') args.push('--resume', resumeId, '--fork-session');
+  else args.push('--session-id', sessionId);
+  if (label) args.push('-n', String(label).slice(0, 60));
+  return args;
+}
+
 function runClaude(loc, args) {
   const c = commandFor(loc, args);
   if (typeof c.args !== 'string') return run(c.file, c.args);
@@ -95,4 +105,4 @@ async function authStatus(loc) {
   }
 }
 
-module.exports = { locate, version, authStatus, exeFromCmdShim, commandFor };
+module.exports = { locate, version, authStatus, exeFromCmdShim, commandFor, tabArgs };

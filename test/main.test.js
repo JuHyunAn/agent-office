@@ -10,7 +10,7 @@ import { toolPhrase } from '../src/renderer/office/phrases.js';
 const require = createRequire(import.meta.url);
 const hs = require('../src/main/hookSettings.cjs');
 const { startHookServer, createDeduper, toEvent } = require('../src/main/hookServer.cjs');
-const { exeFromCmdShim, commandFor } = require('../src/main/claudeCli.cjs');
+const { exeFromCmdShim, commandFor, tabArgs } = require('../src/main/claudeCli.cjs');
 const { cleanEnv } = require('../src/main/env.cjs');
 
 test('역할 분류', () => {
@@ -74,6 +74,15 @@ test('cmd.exe 경유 명령줄: 전체 재인용 · 특수문자 무력화', () 
   assert.equal(c.file, 'cmd.exe');
   assert.equal(c.args, '/d /s /c ""C:\\Users\\John Smith\\npm\\claude.cmd" "--settings" "C:\\a b\\s.json" "-n" "R&D PATH x""');
   assert.deepEqual(commandFor({ file: 'C:\\c.exe', prefixArgs: [] }, ['--version']), { file: 'C:\\c.exe', args: ['--version'] });
+});
+
+test('앱 탭 claude 는 기본 모드로 시작하되 Bypass Permissions 를 선택지로 연다', () => {
+  const fresh = tabArgs({ settingsPath: 'C:\\s.json', mode: 'new', sessionId: 'sid', label: 'proj' });
+  assert.deepEqual(fresh, ['--settings', 'C:\\s.json', '--allow-dangerously-skip-permissions', '--session-id', 'sid', '-n', 'proj']);
+  assert.ok(!fresh.includes('--dangerously-skip-permissions'), '처음부터 Bypass 로 켜지 않는다');
+  const resumed = tabArgs({ settingsPath: 'C:\\s.json', mode: 'resume', resumeId: 'rid', label: 'x'.repeat(80) });
+  assert.deepEqual(resumed.slice(0, 6), ['--settings', 'C:\\s.json', '--allow-dangerously-skip-permissions', '--resume', 'rid', '--fork-session']);
+  assert.equal(resumed[7].length, 60);
 });
 
 test('tool_input 은 필요한 필드만 짧게 넘긴다', () => {
