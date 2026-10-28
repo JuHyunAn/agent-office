@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"grep -rn \\\"mockup\\\\|목업\\\\|bgCache\\\\|unmount\\\" --include=*.md --include=*.cjs --include=*.mjs --include=*.js . 2>/dev/null | grep -v node_modules | grep -v \\\"^./.omc\\\" | grep -v \\\"drinks/REA...",
+  "error": "Exit code 2\n./scripts/check-custom-office.cjs:39:    assert.equal(await js(`(async()=>{const {getTheme}=await import('./themes/index.js');return getTheme('mockup').id;})()`), 'pixel-office');\n./src/renderer/office/view.js:75:    this.theme.unmount?.(theme); // 다음 테마를 알려 같은 배치를 쓰는 테마끼리는 캐시를 유지하게 한다\n./src/renderer/themes/custom/editor.js:79:  unmount() {\n./src/renderer/themes/custom/theme.js:40:  unmount() { this.editor.unmount(); },\n./src/renderer/themes/mockup/layout.js:1:// 목업 테마 배치도 (논리 좌표 120...",
+  "timestamp": "2026-10-28T08:02:57.788Z",
+  "retry_count": 1
+}

@@ -118,21 +118,33 @@
   },
   "hotPaths": [
     {
+      "path": "src/renderer/app.js",
+      "accessCount": 39,
+      "lastAccessed": 1793175030742,
+      "type": "file"
+    },
+    {
       "path": "src/main/main.cjs",
       "accessCount": 37,
       "lastAccessed": 1793166845021,
       "type": "file"
     },
     {
-      "path": "src/renderer/app.js",
-      "accessCount": 32,
-      "lastAccessed": 1793170298139,
+      "path": "src/renderer/collab/panel.js",
+      "accessCount": 21,
+      "lastAccessed": 1793175074054,
       "type": "file"
     },
     {
       "path": "src/renderer/styles.css",
-      "accessCount": 15,
-      "lastAccessed": 1793166793676,
+      "accessCount": 18,
+      "lastAccessed": 1793175075615,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/office/view.js",
+      "accessCount": 16,
+      "lastAccessed": 1793175076955,
       "type": "file"
     },
     {
@@ -142,15 +154,15 @@
       "type": "file"
     },
     {
-      "path": "src/renderer/collab/panel.js",
-      "accessCount": 12,
-      "lastAccessed": 1793166784093,
-      "type": "file"
-    },
-    {
       "path": "src/renderer/collab/moderator.js",
       "accessCount": 11,
       "lastAccessed": 1793165422335,
+      "type": "file"
+    },
+    {
+      "path": "scripts/check-renderer.cjs",
+      "accessCount": 11,
+      "lastAccessed": 1793174017779,
       "type": "file"
     },
     {
@@ -163,6 +175,12 @@
       "path": "test/codex.test.js",
       "accessCount": 10,
       "lastAccessed": 1793166443529,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/pixel-office/theme.js",
+      "accessCount": 10,
+      "lastAccessed": 1793174184441,
       "type": "file"
     },
     {
@@ -184,21 +202,57 @@
       "type": "file"
     },
     {
+      "path": "",
+      "accessCount": 8,
+      "lastAccessed": 1793174010605,
+      "type": "directory"
+    },
+    {
+      "path": "src/renderer/themes/pixel-office/atmosphere.js",
+      "accessCount": 8,
+      "lastAccessed": 1793174185960,
+      "type": "file"
+    },
+    {
       "path": "src/renderer/index.html",
       "accessCount": 7,
       "lastAccessed": 1793166795226,
       "type": "file"
     },
     {
-      "path": "src/renderer/office/view.js",
+      "path": "scripts/check-custom-office.cjs",
+      "accessCount": 7,
+      "lastAccessed": 1793173974098,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer",
+      "accessCount": 7,
+      "lastAccessed": 1793174050011,
+      "type": "directory"
+    },
+    {
+      "path": "src",
+      "accessCount": 7,
+      "lastAccessed": 1793175027238,
+      "type": "directory"
+    },
+    {
+      "path": "src/renderer/themes/pixel-office/exterior.js",
       "accessCount": 6,
-      "lastAccessed": 1793170290698,
+      "lastAccessed": 1793174172126,
       "type": "file"
     },
     {
       "path": "src/main/hookServer.cjs",
       "accessCount": 5,
       "lastAccessed": 1793157519099,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/custom/editor.js",
+      "accessCount": 5,
+      "lastAccessed": 1793173653304,
       "type": "file"
     },
     {
@@ -214,27 +268,15 @@
       "type": "file"
     },
     {
-      "path": "src/renderer/themes/custom/editor.js",
-      "accessCount": 4,
-      "lastAccessed": 1793152148527,
-      "type": "file"
-    },
-    {
       "path": "src/main/preload.cjs",
       "accessCount": 4,
       "lastAccessed": 1793165469010,
       "type": "file"
     },
     {
-      "path": "src/renderer",
+      "path": "src/renderer/themes/custom/theme.js",
       "accessCount": 4,
-      "lastAccessed": 1793166776602,
-      "type": "directory"
-    },
-    {
-      "path": "scripts/check-custom-office.cjs",
-      "accessCount": 3,
-      "lastAccessed": 1793152116446,
+      "lastAccessed": 1793173958011,
       "type": "file"
     },
     {
@@ -256,22 +298,16 @@
       "type": "file"
     },
     {
-      "path": "scripts/check-renderer.cjs",
-      "accessCount": 3,
-      "lastAccessed": 1793170282902,
-      "type": "file"
-    },
-    {
       "path": "src/renderer/office/life.js",
       "accessCount": 3,
       "lastAccessed": 1793170305712,
       "type": "file"
     },
     {
-      "path": "",
-      "accessCount": 2,
-      "lastAccessed": 1793165486481,
-      "type": "directory"
+      "path": "src/renderer/themes/custom/art.js",
+      "accessCount": 3,
+      "lastAccessed": 1793173652373,
+      "type": "file"
     },
     {
       "path": "output/design/collab-chat.png",
@@ -286,9 +322,33 @@
       "type": "file"
     },
     {
-      "path": "src/renderer/themes/custom/art.js",
+      "path": "src/renderer/themes/custom/life.js",
       "accessCount": 2,
-      "lastAccessed": 1793168969378,
+      "lastAccessed": 1793173664459,
+      "type": "file"
+    },
+    {
+      "path": "test",
+      "accessCount": 2,
+      "lastAccessed": 1793173789780,
+      "type": "directory"
+    },
+    {
+      "path": "src/renderer/themes/pixel-office/plain.js",
+      "accessCount": 2,
+      "lastAccessed": 1793173946932,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/pixel-office/citypop.js",
+      "accessCount": 2,
+      "lastAccessed": 1793173948178,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/index.js",
+      "accessCount": 2,
+      "lastAccessed": 1793173959456,
       "type": "file"
     },
     {
@@ -328,22 +388,10 @@
       "type": "directory"
     },
     {
-      "path": "test",
-      "accessCount": 1,
-      "lastAccessed": 1793165296904,
-      "type": "directory"
-    },
-    {
       "path": "src/renderer/layout.js",
       "accessCount": 1,
       "lastAccessed": 1793166818353,
       "type": "file"
-    },
-    {
-      "path": "src",
-      "accessCount": 1,
-      "lastAccessed": 1793166836296,
-      "type": "directory"
     },
     {
       "path": "output/design/collab-wide.png",
@@ -352,39 +400,9 @@
       "type": "file"
     },
     {
-      "path": "src/renderer/themes/pixel-office/exterior.js",
-      "accessCount": 1,
-      "lastAccessed": 1793168941001,
-      "type": "file"
-    },
-    {
-      "path": "src/renderer/themes/pixel-office/atmosphere.js",
-      "accessCount": 1,
-      "lastAccessed": 1793168941687,
-      "type": "file"
-    },
-    {
-      "path": "src/renderer/themes/custom/theme.js",
-      "accessCount": 1,
-      "lastAccessed": 1793168968645,
-      "type": "file"
-    },
-    {
       "path": "src/renderer/office/engine.js",
       "accessCount": 1,
       "lastAccessed": 1793168979922,
-      "type": "file"
-    },
-    {
-      "path": "src/renderer/themes/custom/life.js",
-      "accessCount": 1,
-      "lastAccessed": 1793169024175,
-      "type": "file"
-    },
-    {
-      "path": "src/renderer/themes/pixel-office/theme.js",
-      "accessCount": 1,
-      "lastAccessed": 1793169064123,
       "type": "file"
     },
     {

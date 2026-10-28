@@ -263,7 +263,7 @@ function renderThemes() {
   sel.addEventListener('change', async () => {
     const next = getTheme(sel.value);
     try {
-      await view.setTheme(next);
+      if (!(await view.setTheme(next))) return; // 그 사이 다른 테마를 골랐다
       theme = next;
       store.set('ao.theme', theme.id); // 불러오기에 성공한 테마만 기억한다
     } catch (e) {

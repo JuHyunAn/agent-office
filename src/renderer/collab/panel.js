@@ -9,6 +9,8 @@ const STATUS_TEXT = {
   stopped: '⏸ 중단됨 — 메시지를 보내면 이어서 진행합니다',
   error: '⚠ 오류 — 메시지를 보내면 다시 시도합니다',
 };
+// 화면에는 최근 메시지만 그린다 — 한 탭에서 오래 대화해도 화면 요소가 끝없이 늘지 않게. (AI 에게 보내는 내용과는 무관)
+const FOLD = 50;
 const TARGETS = [{ value: 'all', label: '모두에게' }, { value: 'claude', label: 'Claude 에게' }, { value: 'codex', label: 'Codex 에게' }];
 
 function node(tag, props = {}, ...children) {
@@ -77,7 +79,7 @@ export function createCollabPanel({ api, roomId, cwd, onStatus = () => {} }) {
     node('div', { class: 'collab-row collab-models' }, agentPrefs('claude'), agentPrefs('codex')),
     node('div', { class: 'collab-row collab-sub' }, status, catalogNote, node('span', { class: 'collab-cwd', title: cwd }, cwd)));
 
-  const log = node('div', { class: 'collab-log', role: 'log', 'aria-live': 'polite' });
+  const log = node('div', { class: 'collab-log', role: 'log', 'aria-live': 'polite', tabindex: '-1' });
   const target = select(TARGETS, 'all', () => {}, '받는 사람');
   const input = node('textarea', { rows: 3, placeholder: '메시지 입력 · Enter 보내기 · Shift+Enter 줄바꿈 · @claude / @codex 로 지정 · 대화 중에도 끼어들 수 있어요' });
   const submit = () => {
@@ -96,6 +98,9 @@ export function createCollabPanel({ api, roomId, cwd, onStatus = () => {} }) {
   const root = node('div', { class: 'collab' }, header, log, composer);
 
   const nodes = [];
+  let shown = FOLD, first = 0; // first: 화면에 그린 첫 메시지 위치
+  const more = node('button', { type: 'button', class: 'collab-more', hidden: true, onclick: () => { shown += FOLD; schedule(); } });
+  log.append(more);
   function messageNode(m) {
     const meta = m.model ? [labelOf(m.from, m.model), m.effort && (EFFORT_LABEL[m.effort] || m.effort)].filter(Boolean).join(' · ') : '';
     const tools = (m.tools || []).slice(-6).map((t) => node('li', {}, toolPhrase(t.name, t.input) || t.name));
@@ -106,19 +111,34 @@ export function createCollabPanel({ api, roomId, cwd, onStatus = () => {} }) {
       tools.length ? node('ul', { class: 'msg-tools' }, tools) : null,
       node('div', { class: 'msg-body' }, m.text || (m.streaming ? '생각 중…' : '(내용 없음)')));
   }
+  const keyOf = (m) => `${m.text.length}/${m.tools?.length || 0}/${m.streaming ? 1 : 0}`;
   function render() {
     const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-    mod.messages.forEach((m, i) => {
-      const key = `${m.text.length}/${m.tools?.length || 0}/${m.streaming ? 1 : 0}`;
-      if (nodes[i]?.key === key) return;
+    const start = Math.max(0, mod.messages.length - shown), expanded = start < first;
+    if (expanded) {
+      // 더 펼치면 새로 드러난 메시지만 맨 위에 끼워 넣고, 읽던 위치를 그대로 둔다.
+      const added = document.createDocumentFragment(), before = log.scrollHeight;
+      for (let i = start; i < first; i++) { const m = mod.messages[i], n = messageNode(m); added.append(n); nodes[i] = { el: n, key: keyOf(m) }; }
+      more.after(added);
+      log.scrollTop += log.scrollHeight - before;
+    } else for (let i = first; i < start; i++) { nodes[i]?.el.remove(); nodes[i] = null; }
+    first = start;
+    if (!start && document.activeElement === more) log.focus({ preventScroll: true }); // 마지막으로 펼쳐 버튼이 사라져도 포커스가 대화창에 남게
+    more.hidden = !start;
+    const moreText = `이전 대화 ${start}개 접힘 · ${Math.min(FOLD, start)}개 더 보기`;
+    if (more.textContent !== moreText) more.textContent = moreText; // 같은 문구를 다시 쓰면 화면 읽기 프로그램이 반복해 읽는다
+    for (let i = start; i < mod.messages.length; i++) {
+      const m = mod.messages[i];
+      const key = keyOf(m);
+      if (nodes[i]?.key === key) continue;
       const n = messageNode(m);
       if (nodes[i]) nodes[i].el.replaceWith(n); else log.append(n);
       nodes[i] = { el: n, key };
-    });
+    }
     status.textContent = mod.status === 'running' ? `${NAMES[mod.running]} ${STATUS_TEXT.running}…` : STATUS_TEXT[mod.status];
     status.className = `collab-status ${mod.status}`;
     stopBtn.disabled = mod.status !== 'running';
-    if (atBottom) log.scrollTop = log.scrollHeight;
+    if (atBottom && !expanded) log.scrollTop = log.scrollHeight; // 펼친 직후에는 드러난 메시지를 보여 준다
     onStatus(mod.status);
   }
   render();

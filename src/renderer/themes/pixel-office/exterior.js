@@ -116,5 +116,9 @@ export function createExterior({ width, height, project }) {
       if (visible) { ctx.save(); ctx.imageSmoothingEnabled = false; ctx.drawImage(frame, 0, 0, width, height); ctx.restore(); }
       return frame;
     },
+    release() {
+      for (const c of [cached?.canvas, frame]) if (c) c.width = c.height = 0;
+      cached = frame = null;
+    },
   };
 }

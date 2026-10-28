@@ -149,6 +149,9 @@ body.resizing-cli iframe, body.resizing-cli canvas, body.resizing-cli .xterm { p
 .collab-catalog { color: #9c968d; font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .collab-cwd { color: #6f6b66; font-size: 10px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .collab-log { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+.collab-log:focus:not(:focus-visible) { outline: none; }
+.collab-more { align-self: center; background: transparent; border: 1px dashed #44444c; border-radius: 12px; color: #9c968d; font-size: 11px; padding: 3px 12px; cursor: pointer; }
+.collab-more:hover { color: #e4ddd1; border-color: #6f6b66; }
 .msg { border: 1px solid #33333a; border-radius: 6px; padding: 7px 10px; background: #222228; }
 .msg.from-user { background: #2b2a24; border-color: #4a4637; margin-left: 24px; }
 .msg.from-claude { border-left: 3px solid #d97757; }

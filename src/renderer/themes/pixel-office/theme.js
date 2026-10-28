@@ -338,6 +338,14 @@ function washroom(ctx) {
 }
 
 let floorCache, shadedFloorCache, frameCanvas, objects;
+// 다른 배치(커스터마이징)로 바꾸면 전체 화면 크기 캐시를 반납한다. 음료·도시 원화는 다른 테마도 쓰므로 남긴다.
+function releaseCaches() {
+  for (const c of [floorCache, shadedFloorCache, frameCanvas]) if (c) c.width = c.height = 0;
+  floorCache = shadedFloorCache = frameCanvas = objects = null;
+  atmosphere.release(); exterior.release();
+}
+// 배치도의 상호작용 목록은 바뀌지 않으므로 겹친 항목 우선순위를 한 번만 정한다.
+const HIT_ORDER = [...layout.interactions].sort((a, b) => b.x + b.y - a.x - a.y);
 
 function buildFloor() {
   const canvas = document.createElement('canvas'); canvas.width = WIDTH * DETAIL; canvas.height = HEIGHT * DETAIL;
@@ -552,7 +560,7 @@ export default {
     return { x: (dx + dy) / 2, y: (dy - dx) / 2 };
   },
   hitTest(x, y) {
-    return [...layout.interactions].sort((a, b) => b.x + b.y - a.x - a.y).find(item => {
+    return HIT_ORDER.find(item => {
       const points = [projectPoint(item.x, item.y, item.height), projectPoint(item.x + item.w, item.y), projectPoint(item.x, item.y + item.d), projectPoint(item.x + item.w, item.y + item.d)];
       return x / 2 >= Math.min(...points.map(p => p.x)) - 5 && x / 2 <= Math.max(...points.map(p => p.x)) + 5
         && y / 2 >= Math.min(...points.map(p => p.y)) - 5 && y / 2 <= Math.max(...points.map(p => p.y)) + 5;
@@ -573,6 +581,7 @@ export default {
     if (!objects) objects = cacheObjects(buildObjects());
     if (!frameCanvas) { frameCanvas = document.createElement('canvas'); frameCanvas.width = WIDTH * DETAIL; frameCanvas.height = HEIGHT * DETAIL; }
   },
+  unmount(next) { if (next?.layout !== layout) releaseCaches(); },
   drawScene(ctx, agents, t, state = {}) {
     const pixel = frameCanvas.getContext('2d');
     pixel.setTransform(DETAIL, 0, 0, DETAIL, 0, 0);

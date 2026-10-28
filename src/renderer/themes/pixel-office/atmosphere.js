@@ -140,6 +140,11 @@ export function createAtmosphere({ width, height, detail, project }) {
       });
     },
 
+    // 다른 배치의 테마로 바꾸면 큰 레이어를 반납한다 (다시 쓰면 load 가 새로 만든다).
+    release() {
+      for (const c of [shade, sunlight, sunsetLight, floorShadows, overcast, simpleView?.canvas]) if (c) c.width = c.height = 0;
+      shade = sunlight = sunsetLight = floorShadows = overcast = simpleView = null;
+    },
     drawWindows(ctx, t, env, background, style) {
       if (style === 'simple') {
         const key = `${Boolean(env.night)}:${Boolean(env.sunset)}:${['rain', 'snow', 'fog', 'cloudy'].includes(env.condition)}`;

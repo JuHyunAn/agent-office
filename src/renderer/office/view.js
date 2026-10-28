@@ -70,9 +70,12 @@ export class OfficeView {
   }
 
   // load() 가 실패하면 예외를 그대로 올린다 — 호출자가 이전 테마를 유지한다.
+  // 불러오는 사이 다른 테마가 요청되면 마지막 요청만 반영하고 false 를 돌려준다 (반납한 캐시를 쓰는 테마가 남지 않게).
   async setTheme(theme) {
-    if (theme.load) await theme.load();
-    this.theme.unmount?.();
+    const request = this.themeRequest = (this.themeRequest || 0) + 1;
+    try { if (theme.load) await theme.load(); } catch (e) { if (request !== this.themeRequest) return false; throw e; } // 밀려난 요청의 실패는 알리지 않는다
+    if (request !== this.themeRequest) return false;
+    this.theme.unmount?.(theme); // 다음 테마를 알려 같은 배치를 쓰는 테마끼리는 캐시를 유지하게 한다
     const layoutChanged = theme.layout !== this.theme.layout;
     this.theme = theme;
     if (layoutChanged) {
@@ -82,6 +85,7 @@ export class OfficeView {
     }
     this.resize();
     if (this.running) theme.mount?.(this);
+    return true;
   }
 
   async start() {
