@@ -3,6 +3,8 @@ import { OfficeEngine } from './office/engine.js';
 import { OfficeView } from './office/view.js';
 import { baseName } from './office/phrases.js';
 import { THEMES, getTheme } from './themes/index.js';
+import { createCollabPanel } from './collab/panel.js';
+import { setupCliResizer } from './layout.js';
 
 const api = window.office;
 const $ = (sel) => document.querySelector(sel);
@@ -43,6 +45,7 @@ const state = {
   tabs: new Map(),
   active: null,
   external: new Map(), // 앱 탭이 아닌 세션 (사용자 전역 hook 으로 들어온 것)
+  closedTabs: new Set(), // 닫은 탭 ID (탭 ID 는 다시 쓰지 않는다)
   seq: 0,
   entered: false,
 };
@@ -88,6 +91,7 @@ $('#zoom-in').addEventListener('click', () => view.zoomBy(1.25));
 $('#zoom-out').addEventListener('click', () => view.zoomBy(0.8));
 $('#zoom-fit').addEventListener('click', () => view.fit());
 $('#focus-player').addEventListener('click', () => view.focusPlayer());
+setupCliResizer($('.layout'), $('#cli-resizer'));
 
 const TERM_OPTS = {
   fontFamily: '"Cascadia Mono", Consolas, "D2Coding", "Malgun Gothic", monospace',
@@ -290,29 +294,41 @@ function uniqueLabel(base) {
   for (let i = 2; ; i++) if (!names.has(`${base} #${i}`)) return `${base} #${i}`;
 }
 
-async function openTab({ cwd, mode = 'new', resumeId = null }) {
+const KIND_NAME = { claude: 'Claude Code', codex: 'Codex', collab: '협업 대화' };
+const KIND_PREFIX = { claude: '', codex: 'Codex · ', collab: '협업 · ' };
+
+// kind: claude(공식 Claude Code 화면) · codex(공식 Codex 화면) · collab(Claude + Codex 협업 대화)
+async function openTab({ cwd, mode = 'new', resumeId = null, kind = 'claude' }) {
   const id = `t${Date.now().toString(36)}${(state.seq++).toString(36)}`;
-  const label = uniqueLabel(baseName(cwd) || cwd);
-  const { term, fit } = newTerminal();
+  const label = uniqueLabel(`${KIND_PREFIX[kind]}${baseName(cwd) || cwd}`);
   const pane = el('div', { class: 'pane' });
   $('#panes').append(pane);
   const dot = el('span', { class: 'dot' });
-  const btn = el('button', { class: 'tab', title: cwd, onclick: () => activate(id) },
+  const btn = el('button', { class: `tab kind-${kind}`, title: `${KIND_NAME[kind]} · ${cwd}`, onclick: () => activate(id) },
     dot, el('span', { class: 'name' }, label),
     el('span', { class: 'close', title: '탭 닫기', onclick: (e) => { e.stopPropagation(); closeTab(id); } }, '×'));
   $('#tabs').append(btn);
+  store.set('ao.recent', [cwd, ...store.get('ao.recent', []).filter((p) => p !== cwd)].slice(0, 8));
 
   // sessions: 이 탭에서 나온 모든 세션 (탭 안에서 실행한 중첩 claude 포함) — 탭을 닫을 때 함께 정리한다.
-  const tab = { id, label, cwd, mode, sessionId: null, sessions: new Set(), term, fit, pane, btn, dot, status: 'idle', exited: false };
+  const tab = { id, kind, label, cwd, mode, sessionId: null, sessions: new Set(), term: null, fit: null, panel: null, pane, btn, dot, status: 'idle', exited: false };
   state.tabs.set(id, tab);
+  if (kind === 'collab') {
+    pane.classList.add('pane-collab');
+    tab.panel = createCollabPanel({ api, roomId: id, cwd, onStatus: (s) => setTabStatus(tab, s === 'running' ? 'working' : s === 'question' ? 'alert' : 'idle') });
+    pane.append(tab.panel.root);
+    activate(id);
+    return;
+  }
+  const { term, fit } = newTerminal();
+  Object.assign(tab, { term, fit });
   term.open(pane);
   term.onData((d) => { if (!tab.exited) api.writePty(id, d); });
   new ResizeObserver(() => fitTab(tab)).observe(pane);
   activate(id);
-  store.set('ao.recent', [cwd, ...store.get('ao.recent', []).filter((p) => p !== cwd)].slice(0, 8));
 
   try {
-    const r = await api.createPty({ tabId: id, cwd, mode, resumeId, label, cols: term.cols, rows: term.rows });
+    const r = await api.createPty({ tabId: id, cwd, mode, resumeId, label, cli: kind, cols: term.cols, rows: term.rows });
     if (r.sessionId) { tab.sessionId = tab.sessionId || r.sessionId; tab.sessions.add(r.sessionId); }
   } catch (e) {
     tab.exited = true;
@@ -322,7 +338,7 @@ async function openTab({ cwd, mode = 'new', resumeId = null }) {
 }
 
 function fitTab(tab) {
-  if (state.active !== tab.id || tab.pane.hidden) return;
+  if (!tab.term || state.active !== tab.id || tab.pane.hidden) return;
   try {
     tab.fit.fit();
     if (!tab.exited) api.resizePty(tab.id, tab.term.cols, tab.term.rows);
@@ -339,18 +355,21 @@ function activate(id) {
   $('#empty').hidden = state.tabs.size > 0;
   const tab = state.tabs.get(id);
   if (tab) {
-    if (tab.status === 'alert') setTabStatus(tab, 'idle');
-    requestAnimationFrame(() => { fitTab(tab); tab.term.focus(); });
+    if (tab.status === 'alert' && !tab.panel) setTabStatus(tab, 'idle');
+    requestAnimationFrame(() => { fitTab(tab); if (tab.panel) tab.panel.focus(); else tab.term.focus(); });
   }
 }
 
 async function closeTab(id) {
   const tab = state.tabs.get(id);
   if (!tab) return;
-  if (!tab.exited && !window.confirm(`「${tab.label}」 탭을 닫으면 그 Claude Code 세션도 종료됩니다. 닫을까요?`)) return;
+  const what = tab.kind === 'collab' ? '협업 대화(Claude·Codex)' : `${KIND_NAME[tab.kind]} 세션`;
+  if (!tab.exited && !window.confirm(`「${tab.label}」 탭을 닫으면 그 ${what}도 종료됩니다. 닫을까요?`)) return;
   state.tabs.delete(id);
-  await api.killPty(id);
-  tab.term.dispose();
+  state.closedTabs.add(id);
+  if (state.closedTabs.size > 200) state.closedTabs.delete(state.closedTabs.values().next().value); // 오래 켜 둬도 끝없이 늘지 않게
+  if (tab.panel) await api.collabClose(id);
+  else { await api.killPty(id); tab.term.dispose(); }
   tab.pane.remove();
   tab.btn.remove();
   endTabSessions(tab);
@@ -375,21 +394,25 @@ function endTabSessions(tab) {
 }
 
 function onHookEvent(ev) {
+  // 닫은 탭의 늦은 이벤트(Codex hook 은 PowerShell 을 거쳐 늦게 오기도 한다)는 버린다 — 유령 캐릭터·외부 세션 오인 방지.
+  if (ev._tab && state.closedTabs.has(ev._tab)) return;
   const tab = tabForEvent(ev);
   let label = null;
   if (tab && ev.session_id) {
     if (!tab.sessionId) {
       tab.sessionId = ev.session_id; // 이어받기(복제) 탭은 첫 이벤트에서 세션 ID 를 알게 된다
-    } else if (tab.sessionId !== ev.session_id && ev.hook_event_name === 'SessionStart'
-      && (ev.source === 'clear' || ev.source === 'resume')) {
+    } else if (tab.kind !== 'collab' && tab.sessionId !== ev.session_id && ev.hook_event_name === 'SessionStart'
+      && (ev.source === 'clear' || ev.source === 'resume' || tab.kind === 'codex')) { // Codex 탭은 하위 세션 없이 /new 등으로만 바뀐다
       engine.endSession(tab.sessionId); // /clear·/resume 로 탭의 대화가 바뀜
       tab.sessions.delete(tab.sessionId);
       tab.sessionId = ev.session_id;
     }
     tab.sessions.add(ev.session_id);
     label = ev.session_id === tab.sessionId ? tab.label : `${tab.label} · 하위`;
+    // 협업 대화는 Claude·Codex 두 세션이 한 탭에 있다 — 각각 팀장 캐릭터로 표시하고, 탭 상태는 대화창이 정한다.
+    if (tab.kind === 'collab') label = `${tab.label} · ${ev._cli === 'codex' ? 'Codex' : 'Claude'}`;
   }
-  if (tab && ev.session_id === tab.sessionId) {
+  if (tab && tab.kind !== 'collab' && ev.session_id === tab.sessionId) {
     const name = ev.hook_event_name;
     if (name === 'Notification' || name === 'PermissionRequest') {
       setTabStatus(tab, 'alert');
@@ -398,11 +421,17 @@ function onHookEvent(ev) {
     } else if (!tab.exited) {
       setTabStatus(tab, 'working');
     }
-  } else if (!tab && ev._tab !== 'login') {
+  } else if (!tab && ev._tab !== 'login' && ev._cli !== 'codex') { // 외부 세션 목록은 Claude 이어받기용
     const prev = state.external.get(ev.session_id) || {};
     state.external.set(ev.session_id, { sessionId: ev.session_id, cwd: ev.cwd || prev.cwd || '', at: Date.now() });
     if (ev.hook_event_name === 'SessionEnd') state.external.delete(ev.session_id);
+    // 새 탭 대화상자는 6시간 안의 세션만 보여 준다 — 그보다 오래된 기록은 지워 끝없이 늘지 않게 한다.
+    for (const [sid, x] of state.external) if (Date.now() - x.at > 6 * 3600 * 1000) state.external.delete(sid);
   }
+  // 협업 대화의 Codex 는 턴마다 실행·종료되고 Claude 도 모델을 바꿀 때 다시 뜬다 — 그때의 SessionEnd 로 퇴근시키지 않는다 (탭을 닫으면 정리).
+  if (tab?.kind === 'collab' && ev.hook_event_name === 'SessionEnd') return;
+  // 협업 대화가 AI 에게 보내는 프롬프트에는 진행 규칙·이전 발언이 붙는다 — 사무실에는 사용자의 실제 요청만 보여 준다.
+  if (tab?.kind === 'collab' && ev.hook_event_name === 'UserPromptSubmit') ev = { ...ev, prompt: tab.panel.moderator.lastUserText() || ev.prompt };
   engine.handleEvent(ev, { label });
   updateHeadcount();
 }
@@ -411,26 +440,53 @@ api.onHookEvent(onHookEvent);
 api.onPtyData(({ tabId, data }) => {
   if (tabId === 'login') { if (gateTerm) gateTerm.term.write(data); return; }
   const tab = state.tabs.get(tabId);
-  if (tab) tab.term.write(data);
+  if (tab?.term) tab.term.write(data);
 });
+api.onCollabEvent(({ roomId, agent, ...ev }) => state.tabs.get(roomId)?.panel?.handle(agent, ev));
 api.onPtyExit(({ tabId, exitCode }) => {
   if (tabId === 'login') { refreshStatus(); return; }
   const tab = state.tabs.get(tabId);
-  if (!tab) return;
+  if (!tab?.term) return;
   tab.exited = true;
   setTabStatus(tab, 'exited');
-  tab.term.write(`\r\n\x1b[90m[Claude Code 종료 · 코드 ${exitCode}] 탭을 닫거나 ＋ 로 새로 여세요.\x1b[0m\r\n`);
+  tab.term.write(`\r\n\x1b[90m[${KIND_NAME[tab.kind]} 종료 · 코드 ${exitCode}] 탭을 닫거나 ＋ 로 새로 여세요.\x1b[0m\r\n`);
   endTabSessions(tab);
 });
 
 // ───────────────────────── 새 탭 대화상자 ─────────────────────────
 
+const KIND_HINT = {
+  claude: '공식 Claude Code 화면을 엽니다.',
+  codex: '공식 Codex 화면을 엽니다. 처음 여는 폴더는 Codex 가 신뢰 여부를 묻습니다.',
+  collab: 'Claude 와 Codex 가 한 대화창에서 의견을 주고받습니다. Bypass 모드로 실행되며(확인 없이 파일 수정·명령 실행), 언제든 끼어들거나 중단할 수 있습니다.',
+};
+
+function selectedKind() {
+  return document.querySelector('input[name="tab-kind"]:checked')?.value || 'claude';
+}
+
+function renderKindPick() {
+  const hasCodex = !!state.status?.codex;
+  const want = hasCodex ? store.get('ao.tabKind', 'claude') : 'claude';
+  for (const r of document.querySelectorAll('input[name="tab-kind"]')) {
+    r.disabled = r.value !== 'claude' && !hasCodex;
+    r.checked = r.value === want;
+  }
+  $('#kind-hint').textContent = hasCodex ? KIND_HINT[selectedKind()]
+    : `${KIND_HINT.claude} Codex 를 찾지 못해 Codex·협업 대화는 쓸 수 없습니다 (Codex 앱 또는 npm install -g @openai/codex 설치 후 앱을 다시 실행).`;
+}
+
+for (const r of document.querySelectorAll('input[name="tab-kind"]')) {
+  r.addEventListener('change', () => { store.set('ao.tabKind', selectedKind()); renderKindPick(); });
+}
+
 function openNewTabDialog() {
   const dlg = $('#newtab');
   const recent = $('#recent');
+  renderKindPick();
   recent.replaceChildren(...store.get('ao.recent', []).map((p) => el('li', {},
     el('span', { class: 'grow', title: p }, `📁 ${p}`),
-    el('button', { type: 'button', class: 'btn small', onclick: () => { dlg.close(); openTab({ cwd: p }); } }, '열기'))));
+    el('button', { type: 'button', class: 'btn small', onclick: () => { dlg.close(); openTab({ cwd: p, kind: selectedKind() }); } }, '열기'))));
 
   const g = state.status && state.status.hook && state.status.hook.global;
   $('#external-hint').textContent = g && g.installed
@@ -440,7 +496,7 @@ function openNewTabDialog() {
   const ext = [...state.external.values()].filter((x) => x.at > since && x.cwd).sort((a, b) => b.at - a.at).slice(0, 10);
   $('#external').replaceChildren(...ext.map((x) => el('li', {},
     el('span', { class: 'grow', title: x.cwd }, `🖥 ${baseName(x.cwd)} `, el('span', { class: 'sub' }, `${x.cwd} · ${ago(x.at)}`)),
-    el('button', { type: 'button', class: 'btn small', onclick: () => { dlg.close(); openTab({ cwd: x.cwd }); } }, '이 폴더에서 새 세션'),
+    el('button', { type: 'button', class: 'btn small', onclick: () => { dlg.close(); openTab({ cwd: x.cwd, kind: selectedKind() }); } }, '이 폴더에서 새 세션'),
     el('button', { type: 'button', class: 'btn small', onclick: () => { dlg.close(); openTab({ cwd: x.cwd, mode: 'resume', resumeId: x.sessionId }); } }, '이어받기(복제)'))));
   dlg.showModal();
 }
@@ -449,7 +505,7 @@ $('#pick-folder').addEventListener('click', async () => {
   const p = await api.pickFolder();
   if (!p) return;
   $('#newtab').close();
-  openTab({ cwd: p });
+  openTab({ cwd: p, kind: selectedKind() });
 });
 $('#new-tab').addEventListener('click', openNewTabDialog);
 $('#empty-new').addEventListener('click', openNewTabDialog);

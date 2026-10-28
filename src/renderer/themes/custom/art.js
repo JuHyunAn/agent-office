@@ -7,7 +7,7 @@ import { resolveEnvironment } from './environment.js';
 
 const shade = (hex, delta) => '#' + hex.slice(1).match(/../g).map(v => Math.max(0, Math.min(255, parseInt(v, 16) + delta)).toString(16).padStart(2, '0')).join('');
 export function createArt() {
-  let origin = { x: 800, y: 150 }, bounds = { width: 1600, height: 1000 }, revision = null, floorCanvas, sunsetCanvas;
+  let origin = { x: 800, y: 150 }, bounds = { width: 1600, height: 1000 }, revision = null, floorCanvas, sunsetCanvas, cacheEnv = null;
   const cache = new Map();
   const project = (x, y, z = 0) => ({ x: Math.round((origin.x + (x - y) * .36) * 2) / 2, y: Math.round((origin.y + (x + y) * .18 - z) * 2) / 2 });
   const plane = (c, item, x, y, w, d, z, color) => polygon(c, [[x, y], [x + w, y], [x + w, y + d], [x, y + d]].map(([u, v]) => { const p = localPoint(item, u, v); return project(p.x, p.y, z); }), color);
@@ -128,6 +128,9 @@ export function createArt() {
   }
   function paintCached(c, i, env) {
     const cloudy = ['rain', 'snow', 'fog', 'cloudy'].includes(env.condition);
+    // 시간대·날씨가 바뀌면 이전 그림을 버린다 — 조합마다 쌓아 두면 오래 켜 둘수록 GPU 메모리가 차오른다.
+    const envKey = `${!!env.citypop}:${!!env.sunset}:${!!env.night}:${cloudy}`;
+    if (envKey !== cacheEnv) { cache.clear(); cacheEnv = envKey; }
     const key = `${i.id}:${!!env.citypop}:${!!env.sunset}` + (i.kind.startsWith('window') ? `:${!!env.night}:${cloudy}` : env.sunset ? `:${cloudy}` : '');
     let image = cache.get(key);
     if (!image) {
@@ -227,7 +230,7 @@ export function createArt() {
       }
       for (const a of agents) {
         const p = project(a.x, a.y); c.textAlign = 'center'; c.font = '9px "Malgun Gothic"'; c.fillStyle = '#fff8e9'; c.fillRect(p.x - 26, p.y + 5, 52, 14); c.fillStyle = '#4e686b'; c.fillText(a.isPlayer ? '나' : a.label.slice(0, 10), p.x, p.y + 15);
-        if (a.bubble) { const words = a.bubble.text.split('\n').slice(0, 2).map(v => v.slice(0, 22)); const w = Math.max(...words.map(v => c.measureText(v).width)) + 16; c.fillStyle = '#fff9e9f5'; c.beginPath(); c.roundRect(p.x - w / 2, p.y - 62 - words.length * 12, w, words.length * 12 + 12, 6); c.fill(); c.fillStyle = '#53696b'; words.forEach((s, n) => c.fillText(s, p.x, p.y - 49 - (words.length - n) * 12)); }
+        if (a.bubble) { const words = a.bubble.text.split('\n').slice(0, 2).map(v => v.slice(0, 22)); const w = Math.max(...words.map(v => c.measureText(v).width)) + 16; const lift = a.cli === 'codex' && ['sit', 'type', 'read', 'run'].includes(a.pose) ? 24 : 0; c.fillStyle = '#fff9e9f5'; c.beginPath(); c.roundRect(p.x - w / 2, p.y - 62 - words.length * 12 - lift, w, words.length * 12 + 12, 6); c.fill(); c.fillStyle = '#53696b'; words.forEach((s, n) => c.fillText(s, p.x, p.y - 49 - (words.length - n) * 12 - lift)); }
       }
       if (editor?.editing) {
         for (const error of editor.errors || []) { const i = doc.items.find(i => i.id === error.id); if (i) outline(c, i, '#da6858'); }

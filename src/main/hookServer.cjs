@@ -33,8 +33,10 @@ function pickToolInput(input) {
 }
 
 // 화면에 필요한 만큼만 남긴다 (프롬프트·최종 답변 전문은 렌더러로 보내지 않는다).
-function toEvent(payload, headers, src, now = Date.now()) {
-  const tab = headers['x-office-tab'];
+// Claude 는 X-Office-Tab 헤더로, Codex(명령 hook)는 주소의 tab·cli 로 어느 탭인지 알린다.
+function toEvent(payload, headers, src, now = Date.now(), query = {}) {
+  const raw = headers['x-office-tab'] || query.tab;
+  const tab = raw && /^[a-z0-9-]{1,40}$/i.test(String(raw)) ? raw : null;
   const ev = { ...payload };
   ev.tool_input = pickToolInput(ev.tool_input);
   delete ev.tool_response;
@@ -43,8 +45,9 @@ function toEvent(payload, headers, src, now = Date.now()) {
   ev.message = clip(ev.message, 300);
   delete ev.transcript_path;
   delete ev.agent_transcript_path;
-  ev._tab = tab && !String(tab).startsWith('$') ? String(tab) : null;
+  ev._tab = tab ? String(tab) : null;
   ev._src = src || null;
+  ev._cli = query.cli === 'codex' ? 'codex' : 'claude';
   ev._at = now;
   return ev;
 }
@@ -83,7 +86,8 @@ async function startHookServer({ port, token, onEvent, host = '127.0.0.1', tries
       let payload;
       try { payload = JSON.parse(body); } catch { return; }
       if (!payload || typeof payload !== 'object' || !payload.hook_event_name) return;
-      try { onEvent(toEvent(payload, req.headers, url.searchParams.get('src'))); } catch { /* 화면 쪽 오류는 무시 */ }
+      const query = { tab: url.searchParams.get('tab'), cli: url.searchParams.get('cli') };
+      try { onEvent(toEvent(payload, req.headers, url.searchParams.get('src'), Date.now(), query)); } catch { /* 화면 쪽 오류는 무시 */ }
     });
   });
 

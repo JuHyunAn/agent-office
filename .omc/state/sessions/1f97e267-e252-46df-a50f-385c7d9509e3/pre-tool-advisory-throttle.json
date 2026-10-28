@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "entries": {
+    "79a93d4a2f8f50b95f852280616242fee1855dc99a3c75211917f55e72e95fae": {
+      "last_emitted_at_ms": 1793171707079,
+      "message": "Use parallel execution for independent tasks. Use run_in_background for long operations (npm install, builds, tests)."
+    },
+    "466399dafa2d20f60587180bad0a07358eb7f2bce724df0ff682f038ad33f5ad": {
+      "last_emitted_at_ms": 1793168939261,
+      "message": "Read multiple files in parallel when possible for faster analysis."
+    },
+    "cf723f5327991211bf468e63934ba3de80a447f2f1afa5cb873a596325647ab8": {
+      "last_emitted_at_ms": 1793168923981,
+      "message": "Spawning agent: oh-my-claudecode:code-reviewer (inherit) | Task: Review memory/fps changes"
+    }
+  },
+  "updated_at": "2026-10-28T07:15:07.079Z"
+}

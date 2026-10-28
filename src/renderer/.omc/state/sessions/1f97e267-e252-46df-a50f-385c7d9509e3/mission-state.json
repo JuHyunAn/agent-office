@@ -1,0 +1,69 @@
+{
+  "updatedAt": "2026-10-28T07:14:52.922Z",
+  "missions": [
+    {
+      "id": "session:1f97e267-e252-46df-a50f-385c7d9509e3:none",
+      "source": "session",
+      "name": "none",
+      "objective": "Session mission",
+      "createdAt": "2026-10-28T06:51:12.248Z",
+      "updatedAt": "2026-10-28T07:14:52.922Z",
+      "status": "done",
+      "workerCount": 1,
+      "taskCounts": {
+        "total": 1,
+        "pending": 0,
+        "blocked": 0,
+        "inProgress": 0,
+        "completed": 1,
+        "failed": 0
+      },
+      "agents": [
+        {
+          "name": "debugger:a085f51",
+          "role": "debugger",
+          "ownership": "a085f51af8ddd64d7",
+          "status": "done",
+          "currentStep": null,
+          "latestUpdate": "completed",
+          "completedSummary": null,
+          "updatedAt": "2026-10-28T07:14:52.922Z"
+        }
+      ],
+      "timeline": [
+        {
+          "id": "session-start:a085f51af8ddd64d7:2026-10-28T07:11:42.886Z",
+          "at": "2026-10-28T07:11:42.886Z",
+          "kind": "update",
+          "agent": "debugger:a085f51",
+          "detail": "started debugger:a085f51",
+          "sourceKey": "session-start:a085f51af8ddd64d7"
+        },
+        {
+          "id": "session-stop:a085f51af8ddd64d7:2026-10-28T07:12:47.128Z",
+          "at": "2026-10-28T07:12:47.128Z",
+          "kind": "completion",
+          "agent": "debugger:a085f51",
+          "detail": "completed",
+          "sourceKey": "session-stop:a085f51af8ddd64d7"
+        },
+        {
+          "id": "session-start:a085f51af8ddd64d7:2026-10-28T07:13:58.827Z",
+          "at": "2026-10-28T07:13:58.827Z",
+          "kind": "update",
+          "agent": "debugger:a085f51",
+          "detail": "started debugger:a085f51",
+          "sourceKey": "session-start:a085f51af8ddd64d7"
+        },
+        {
+          "id": "session-stop:a085f51af8ddd64d7:2026-10-28T07:14:52.922Z",
+          "at": "2026-10-28T07:14:52.922Z",
+          "kind": "completion",
+          "agent": "debugger:a085f51",
+          "detail": "completed",
+          "sourceKey": "session-stop:a085f51af8ddd64d7"
+        }
+      ]
+    }
+  ]
+}

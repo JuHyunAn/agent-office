@@ -199,8 +199,25 @@ if (!process.versions.electron) {
     win.setSize(1366, 768); await pause(200);
     assert.equal(await js(`document.documentElement.scrollWidth>innerWidth`), false);
     assert.equal(await checkLayout(), true);
+    // 커스텀 좌석으로 이동한 뒤에도 두 CLI의 외형이 함께 그려진다.
+    win.setSize(1600,1000);await pause(150);
+    await click(await point('[data-action="mode"]'));
+    const codexAppearance=await js(`(()=>{
+      const e=v.engine;
+      for(const cli of ['claude','codex']){
+        e.handleEvent({hook_event_name:'SessionStart',session_id:'custom-'+cli,_cli:cli},{label:cli==='codex'?'Codex':'Claude'});
+        e.handleEvent({hook_event_name:'UserPromptSubmit',session_id:'custom-'+cli,_cli:cli,prompt:'커스텀 사무실 외형 검증'});
+      }
+      e.handleEvent({hook_event_name:'SubagentStart',session_id:'custom-codex',_cli:'codex',agent_id:'worker',agent_type:'executor'});
+      for(let i=0;i<500;i++)e.update(50);v.fit();v.draw(0);
+      const pixels=v.canvas.getContext('2d').getImageData(0,0,v.canvas.width,v.canvas.height).data;let blue=0,orange=0;
+      for(let i=0;i<pixels.length;i+=4){if(pixels[i]===88&&pixels[i+1]===135&&pixels[i+2]===216)blue++;if(pixels[i]===215&&pixels[i+1]===123&&pixels[i+2]===87)orange++;}
+      return {agents:e.snapshot().map(a=>({id:a.id,cli:a.cli})),blue,orange,editing:v.theme.editor.editing};
+    })()`);
+    assert.equal(codexAppearance.editing,false);assert.equal(codexAppearance.agents.filter(a=>a.cli==='codex').length,2);assert.ok(codexAppearance.blue>20&&codexAppearance.orange>20,JSON.stringify(codexAppearance));
+    await capture('custom-office-codex-applied');
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ result: '통과', materials: 22, editing: '클릭·드래그·회전·실행 취소·동선 보정', persistence: '배치와 업로드 배경 재시작 복원', uploadedBackgroundUntouched, emptyBackground, weather, sunsetCheck, maximum, legacyLayoutUnchanged: true, consoleErrors: errors, output: OUT }, null, 2));
+    console.log(JSON.stringify({ result: '통과', materials: 22, editing: '클릭·드래그·회전·실행 취소·동선 보정', persistence: '배치와 업로드 배경 재시작 복원', uploadedBackgroundUntouched, emptyBackground, weather, sunsetCheck, maximum, codexAppearance, legacyLayoutUnchanged: true, consoleErrors: errors, output: OUT }, null, 2));
     clearTimeout(timeout); app.exit(0);
   }).catch(e => { console.error(e.stack || e); console.error(errors); clearTimeout(timeout); app.exit(1); });
 }

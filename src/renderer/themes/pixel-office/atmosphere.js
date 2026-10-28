@@ -43,7 +43,7 @@ function glow(ctx, x, y, rx, ry, rgb, strength) {
 
 export function createAtmosphere({ width, height, detail, project }) {
   let shade, warmLights, sunlight, sunsetLight, floorShadows, overcast;
-  const simpleViews = new Map();
+  let simpleView = null; // 지금 날씨의 창밖 풍경 하나만 둔다 (조합마다 쌓지 않는다)
   const layer = draw => {
     const canvas = document.createElement('canvas'); canvas.width = width * detail; canvas.height = height * detail;
     const ctx = canvas.getContext('2d'); ctx.scale(detail, detail); draw(ctx); return canvas;
@@ -143,13 +143,15 @@ export function createAtmosphere({ width, height, detail, project }) {
     drawWindows(ctx, t, env, background, style) {
       if (style === 'simple') {
         const key = `${Boolean(env.night)}:${Boolean(env.sunset)}:${['rain', 'snow', 'fog', 'cloudy'].includes(env.condition)}`;
-        if (!simpleViews.has(key)) simpleViews.set(key, layer(c => {
-          for (const pane of WINDOWS) {
-            c.save(); trace(c, windowPoints(pane, project)); c.clip();
-            drawSimpleWindow(c, pane, project, env); c.restore();
-          }
-        }));
-        background = simpleViews.get(key);
+        if (simpleView?.key !== key) {
+          simpleView = { key, canvas: layer(c => {
+            for (const pane of WINDOWS) {
+              c.save(); trace(c, windowPoints(pane, project)); c.clip();
+              drawSimpleWindow(c, pane, project, env); c.restore();
+            }
+          }) };
+        }
+        background = simpleView.canvas;
       }
       for (const pane of WINDOWS) {
         const points = windowPoints(pane, project);

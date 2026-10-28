@@ -118,15 +118,87 @@
   },
   "hotPaths": [
     {
+      "path": "src/main/main.cjs",
+      "accessCount": 37,
+      "lastAccessed": 1793166845021,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/app.js",
+      "accessCount": 32,
+      "lastAccessed": 1793170298139,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/styles.css",
+      "accessCount": 15,
+      "lastAccessed": 1793166793676,
+      "type": "file"
+    },
+    {
+      "path": "src/main/collabAgents.cjs",
+      "accessCount": 13,
+      "lastAccessed": 1793166440255,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/collab/panel.js",
+      "accessCount": 12,
+      "lastAccessed": 1793166784093,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/collab/moderator.js",
+      "accessCount": 11,
+      "lastAccessed": 1793165422335,
+      "type": "file"
+    },
+    {
+      "path": "test/collab.test.js",
+      "accessCount": 10,
+      "lastAccessed": 1793165361713,
+      "type": "file"
+    },
+    {
+      "path": "test/codex.test.js",
+      "accessCount": 10,
+      "lastAccessed": 1793166443529,
+      "type": "file"
+    },
+    {
+      "path": "src/main/codexCli.cjs",
+      "accessCount": 9,
+      "lastAccessed": 1793165382261,
+      "type": "file"
+    },
+    {
       "path": "src/renderer/office/camera.js",
       "accessCount": 8,
       "lastAccessed": 1793152092452,
       "type": "file"
     },
     {
-      "path": "src/renderer/styles.css",
-      "accessCount": 4,
-      "lastAccessed": 1793147153439,
+      "path": "README.md",
+      "accessCount": 8,
+      "lastAccessed": 1793165924782,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/index.html",
+      "accessCount": 7,
+      "lastAccessed": 1793166795226,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/office/view.js",
+      "accessCount": 6,
+      "lastAccessed": 1793170290698,
+      "type": "file"
+    },
+    {
+      "path": "src/main/hookServer.cjs",
+      "accessCount": 5,
+      "lastAccessed": 1793157519099,
       "type": "file"
     },
     {
@@ -148,15 +220,21 @@
       "type": "file"
     },
     {
-      "path": "scripts/check-custom-office.cjs",
-      "accessCount": 3,
-      "lastAccessed": 1793152116446,
+      "path": "src/main/preload.cjs",
+      "accessCount": 4,
+      "lastAccessed": 1793165469010,
       "type": "file"
     },
     {
-      "path": "src/renderer/office/view.js",
+      "path": "src/renderer",
+      "accessCount": 4,
+      "lastAccessed": 1793166776602,
+      "type": "directory"
+    },
+    {
+      "path": "scripts/check-custom-office.cjs",
       "accessCount": 3,
-      "lastAccessed": 1793152134543,
+      "lastAccessed": 1793152116446,
       "type": "file"
     },
     {
@@ -166,28 +244,52 @@
       "type": "directory"
     },
     {
-      "path": "src/renderer/index.html",
-      "accessCount": 2,
-      "lastAccessed": 1793146540077,
+      "path": "src/renderer/office/phrases.js",
+      "accessCount": 3,
+      "lastAccessed": 1793157196773,
       "type": "file"
     },
     {
-      "path": "src/renderer",
-      "accessCount": 2,
-      "lastAccessed": 1793147150156,
-      "type": "directory"
+      "path": "src/main/claudeCli.cjs",
+      "accessCount": 3,
+      "lastAccessed": 1793165299888,
+      "type": "file"
     },
     {
-      "path": "src/renderer/app.js",
-      "accessCount": 2,
-      "lastAccessed": 1793152137868,
+      "path": "scripts/check-renderer.cjs",
+      "accessCount": 3,
+      "lastAccessed": 1793170282902,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/office/life.js",
+      "accessCount": 3,
+      "lastAccessed": 1793170305712,
       "type": "file"
     },
     {
       "path": "",
-      "accessCount": 1,
-      "lastAccessed": 1793146482977,
+      "accessCount": 2,
+      "lastAccessed": 1793165486481,
       "type": "directory"
+    },
+    {
+      "path": "output/design/collab-chat.png",
+      "accessCount": 2,
+      "lastAccessed": 1793166754805,
+      "type": "file"
+    },
+    {
+      "path": "test/layout.test.js",
+      "accessCount": 2,
+      "lastAccessed": 1793166809952,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/custom/art.js",
+      "accessCount": 2,
+      "lastAccessed": 1793168969378,
+      "type": "file"
     },
     {
       "path": "src/renderer/themes/custom/editor.css",
@@ -202,15 +304,99 @@
       "type": "file"
     },
     {
-      "path": "README.md",
-      "accessCount": 1,
-      "lastAccessed": 1793146735800,
-      "type": "file"
-    },
-    {
       "path": "output/design/custom-office-editor-zoomed-out.png",
       "accessCount": 1,
       "lastAccessed": 1793152231384,
+      "type": "file"
+    },
+    {
+      "path": "src/main/env.cjs",
+      "accessCount": 1,
+      "lastAccessed": 1793156716724,
+      "type": "file"
+    },
+    {
+      "path": "src/main/hookSettings.cjs",
+      "accessCount": 1,
+      "lastAccessed": 1793156719234,
+      "type": "file"
+    },
+    {
+      "path": "src/main",
+      "accessCount": 1,
+      "lastAccessed": 1793165295932,
+      "type": "directory"
+    },
+    {
+      "path": "test",
+      "accessCount": 1,
+      "lastAccessed": 1793165296904,
+      "type": "directory"
+    },
+    {
+      "path": "src/renderer/layout.js",
+      "accessCount": 1,
+      "lastAccessed": 1793166818353,
+      "type": "file"
+    },
+    {
+      "path": "src",
+      "accessCount": 1,
+      "lastAccessed": 1793166836296,
+      "type": "directory"
+    },
+    {
+      "path": "output/design/collab-wide.png",
+      "accessCount": 1,
+      "lastAccessed": 1793167016510,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/pixel-office/exterior.js",
+      "accessCount": 1,
+      "lastAccessed": 1793168941001,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/pixel-office/atmosphere.js",
+      "accessCount": 1,
+      "lastAccessed": 1793168941687,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/custom/theme.js",
+      "accessCount": 1,
+      "lastAccessed": 1793168968645,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/office/engine.js",
+      "accessCount": 1,
+      "lastAccessed": 1793168979922,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/custom/life.js",
+      "accessCount": 1,
+      "lastAccessed": 1793169024175,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/pixel-office/theme.js",
+      "accessCount": 1,
+      "lastAccessed": 1793169064123,
+      "type": "file"
+    },
+    {
+      "path": ".claude/skills/ajh-claude-loop-engineering/SKILL.md",
+      "accessCount": 1,
+      "lastAccessed": 1793170644313,
+      "type": "file"
+    },
+    {
+      "path": "documents/etc/결정대장.md",
+      "accessCount": 1,
+      "lastAccessed": 1793170666495,
       "type": "file"
     }
   ],

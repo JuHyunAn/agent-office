@@ -50,8 +50,14 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* ── 본문: 왼쪽 사무실(고정) · 오른쪽 탭 ── */
 .layout {
   flex: 1; min-height: 0;
-  display: grid; grid-template-columns: minmax(0, 2.1fr) minmax(350px, 0.9fr);
+  display: grid; grid-template-columns: minmax(0, 2.1fr) var(--cli-width, minmax(350px, 0.9fr));
 }
+/* 오른쪽 영역 너비 조절 손잡이: 기본 너비가 최소, 왼쪽으로 끌어 넓힌다 */
+.cli-resizer { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 20; touch-action: none; }
+.cli-resizer::after { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px; background: transparent; transition: background .15s; }
+.cli-resizer:hover::after, .cli-resizer.dragging::after { background: #8a76b0; }
+body.resizing-cli { cursor: col-resize; user-select: none; }
+body.resizing-cli iframe, body.resizing-cli canvas, body.resizing-cli .xterm { pointer-events: none; }
 .office-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
 .office-stage { flex: 1; min-height: 0; position: relative; overflow: hidden; background: #eef2ed; }
 .office-stage canvas { position: absolute; inset: 0; display: block; cursor: default; touch-action: none; }
@@ -91,7 +97,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .feed li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .feed time { color: #b3a68f; margin-right: 12px; font: 10px Consolas, monospace; }
 
-.cli-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #1a1a1f; }
+.cli-pane { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #1a1a1f; }
 .terminal-heading { display: flex; align-items: center; gap: 14px; padding: 18px 20px; color: #d5d0c8; border-bottom: 1px solid #343439; font-size: 12px; }
 .terminal-heading .eyebrow { color: #817f79; }
 .terminal-local { margin-left: auto; font-size: 10px; color: #7c8478; }
@@ -113,6 +119,52 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .tab-add { border: 0; background: transparent; color: var(--muted); padding: 0 14px; font-size: 16px; }
 .tab-add:hover { color: #e4ddd1; }
 @keyframes blink { from { opacity: .45; } to { opacity: 1; } }
+
+.tab.kind-codex.active { box-shadow: inset 0 2px 0 #6fa3c9; }
+.tab.kind-collab.active { box-shadow: inset 0 2px 0 #b59ad6; }
+
+/* ── 협업 대화 (Claude + Codex) ── */
+.pane.pane-collab { padding: 0; }
+.collab { display: flex; flex-direction: column; height: 100%; color: #e4ddd1; font-size: 12px; }
+.collab-head { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-bottom: 1px solid #343439; background: #202026; }
+.collab-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }
+.collab-row label { display: flex; align-items: center; gap: 5px; color: #b9b3aa; }
+.collab select { background: #2a2a31; color: #e4ddd1; border: 1px solid #44444c; border-radius: 4px; padding: 3px 5px; font-size: 11px; }
+.collab-agent { display: flex; align-items: center; gap: 5px; }
+/* Claude·Codex 모델 선택은 항상 한 줄: 좁으면 선택 상자가 줄어든다 (긴 모델 이름은 상자 안에서 잘림) */
+.collab-models { flex-wrap: nowrap; }
+.collab-models .collab-agent { flex: 1 1 0; min-width: 0; max-width: 340px; }
+.collab-models select { min-width: 0; flex: 3 1 0; }
+.collab-models select + select { flex: 2 1 0; }
+.collab-agent b { font-size: 11px; }
+.collab-claude b, .msg.from-claude b { color: #e39a7a; }
+.collab-codex b, .msg.from-codex b { color: #8cbfe3; }
+.collab-stop { border: 1px solid #6b4040; background: #3a2626; color: #f0b4a8; border-radius: 4px; padding: 3px 10px; font-size: 11px; }
+.collab-stop:disabled { opacity: .35; cursor: default; }
+.collab-sub { justify-content: space-between; flex-wrap: nowrap; }
+.collab-status { color: #9c968d; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.collab-status.running { color: #9fd08f; }
+.collab-status.question { color: #f5c46b; }
+.collab-status.error { color: #f08a7a; }
+.collab-catalog { color: #9c968d; font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.collab-cwd { color: #6f6b66; font-size: 10px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.collab-log { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+.msg { border: 1px solid #33333a; border-radius: 6px; padding: 7px 10px; background: #222228; }
+.msg.from-user { background: #2b2a24; border-color: #4a4637; margin-left: 24px; }
+.msg.from-claude { border-left: 3px solid #d97757; }
+.msg.from-codex { border-left: 3px solid #6fa3c9; }
+.msg.from-system { background: transparent; border-style: dashed; color: #a8a29a; font-size: 11px; }
+.msg.streaming .msg-body::after { content: ' ▍'; color: #9fd08f; animation: blink .8s infinite alternate; }
+.msg-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.msg-head b { font-size: 12px; }
+.msg-meta { color: #8a857d; font-size: 10px; }
+.msg-head time { margin-left: auto; color: #6f6b66; font: 10px Consolas, monospace; }
+.msg-body { white-space: pre-wrap; word-break: break-word; line-height: 1.6; user-select: text; }
+.msg-tools { list-style: none; margin: 0 0 5px; padding: 0; color: #8f9a8a; font-size: 10px; }
+.collab-compose { display: flex; gap: 6px; align-items: flex-end; padding: 8px 12px; border-top: 1px solid #343439; background: #202026; }
+.collab-compose textarea { flex: 1; resize: none; background: #2a2a31; color: #e8e6e3; border: 1px solid #44444c; border-radius: 5px; padding: 6px 8px; font: 12px/1.5 "Malgun Gothic", "Segoe UI", sans-serif; }
+.collab-compose textarea:focus { outline: 1px solid #8a76b0; }
+.collab-compose .btn { padding: 6px 12px; }
 
 .panes { flex: 1; min-height: 0; position: relative; }
 .pane { position: absolute; inset: 0; padding: 6px 4px 4px 8px; }
@@ -162,3 +214,6 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .list .sub { color: var(--muted); font-size: 11px; }
 .hint { color: var(--muted); font-size: 12px; margin: 0; }
 .dialog-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+.kind-pick { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-bottom: 6px; }
+.kind-pick label { display: flex; align-items: center; gap: 5px; }
+.kind-pick label:has(input:disabled) { color: var(--muted); }

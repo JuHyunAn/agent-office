@@ -1,7 +1,7 @@
 {
-  "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"git status --short | grep -v \\\"\\\\.omc\\\"; node -e \\\"\\nconst asar=require('@electron/asar');const s=asar.extractFile('dist/win-unpacked/resources/app.asar','src\\\\\\\\\\\\\\\\main\\\\\\\\\\\\\\\\claudeCli....",
-  "error": "Exit code 1\nC:\\Users\\dkswn\\Desktop\\agent-office\\node_modules\\@electron\\asar\\lib\\filesystem.js:187\r\n            throw new Error(`\"${p}\" was not found in this archive`);\r\n            ^\r\n\r\nError: \"srcmainclaudeCli.cjs\" was not found in this archive\r\n    at Filesystem.getFile (C:\\Users\\dkswn\\Desktop\\agent-office\\node_modules\\@electron\\asar\\lib\\filesystem.js:187:19)\r\n    at Object.extractFile (C:\\Users\\dkswn\\Desktop\\agent-office\\node_modules\\@electron\\asar\\lib\\asar.js:256:33)\r\n    at [eval]:2:51\r\n   ...",
-  "timestamp": "2026-10-27T07:54:11.422Z",
-  "retry_count": 2
+  "tool_name": "PowerShell",
+  "tool_input_preview": "{\"command\":\"try { Wait-Process -Id 19540 -Timeout 400 -ErrorAction Stop } catch {}; Get-Date -Format HH:mm:ss; Set-Location C:\\\\Users\\\\dkswn\\\\Desktop\\\\agent-office; $sp=\\\"$env:TEMP\\\\claude\\\\c--Users-d...",
+  "error": "Exit code 1\n15:37:43\r\nexit 1\r\n\r\nC:\\Users\\dkswn\\AppData\\Local\\Temp\\claude\\c--Users-dkswn-Desktop-agent-office\\608e8b19-60ad-42a4-8ac4-935552aaadfe\\scrat\r\nchpad\\renderer3.txt:7:Error: Render frame was disposed before the request completed\r\nC:\\Users\\dkswn\\AppData\\Local\\Temp\\claude\\c--Users-dkswn-Desktop-agent-office\\608e8b19-60ad-42a4-8ac4-935552aaadfe\\scrat\r\nchpad\\renderer3.txt:8:{\"consoleErrors\":[]}\r\n\r\n\r\n\r\n15:38:44",
+  "timestamp": "2026-10-28T06:38:45.664Z",
+  "retry_count": 1
 }

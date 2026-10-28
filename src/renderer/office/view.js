@@ -1,6 +1,9 @@
 // 엔진 상태를 테마로 그리는 루프. 화면 크기에 맞춰 배치도를 비율 유지로 맞춘다.
 
 const HIT_RADIUS = 20;
+// 움직이는 것이 없을 때는 초당 15번만 그린다. 앉아 있는 동작(타이핑 등)은 0.13초마다 바뀌므로 보이는 차이가 없다.
+const IDLE_FRAME_MS = 1000 / 15;
+const INPUT_ACTIVE_MS = 500;
 const SEATED = new Set(['sit', 'type', 'read', 'run']);
 import { OfficeCamera } from './camera.js';
 import { OfficeLife } from './life.js';
@@ -21,9 +24,14 @@ export class OfficeView {
     this.last = 0;
     this.running = false;
     this.hoverAt = null;
+    this.lastDraw = 0;
+    this.lastInputAt = 0;
+    this.redraw = true;
     this.resize = this.resize.bind(this);
     this.frame = this.frame.bind(this);
     new ResizeObserver(this.resize).observe(canvas.parentElement);
+    const input = () => { this.lastInputAt = performance.now(); };
+    for (const type of ['pointerdown', 'pointermove', 'wheel', 'mouseleave']) canvas.addEventListener(type, input, { passive: true });
     canvas.addEventListener('pointerdown', e => {
       if (e.button !== 0) return;
       this.pointer = { id: e.pointerId, x: e.clientX, y: e.clientY, lastX: e.clientX, lastY: e.clientY, dragging: false };
@@ -99,12 +107,14 @@ export class OfficeView {
     this.camera ||= new OfficeCamera();
     this.camera.resize(cw, ch, L.width, L.height);
     this.view.dpr = dpr;
+    this.redraw = true; // 캔버스 크기를 다시 정하면 그림이 지워진다
     this.syncCamera();
   }
 
   syncCamera() {
     const { scale, ox, oy } = this.camera;
     this.view = { ...this.view, scale, ox, oy };
+    this.redraw = true;
     if (!this.pointer?.dragging) this.canvas.style.cursor = this.camera.zoom > 1 ? 'grab' : 'default';
     this.notify();
   }
@@ -152,13 +162,31 @@ export class OfficeView {
     try {
       this.engine.update(dt);
       this.life?.update(dt);
-      this.draw(now);
+      // 움직임이 끝난 프레임도 한 번 더 그려 마지막 위치·자세가 바로 보이게 한다.
+      const animating = this.animating(now), finishing = this.wasAnimating;
+      this.wasAnimating = animating;
+      // 60Hz 에서 4프레임 간격(66.6~66.7ms)이 기준을 아슬하게 못 넘어 5프레임으로 밀리지 않게 여유를 둔다.
+      if (this.redraw || animating || finishing || now - this.lastDraw >= IDLE_FRAME_MS - 4) {
+        this.redraw = false; this.lastDraw = now;
+        this.draw(now);
+      }
     } catch (e) {
       // 테마 그리기 오류 하나로 사무실이 멈추지 않게 한다 (같은 오류는 한 번만 기록).
       if (this.lastError !== String(e)) { this.lastError = String(e); console.error('[office]', e); }
     } finally {
       requestAnimationFrame(this.frame);
     }
+  }
+
+  // 화면에 움직이는 것이 있으면 매 프레임 그린다 (걷기·문·비/눈·효과·마우스 조작·편집).
+  animating(now) {
+    if (this.pointer || now - this.lastInputAt < INPUT_ACTIVE_MS || this.theme.editor?.editing) return true;
+    if (['rain', 'snow'].includes(this.environmentSnapshot()?.condition)) return true;
+    for (const a of this.engine.agents.values()) if (a.path.length) return true;
+    const life = this.life;
+    if (!life) return false;
+    if (life.effects.length || life.destination || life.doors.some(d => d.amount > 0 && d.amount < 1)) return true;
+    return [life.player, ...life.residents].some(a => a.path.length);
   }
 
   draw(t) {

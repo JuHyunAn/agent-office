@@ -25,6 +25,12 @@ const ENDED_TASK = '세션 종료 · 퇴근 대기';
 const NON_BLOCKING_NOTIFICATIONS = new Set(['idle_prompt', 'auth_success']);
 const CHAT = ['☕ 커피 맛있네요', '💬 아까 그 버그 말이죠…', '😴 잠깐만 쉴게요', '🍪 간식 드실래요?', '📈 오늘 순조롭네요', '🎧 음악 듣는 중', '🌿 화분 물 줬어요'];
 const SITTING_ROOMS = new Set(['lead', 'analysis', 'planning', 'dev', 'review', 'skills']);
+// 오래 켜 둬도 세션 기록이 끝없이 늘지 않게, 가장 오래된 것부터 지운다.
+const SESSION_MEMORY = 500;
+function remember(collection, key, value) {
+  if (collection instanceof Map) collection.set(key, value); else collection.add(key);
+  if (collection.size > SESSION_MEMORY) collection.delete(collection.keys().next().value);
+}
 
 function hash(s) {
   let h = 0;
@@ -99,7 +105,7 @@ export class OfficeEngine {
   endSession(sessionId) {
     this.sync(); // app.js 가 직접 부르므로 창이 멈춰 있던 동안의 시간도 반영한다
     const s = this.sessions.get(sessionId);
-    if (!s) { this.closed.add(sessionId); return; }
+    if (!s) { remember(this.closed, sessionId); return; }
     if (s.endedAt != null) return;
     s.endedAt = this.time;
     for (const a of this.agents.values()) {
@@ -161,7 +167,7 @@ export class OfficeEngine {
       if (s.endedAt != null && this.time - s.endedAt >= t.sessionEndGraceMs) {
         for (const a of this.agents.values()) if (a.sessionId === s.id && a.status !== 'leaving') this.goHome(a);
         this.sessions.delete(s.id);
-        this.closed.add(s.id);
+        remember(this.closed, s.id);
       }
     }
     for (const a of [...this.agents.values()]) {
@@ -213,6 +219,7 @@ export class OfficeEngine {
         facing: a.facing,
         moving: a.path.length > 0,
         isLead: a.isLead,
+        cli: a.cli,
         type: a.type,
         displayType: a.isLead ? 'lead' : displayType(a.type),
         role: a.isLead ? 'lead' : a.role,
@@ -254,13 +261,17 @@ export class OfficeEngine {
     let s = this.sessions.get(sid);
     const label = meta.label || (ev.cwd ? `외부 · ${baseName(ev.cwd)}` : '외부 세션');
     if (!s) {
-      s = { id: sid, label, external: !meta.label, pending: [], typeCounts: {}, lastEventAt: this.time };
+      s = { id: sid, label, cli: ev._cli === 'codex' ? 'codex' : 'claude', external: !meta.label, pending: [], typeCounts: {}, lastEventAt: this.time };
       this.sessions.set(sid, s);
     } else if (meta.label && s.label !== meta.label) {
       s.label = meta.label;
       s.external = false;
       const lead = this.agents.get(`${sid}:lead`);
       if (lead) lead.label = meta.label;
+    }
+    if ((ev._cli === 'codex' || ev._cli === 'claude') && s.cli !== ev._cli) {
+      s.cli = ev._cli;
+      for (const a of this.agents.values()) if (a.sessionId === sid) a.cli = s.cli;
     }
     return s;
   }
@@ -270,11 +281,13 @@ export class OfficeEngine {
     let a = this.agents.get(key);
     if (a && a.status !== 'leaving') return a;
     if (a) { this.agents.delete(key); this.releaseSeat(a); }
-    a = this.newAgent({ key, sessionId: s.id, isLead: true, type: 'lead', label: s.label, role: 'lead' });
+    a = this.newAgent({ key, sessionId: s.id, cli: s.cli, isLead: true, type: 'lead', label: s.label, role: 'lead' });
     a.status = 'idle';
     a.colorIndex = -1;
     // 퇴근했다 다시 출근해도 같은 사람으로 보이게 세션별로 외형을 기억한다.
-    if (this.leadLooks.has(s.id)) a.appearance = this.leadLooks.get(s.id); else this.leadLooks.set(s.id, a.appearance);
+    // 다시 출근하면 최근 기록으로 옮겨, 오래 일하는 세션의 외형이 먼저 지워지지 않게 한다.
+    if (this.leadLooks.has(s.id)) { a.appearance = this.leadLooks.get(s.id); this.leadLooks.delete(s.id); }
+    remember(this.leadLooks, s.id, a.appearance);
     this.allocSeat(a, 'lead');
     this.say(a, '👋 출근했습니다', 'info', 2500);
     a.queue.push({ op: 'goSeat', room: 'lead' });
@@ -289,7 +302,7 @@ export class OfficeEngine {
     const dt = displayType(type) || 'agent';
     s.typeCounts[dt] = (s.typeCounts[dt] || 0) + 1;
     const label = s.typeCounts[dt] > 1 ? `${dt} #${s.typeCounts[dt]}` : dt;
-    a = this.newAgent({ key, sessionId: s.id, isLead: false, type: type || 'agent', label, role: roleOf(type, this.roleOverrides) });
+    a = this.newAgent({ key, sessionId: s.id, cli: s.cli, isLead: false, type: type || 'agent', label, role: roleOf(type, this.roleOverrides) });
     a.name = dt;
     a.status = 'working';
     a.lastEventAt = this.time;
@@ -298,10 +311,10 @@ export class OfficeEngine {
     return a;
   }
 
-  newAgent({ key, sessionId, isLead, type, label, role }) {
+  newAgent({ key, sessionId, cli = 'claude', isLead, type, label, role }) {
     const e = this.layout.entrance;
     const a = {
-      key, sessionId, isLead, type, label, role,
+      key, sessionId, cli, isLead, type, label, role,
       name: label,
       colorIndex: hash(displayType(type)) % 8,
       appearance: createAppearance(this.random),

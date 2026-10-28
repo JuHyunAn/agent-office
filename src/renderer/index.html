@@ -43,7 +43,8 @@
     </section>
 
     <section class="cli-pane">
-      <div class="terminal-heading"><span class="eyebrow">TERMINAL</span><span>Claude Code</span><span class="terminal-local">로컬 세션</span></div>
+      <div id="cli-resizer" class="cli-resizer" role="separator" aria-orientation="vertical" aria-label="오른쪽 영역 너비 조절" title="끌어서 너비 조절 · 두 번 클릭하면 기본 너비"></div>
+      <div class="terminal-heading"><span class="eyebrow">TERMINAL</span><span>Claude Code · Codex</span><span class="terminal-local">로컬 세션</span></div>
       <nav class="tabbar">
         <div id="tabs" class="tabs"></div>
         <button id="new-tab" class="tab-add" title="새 탭">＋</button>
@@ -52,7 +53,7 @@
         <div id="empty" class="empty">
           <span class="empty-terminal" aria-hidden="true">&gt;_</span>
           <h2>오늘은 어떤 일을 해볼까요?</h2>
-          <p>오른쪽 위 <b>＋</b> 를 눌러 작업 폴더를 열면<br>공식 Claude Code 가 이 자리에서 실행됩니다.</p>
+          <p>오른쪽 위 <b>＋</b> 를 눌러 작업 폴더를 열면<br>공식 Claude Code · Codex 또는 둘의 협업 대화가 이 자리에서 실행됩니다.</p>
           <button id="empty-new" class="btn primary">작업 폴더 열기</button>
         </div>
       </div>
@@ -64,6 +65,15 @@
   <dialog id="newtab" class="dialog">
     <form method="dialog" class="dialog-inner">
       <h2>새 탭 열기</h2>
+      <section>
+        <h3>실행</h3>
+        <div class="kind-pick" role="radiogroup" aria-label="실행할 AI">
+          <label><input type="radio" name="tab-kind" value="claude" checked> Claude Code</label>
+          <label><input type="radio" name="tab-kind" value="codex"> Codex</label>
+          <label><input type="radio" name="tab-kind" value="collab"> 협업 대화 (Claude + Codex)</label>
+        </div>
+        <p id="kind-hint" class="hint"></p>
+      </section>
       <section>
         <h3>작업 폴더</h3>
         <button type="button" id="pick-folder" class="btn primary">📁 폴더 선택…</button>

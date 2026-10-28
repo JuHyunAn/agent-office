@@ -1,7 +1,7 @@
 # Agent Office
 
 Claude Code 의 메인 세션과 하위 에이전트를 **사무실에서 일하는 캐릭터**로 보여 주는 데스크톱 앱.
-왼쪽은 사무실(항상 표시), 오른쪽은 **공식 Claude Code** 를 탭으로 여러 개 띄운다.
+왼쪽은 사무실(항상 표시), 오른쪽은 **공식 Claude Code**·**Codex** 탭과 둘이 함께 이야기하는 **협업 대화** 탭을 여러 개 띄운다.
 
 ## 실행
 
@@ -14,6 +14,8 @@ npm run dist     # Windows 설치 파일 생성 → dist/
 ```
 
 필요: Node 20+, Claude Code CLI (`npm install -g @anthropic-ai/claude-code`). 로그인은 공식 Claude Code 가 한다.
+Codex 탭·협업 대화는 Codex 가 있을 때만 켜진다 — PATH 의 `codex`(`npm install -g @openai/codex`) 또는 Codex 데스크톱 앱에 포함된 CLI(`%LOCALAPPDATA%\OpenAI\Codex\bin\…\codex.exe`)를 자동으로 찾는다. 로그인은 Codex 가 한다.
+`AGENT_OFFICE_SMOKE=collab` 로 실행하면 실제 화면에서 협업 대화(Claude·Codex 실제 호출, 사용량 소량)와 Codex 탭을 한 번 점검한다. `AGENT_OFFICE_USER_DATA` 로 점검용 데이터 폴더를 따로 지정할 수 있다.
 
 ## 설치 파일 (다른 PC)
 
@@ -48,6 +50,16 @@ Claude Code (탭·VS Code 등) ──HTTP hook──▶ 앱 내부 서버 127.0.
 - **앱 탭의 세션**: 자동으로 사무실에 나타난다 (사용자 설정 변경 없음).
 - **VS Code 등 다른 곳의 세션**: 상단 「다른 세션 보기」를 켜면 `~/.claude/settings.json` 에 hook 이 추가된다 (백업 후 수정, 끄면 이 앱 것만 제거). 앱이 꺼져 있어도 Claude 작업은 영향 없음 (실측).
 - **이어받기(복제)**: 다른 곳 세션을 `--resume <id> --fork-session` 으로 복제해 새 탭에서 이어 간다. 원래 세션은 그대로.
+- **새 탭 종류**: 「＋」 대화상자 맨 위에서 Claude Code · Codex · 협업 대화를 고른다 (마지막 선택을 기억).
+- **Codex 탭**: 공식 `codex` 화면을 그대로 띄운다 (기본 승인 모드, `/permissions` 로 변경). 사무실 표시용 hook 은 실행 인자 `-c hooks.…` 로만 넣고 `~/.codex` 설정은 바꾸지 않는다. Codex hook 은 명령 실행만 지원하므로 Windows 기본 `curl.exe` 로 앱 서버에 보낸다. 탭마다 주소가 달라 Codex 의 hook 신뢰 기록과 맞지 않으므로 `--dangerously-bypass-hook-trust` 로 실행한다 (이 실행에 한해 저장소의 다른 hook 도 검토 없이 실행될 수 있음).
+- **협업 대화**: 나 · Claude · Codex 가 한 대화창에서 이야기한다.
+  - Claude 는 `claude -p --input-format/--output-format stream-json`(글자 단위 실시간), Codex 는 턴마다 `codex exec --json` → `exec resume` 으로 같은 세션을 이어 간다 (문단·명령 단위 실시간).
+  - **Bypass 모드**로 실행한다 (Claude `--dangerously-skip-permissions`, Codex `--dangerously-bypass-approvals-and-sandbox`) — 확인 없이 파일 수정·명령 실행.
+  - 상단에서 **구현 담당**(Claude / Codex / 구현 전에 물어보기)과 각자의 **모델·추론 단계**를 고른다. 「자동」은 사용자의 최근 요청으로 고른다: 어려운 추론(설계·원인·분석·검토 등) → Fable / GPT-6 Astra + Extra High, 설계가 끝난 단순 작업(주석·오타·문법·설계대로 구현) → Sonnet / GPT-6.1 Sol + High, 그 외 → Opus / GPT-6.1 Sol + High. 각 AI 에게는 하위 에이전트도 같은 기준으로 쓰라고 지시한다.
+  - 모델·추론 단계 선택지는 각 CLI 에서 직접 받아 온다 (Claude: 헤드리스 시작 응답의 모델 목록, Codex: `codex debug models`). 앱 실행 중 한 번 조회하고, 고른 모델이 지원하는 단계만 보여 준다. 받아 오지 못하면 기본 선택지(Opus·Fable·Sonnet / GPT-6.1 Sol·GPT-6 Astra, High·Extra High)를 쓴다.
+  - 횟수 제한 없이 Claude ↔ Codex 가 번갈아 이어 간다. 대화 중 언제든 메시지를 보내면 다음 차례에 함께 전달되고, 「■ 중단」으로 즉시 멈춘다. `@claude`·`@codex` 로 받는 사람을 지정하고, 「자동 이어가기」를 끄면 지정한 상대만 답한다.
+  - 중요한 선택은 AI 가 `[질문]` 줄로 묻고 사용자가 답할 때까지 멈춘다. 더 논의할 것이 없으면 `[완료]` 로 멈춘다.
+  - 사무실에는 Claude·Codex 가 각각 캐릭터로 나타난다. 대화 기록은 탭을 닫으면 사라진다 (각 CLI 의 세션 기록은 남음).
 
 ## 그림 바꾸기
 
@@ -82,4 +94,5 @@ test/           node:test 단위 테스트
 
 - 실행 중인 VS Code 세션 **안으로** 지시를 넣는 공식 방법은 없다 — 같은 폴더에서 새 세션을 열거나 복제해서 이어받는다.
 - 결과 공유 연출은 시간 근접으로 추정한다 (메인 Claude 를 거치는 실제 흐름과 다를 수 있음).
-- 설치 파일은 코드 서명·앱 아이콘(기본 Electron 아이콘 사용)·자동 업데이트가 없다.
+- 협업 대화의 「자동」 모델 선택은 요청 문장의 단어로 고르는 단순 규칙이다. 필요하면 상단에서 직접 고른다.
+- 협업 대화에서 AI 의 공식 질문 창(AskUserQuestion 등)은 화면 없는 실행에서 쓸 수 없어 `[질문]` 줄로 대신한다.- 설치 파일은 코드 서명·앱 아이콘(기본 Electron 아이콘 사용)·자동 업데이트가 없다.

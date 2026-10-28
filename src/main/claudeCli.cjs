@@ -105,4 +105,4 @@ async function authStatus(loc) {
   }
 }
 
-module.exports = { locate, version, authStatus, exeFromCmdShim, commandFor, tabArgs };
+module.exports = { locate, version, authStatus, exeFromCmdShim, commandFor, tabArgs, run, runClaude };

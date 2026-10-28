@@ -26,7 +26,7 @@ if (!process.versions.electron) {
   app.disableHardwareAcceleration();
   app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'ao-render-')));
   protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
-  const watchdog = setTimeout(() => { console.error('Renderer check timed out'); app.exit(1); }, 60000);
+  const watchdog = setTimeout(() => { console.error('Renderer check timed out'); app.exit(1); }, 90000); // 정상 실행이 50~60초라 60초 제한은 경계에 걸렸다
 
   app.whenReady().then(async () => {
     fs.mkdirSync(OUT, { recursive: true });
@@ -35,11 +35,11 @@ if (!process.versions.electron) {
       if (!target.startsWith(ROOT + path.sep)) return new Response('forbidden', { status: 403 });
       return net.fetch(pathToFileURL(target).toString());
     });
-    ipcMain.handle('app:status', () => ({ claude: { version: '디자인 검증' }, auth: { loggedIn: true }, hook: { global: { installed: false } } }));
+    ipcMain.handle('app:status', () => ({ claude: { version: '디자인 검증' }, codex: { version: '디자인 검증' }, auth: { loggedIn: true }, hook: { global: { installed: false } } }));
     ipcMain.handle('weather:current', () => ({ available: true, stale: false, location: '서울',
       observedAt: Date.parse('2026-10-26T12:00:00+09:00'), temperature: 16, cloudCover: 10, condition: 'clear' }));
     ipcMain.handle('dialog:pickFolder', () => ROOT);
-    ipcMain.handle('pty:create', (_e, options) => { tabId = options.tabId; return { sessionId: 'preview-main' }; });
+    ipcMain.handle('pty:create', (_e, options) => { tabId = options.tabId; return { sessionId: options.cli === 'codex' ? null : 'preview-main' }; });
     ipcMain.handle('pty:kill', () => {});
     ipcMain.on('pty:write', () => {});
     ipcMain.on('pty:resize', () => {});
@@ -448,8 +448,9 @@ if (!process.versions.electron) {
     fs.writeFileSync(path.join(OUT,'office-coffee-menu.png'),(await win.webContents.capturePage()).toPNG());
     const listPoint=await win.webContents.executeJavaScript(`(()=>{const r=document.querySelector('.drink-choices').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2),zoom:window.__view.camera.zoom};})()`);
     win.webContents.sendInputEvent({type:'mouseMove',x:listPoint.x,y:listPoint.y});
-    win.webContents.sendInputEvent({type:'mouseWheel',x:listPoint.x,y:listPoint.y,deltaY:-350,deltaX:0});await pause(150);
-    const listScroll=await win.webContents.executeJavaScript(`({top:document.querySelector('.drink-choices').scrollTop,zoom:window.__view.camera.zoom})`);
+    win.webContents.sendInputEvent({type:'mouseWheel',x:listPoint.x,y:listPoint.y,deltaY:-350,deltaX:0});
+    // 휠 스크롤은 컴포지터에서 150~400ms 동안 단계적으로 움직이고 중간에 멈추기도 한다. 고정 대기 대신 끝까지 내려갈 때까지 기다린다.
+    const listScroll=await win.webContents.executeJavaScript(`new Promise(resolve=>{const list=document.querySelector('.drink-choices'),start=performance.now();(function poll(){const done=list.scrollTop>=list.scrollHeight-list.clientHeight-1;if(done||performance.now()-start>3000)resolve({top:list.scrollTop,zoom:window.__view.camera.zoom});else setTimeout(poll,16);})();})`);
     assert.ok(listScroll.top>0);assert.equal(listScroll.zoom,listPoint.zoom);
     fs.writeFileSync(path.join(OUT,'office-drinks-scroll.png'),(await win.webContents.capturePage()).toPNG());
     const choicePoint=await win.webContents.executeJavaScript(`(()=>{const r=document.querySelector('[data-drink="soda"]').getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)};})()`);
@@ -540,8 +541,78 @@ if (!process.versions.electron) {
     assert.equal(small.overflow, false);
     assert.ok(small.canvasWidth > 0);
     await fs.promises.writeFile(path.join(OUT, 'office-1100.png'), (await win.webContents.capturePage()).toPNG());
+    const codexSprites = await win.webContents.executeJavaScript(`(async()=>{
+      const {drawCharacter}=await import('./themes/pixel-office/sprites.js');
+      const {ACCESSORIES}=await import('./office/appearance.js');
+      const canvas=document.createElement('canvas');canvas.width=1000;canvas.height=440;const c=canvas.getContext('2d');
+      c.fillStyle='#f4eddf';c.fillRect(0,0,1000,440);c.fillStyle='#414e65';c.font='20px "Malgun Gothic"';c.fillText('적용된 코덱스 근무자 · 85% 크기',25,32);
+      const frame=(a,t)=>{const c=document.createElement('canvas');c.width=c.height=96;drawCharacter(c.getContext('2d'),{pose:'stand',status:'working',facing:'down',colorIndex:1,...a},t,40,60);return c;};
+      const data=c=>Array.from(c.getContext('2d').getImageData(0,0,96,96).data);
+      const cases=[['걷기','walk','working'],['작업','type','working'],['독서','read','working'],['실행','run','working'],['대화','talk','working'],['확인 요청','alert','idle'],['결과 공유','stand','sharing'],['휴식','sit','resting']];
+      const changes=cases.map(([title,pose,status],i)=>{
+        const a={cli:'codex',pose,status},first=frame(a,0),second=frame(a,130),before=data(first),after=data(second);
+        c.imageSmoothingEnabled=false;c.drawImage(first,18,15,45,50,i*124+8,50,112,125);
+        c.fillStyle='#635d54';c.font='13px "Malgun Gothic"';c.fillText(title,i*124+34,194);
+        return {pose,status,changed:before.some((v,j)=>v!==after[j])};
+      });
+      const looks=ACCESSORIES.map((accessory,i)=>{
+        const f=frame({cli:'codex',appearance:{accessory}},0);
+        c.drawImage(f,18,15,45,50,i*140+10,215,126,140);
+        c.font='12px "Malgun Gothic"';c.fillStyle='#635d54';c.fillText(['기본','안경','둥근 안경','모자','비니','리본','헤드셋'][i],i*140+48,376);
+        return f.toDataURL();
+      });
+      const base=frame({cli:'codex'},0),pixels=data(base);let minX=96,maxX=0,minY=96,maxY=0,blue=0,orange=0;
+      for(let y=0;y<96;y++)for(let x=0;x<96;x++){const n=(y*96+x)*4;if(!pixels[n+3])continue;minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y);if(pixels[n]===88&&pixels[n+1]===135&&pixels[n+2]===216)blue++;if(pixels[n]===215&&pixels[n+1]===123&&pixels[n+2]===87)orange++;}
+      const claudeUnchanged=frame({},0).toDataURL()===frame({cli:'claude'},0).toDataURL();
+      const facePixels=(a)=>{
+        const pixels=data(frame({cli:'codex',...a},0)),offset=['sit','type','read','run'].includes(a.pose)?12:0;let cyan=0;
+        for(let y=60-offset+Math.round(-24*.85);y<60-offset+Math.round(-11*.85);y++)for(let x=28;x<52;x++){
+          const n=(y*96+x)*4;if(pixels[n]===180&&pixels[n+1]===238&&pixels[n+2]===233)cyan++;
+        }
+        return cyan;
+      };
+      const faces=ACCESSORIES.flatMap(accessory=>['up','down','left','right'].flatMap(facing=>['stand','type'].map(pose=>({accessory,facing,pose,cyan:facePixels({pose,facing,appearance:{accessory}})}))));
+      const walkingBack=facePixels({pose:'walk',facing:'up'});
+      c.font='13px "Malgun Gothic"';c.fillStyle='#635d54';c.fillText('실제 렌더러로 검증 · 클로드 외형 유지 · 코덱스 팀장과 하위 에이전트 공통 적용',25,417);
+      return {changes,looks:new Set(looks).size,bounds:[maxX-minX+1,maxY-minY+1],blue,orange,claudeUnchanged,faceCases:faces.length,minimumFacePixels:Math.min(...faces.map(f=>f.cyan)),walkingBack,png:canvas.toDataURL().split(',')[1]};
+    })()`);
+    assert.deepEqual(codexSprites.bounds,[24,27]);assert.ok(codexSprites.blue>0&&codexSprites.orange===0&&codexSprites.claudeUnchanged);
+    assert.equal(codexSprites.looks,7);assert.ok(codexSprites.changes.every(c=>c.changed),JSON.stringify(codexSprites.changes));
+    assert.ok(codexSprites.minimumFacePixels>=20,JSON.stringify(codexSprites));assert.equal(codexSprites.walkingBack,0);
+    fs.writeFileSync(path.join(OUT,'codex-character-applied.png'),Buffer.from(codexSprites.png,'base64'));delete codexSprites.png;
+    win.setSize(1600,1000);await pause(200);
+    await win.webContents.executeJavaScript(`document.querySelector('#new-tab').click();document.querySelector('input[name="tab-kind"][value="codex"]').click();document.querySelector('#pick-folder').click();`);
+    await pause(200);
+    event('SessionStart',{session_id:'preview-codex',_cli:'codex'});
+    event('UserPromptSubmit',{session_id:'preview-codex',_cli:'codex',prompt:'사무실 캐릭터 적용 검토'});
+    event('SubagentStart',{session_id:'preview-codex',_cli:'codex',agent_id:'codex-worker',agent_type:'executor'});
+    event('PreToolUse',{session_id:'preview-codex',_cli:'codex',agent_id:'codex-worker',tool_name:'apply_patch',tool_input:{file_path:'codex-sprite.js'}});
+    win.webContents.send('pty:data',{tabId,data:'코덱스 캐릭터 화면 검증\r\n합성 이벤트를 사용하며 실제 AI는 호출하지 않습니다.\r\n'});
+    await pause(150);
+    const codexScene=await win.webContents.executeJavaScript(`(async()=>{
+      const v=window.__view,e=window.__engine;const {getTheme}=await import('./themes/index.js');
+      await v.setTheme(getTheme('pixel-office-plain'));document.querySelector('#theme-select').value='pixel-office-plain';
+      for(let i=0;i<500;i++)e.update(50);v.fit();v.draw(0);
+      const pixels=v.canvas.getContext('2d').getImageData(0,0,v.canvas.width,v.canvas.height).data;
+      return e.snapshot().filter(a=>a.id.startsWith('preview-codex:')).map(a=>{
+        const p=v.theme.project(a.x,a.y),s=v.camera.scale*v.view.dpr,ox=v.camera.ox*v.view.dpr,oy=v.camera.oy*v.view.dpr;
+        const lift=['sit','type','read','run'].includes(a.pose)?12:0;let facePixels=0;
+        const left=Math.floor(ox+(p.x-30)*s),right=Math.ceil(ox+(p.x+30)*s),top=Math.floor(oy+(p.y+(Math.round(-24*.85)-lift)*3)*s),bottom=Math.ceil(oy+(p.y+(Math.round(-11*.85)-lift)*3)*s);
+        for(let y=Math.max(0,top);y<Math.min(v.canvas.height,bottom);y++)for(let x=Math.max(0,left);x<Math.min(v.canvas.width,right);x++){
+          const n=(y*v.canvas.width+x)*4;if(pixels[n]===180&&pixels[n+1]===238&&pixels[n+2]===233)facePixels++;
+        }
+        return {id:a.id,cli:a.cli,pose:a.pose,facing:a.facing,facePixels};
+      });
+    })()`);
+    assert.equal(codexScene.length,2);assert.ok(codexScene.every(a=>a.cli==='codex'));
+    assert.ok(codexScene.find(a=>a.id==='preview-codex:codex-worker').facePixels>=12,JSON.stringify(codexScene));
+    // 실제로 검사한 애니메이션 프레임을 캡처한다 (커서가 꺼진 순간을 피한다).
+    await win.webContents.executeJavaScript(`(()=>{const v=window.__view,draw=v.draw;v.draw=function(){return draw.call(this,0);};v.draw();})()`);
+    await pause(100);fs.writeFileSync(path.join(OUT,'office-codex-applied.png'),(await win.webContents.capturePage()).toPNG());
+    await win.webContents.executeJavaScript(`(()=>{const v=window.__view,a=window.__engine.snapshot().find(a=>a.id==='preview-codex:codex-worker');v.zoomBy(2.4/v.camera.zoom);v.camera.centerOn(v.theme.project(a.x,a.y));v.syncCamera();v.draw(0);})()`);
+    await pause(100);fs.writeFileSync(path.join(OUT,'office-codex-face-closeup.png'),(await win.webContents.capturePage({x:0,y:105,width:1119,height:753})).toPNG());
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({status,small,spriteChanges:spriteCheck.changes,artCheck,lightingCheck,neonCheck,sunsetCheck,themeSwitch,plainCheck,citypopCheck,interactionCheck,consoleErrors:errors,output:OUT}, null, 2));
+    console.log(JSON.stringify({status,small,spriteChanges:spriteCheck.changes,codexSprites,codexScene,artCheck,lightingCheck,neonCheck,sunsetCheck,themeSwitch,plainCheck,citypopCheck,interactionCheck,consoleErrors:errors,output:OUT}, null, 2));
     clearTimeout(watchdog);
     app.exit(0);
   }).catch(e => { console.error(e.stack || e); console.error(JSON.stringify({ consoleErrors: errors })); clearTimeout(watchdog); app.exit(1); });

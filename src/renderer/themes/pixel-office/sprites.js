@@ -1,4 +1,5 @@
 import { drawDrinkImage } from './drink-images.js';
+import { drawCodexCharacter } from './codex-sprite.js';
 
 const ORANGE = '#d77b57';
 const SHADE = '#b85e43';
@@ -8,6 +9,7 @@ const ACCENTS = ['#719c9b', '#ad8bb3', '#7f9c74', '#ca8274', '#d0aa64', '#7496b0
 // All coordinates are integer pixels. Each frame keeps the reference silhouette:
 // one wide body, short side arms, two rectangular eyes, four short legs.
 export function drawCharacter(ctx, a, t, x, y) {
+  if (a.cli === 'codex') return drawCodexCharacter(ctx, a, t, x, y);
   const tick = Math.floor(t / 130);
   const phase = tick + Math.max(0, a.colorIndex) * 9;
   const walking = a.pose === 'walk';

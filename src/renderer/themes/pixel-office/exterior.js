@@ -45,7 +45,8 @@ function drawAligned(ctx, image, anchors, target) {
 }
 
 export function createExterior({ width, height, project }) {
-  const cache = new Map();
+  // 지금 시간대·날씨의 배경 하나만 둔다 — 조합마다 쌓아 두면 오래 켜 둘수록 GPU 메모리가 차오른다.
+  let cached = null;
   let frame;
   const layer = (detail = 1) => {
     const canvas = document.createElement('canvas'); canvas.width = width * detail; canvas.height = height * detail; return canvas;
@@ -64,7 +65,7 @@ export function createExterior({ width, height, project }) {
     const variant = env.cityStyle === 'citypop' ? 'citypop' : env.night ? env.neon && env.condition !== 'rain' ? 'neon' : 'night' : env.sunset ? 'sunset' : 'day';
     const overcast = ['rain', 'snow', 'fog', 'cloudy'].includes(env.condition);
     const key = `${variant}:${overcast}`;
-    if (!cache.has(key)) {
+    if (cached?.key !== key) {
       const detail = variant === 'citypop' ? PIXEL_DETAIL : 1;
       const canvas = layer(detail), c = canvas.getContext('2d'), image = images.get(variant);
       c.scale(detail, detail);
@@ -86,9 +87,9 @@ export function createExterior({ width, height, project }) {
       const depth = c.createLinearGradient(0, height * 0.5, 0, height);
       depth.addColorStop(0, '#101d3000'); depth.addColorStop(1, env.night ? '#101b3566' : '#35445626');
       c.fillStyle = depth; c.fillRect(0, 0, width, height); c.restore();
-      cache.set(key, canvas);
+      cached = { key, canvas };
     }
-    return cache.get(key);
+    return cached.canvas;
   }
 
   return {

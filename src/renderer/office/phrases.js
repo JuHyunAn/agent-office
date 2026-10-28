@@ -9,12 +9,17 @@ export function baseName(p) {
   return String(p ?? '').split(/[\\/]/).filter(Boolean).pop() || '';
 }
 
+// Codex 의 apply_patch 는 파일 경로 대신 패치 본문(*** Update File: 경로)을 넘긴다.
+function patchFile(input) {
+  return input.file_path || String(input.command || '').match(/\*\*\* (?:Update|Add|Delete) File: (.+)/)?.[1]?.trim() || '';
+}
+
 // A short, deterministic summary from observed tool metadata; no extra model call.
 export function activitySummary(name, input = {}) {
-  const file = clip(baseName(input.file_path || input.notebook_path), 22);
+  const file = clip(baseName(name === 'apply_patch' ? patchFile(input) : input.file_path || input.notebook_path), 22);
   switch (name) {
     case 'Read': return `${file || '자료'} 내용 검토 중`;
-    case 'Edit': case 'MultiEdit': case 'NotebookEdit': return `${file || '코드'} 수정 중`;
+    case 'Edit': case 'MultiEdit': case 'NotebookEdit': case 'apply_patch': return `${file || '코드'} 수정 중`;
     case 'Write': return `${file || '파일'} 작성 중`;
     case 'Grep': case 'Glob': return `${clip(input.pattern || '관련 코드', 20)} 찾는 중`;
     case 'WebSearch': return `${clip(input.query || '참고 자료', 22)} 조사 중`;
@@ -39,6 +44,7 @@ export function toolPhrase(name, input = {}) {
     case 'Read': return `📖 읽는 중: ${clip(baseName(i.file_path), 20)}`;
     case 'Edit':
     case 'MultiEdit': return `⌨ 수정 중: ${clip(baseName(i.file_path), 20)}`;
+    case 'apply_patch': return `⌨ 수정 중: ${clip(baseName(patchFile(i)), 20)}`;
     case 'Write': return `📝 작성 중: ${clip(baseName(i.file_path), 20)}`;
     case 'NotebookEdit': return `📓 노트북 수정: ${clip(baseName(i.notebook_path), 16)}`;
     case 'Grep': return `🔍 검색 중: ${clip(i.pattern, 18)}`;

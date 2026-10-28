@@ -12,10 +12,14 @@ const { pathToFileURL } = require('node:url');
 const { startHookServer } = require('./hookServer.cjs');
 const hookSettings = require('./hookSettings.cjs');
 const claudeCli = require('./claudeCli.cjs');
+const codexCli = require('./codexCli.cjs');
+const { ClaudeChat, CodexChat, claudeModels } = require('./collabAgents.cjs');
 const { PtyManager } = require('./ptyManager.cjs');
 const { cleanEnv } = require('./env.cjs');
 const { createWeatherService } = require('./weather.cjs');
 const getWeather = createWeatherService();
+// 점검 실행은 사용자 데이터(최근 폴더·설정)를 건드리지 않도록 별도 폴더를 쓸 수 있다.
+if (process.env.AGENT_OFFICE_USER_DATA) app.setPath('userData', process.env.AGENT_OFFICE_USER_DATA);
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const ICON = path.join(ROOT, 'icon', 'app.ico');
@@ -33,7 +37,23 @@ let quitting = false; // 트레이 「종료」·app.quit() 때만 창을 실제
 let hook = null;
 let config = null;
 let claude = null;
+let codex = null;
 let sessionSettingsPath = null;
+const rooms = new Map(); // 협업 대화 탭 → { cwd, claude: ClaudeChat, codex: CodexChat }
+
+// 협업 대화 규칙. cmd.exe 경유 실행에서도 깨지지 않도록 따옴표·% 기호·줄바꿈을 쓰지 않는다.
+const COLLAB_RULES = [
+  '당신은 Agent Office 의 협업 대화에 참여하고 있습니다. 참여자는 사용자, Claude(Claude Code), Codex(OpenAI Codex) 셋이며 같은 작업 폴더를 함께 씁니다.',
+  '상대 AI 와 사용자의 발언은 [Claude] [Codex] [사용자] 표시와 함께 전달되고, 당신의 답변은 상대 AI 와 사용자 모두에게 보입니다.',
+  '메시지 첫 줄의 구현 담당 지시를 따릅니다. 구현 담당이 아니면 파일을 수정하지 말고 설계·검토·의견만 냅니다.',
+  '방향·범위·되돌리기 어려운 변경처럼 중요한 선택이 필요하면 진행을 멈추고, 답변 끝에 [질문] 으로 시작하는 줄을 두어 질문과 선택지를 적습니다. 사용자가 답할 때까지 대화가 멈춥니다.',
+  '더 논의할 것이 없고 사용자 확인만 남았으면 마지막 줄에 [완료] 만 적습니다.',
+  '상대의 말을 되풀이하지 말고 새 정보·반론·결정만 한국어로 간결하게 답합니다.',
+];
+const CLAUDE_RULES = [...COLLAB_RULES,
+  '하위 에이전트를 적극 활용합니다. 어려운 추론·설계 검토는 model fable, 설계가 끝난 단순 코딩·주석·문법 수정은 model sonnet 에게 맡기고, 노력 단계는 high 또는 xhigh 만 씁니다.'].join(' ');
+const CODEX_RULES = [...COLLAB_RULES,
+  '하위 에이전트를 쓸 때 어려운 추론은 gpt-6-astra, 그 외는 gpt-6.1-sol 을 쓰고, 추론 단계는 high 또는 xhigh 만 씁니다.'].join('\n');
 
 function send(channel, payload) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
@@ -71,19 +91,124 @@ async function status() {
   claude = await claudeCli.locate();
   const version = claude ? await claudeCli.version(claude) : null;
   const auth = claude ? await claudeCli.authStatus(claude) : { loggedIn: false };
+  codex = await codexCli.locate();
+  const codexVersion = codex ? await codexCli.version(codex) : null;
+  if (auth.loggedIn || codex) collabModels(); // 협업 탭을 열기 전에 미리 받아 둔다 (Claude 쪽은 5초 안팎 걸림)
   return {
     claude: claude ? { path: claude.display, version } : null,
+    codex: codex ? { path: codex.display, version: codexVersion } : null,
     auth,
     hook: { port: hook.port, global: hookSettings.readGlobalStatus(hook.port, config.token) },
   };
 }
 
-async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows }) {
+function checkFolder(cwd) {
+  if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error(`폴더가 없습니다: ${cwd}`);
+}
+
+async function needCodex() {
+  // Codex 앱이 업데이트되면 CLI 폴더가 바뀐다 — 기억한 경로가 사라졌으면 다시 찾는다.
+  if (!codex || (!codex.cmdShim && !fs.existsSync(codex.file))) codex = await codexCli.locate();
+  if (!codex) throw new Error('Codex 를 찾지 못했습니다 (Codex 앱 또는 npm install -g @openai/codex)');
+  return codex;
+}
+
+// Codex 탭: 공식 codex 화면을 그대로 띄우고, 사무실 표시용 hook 만 실행 인자로 넣는다.
+async function createCodexPty({ tabId, cwd, cols, rows }) {
+  await needCodex();
+  checkFolder(cwd);
+  const args = codexCli.tabArgs({ hooks: codexCli.hookArgs({ port: hook.port, token: config.token, tab: tabId }) });
+  const cmd = claudeCli.commandFor(codex, args);
+  ptys.create({ tabId, cwd, cols, rows, file: cmd.file, args: cmd.args, env: cleanEnv() });
+  return { sessionId: null };
+}
+
+async function collabSend({ roomId, agent, cwd, text, model, effort, turn }) {
+  if (!TAB_RE.test(String(roomId))) throw new Error('잘못된 탭 ID');
+  if (agent !== 'claude' && agent !== 'codex') throw new Error('잘못된 참여자');
+  let room = rooms.get(roomId);
+  if (!room) { checkFolder(cwd); room = { cwd, gen: 0 }; rooms.set(roomId, room); }
+  const gen = room.gen;
+  if (!room[agent]) {
+    const onEvent = (ev) => send('collab:event', { roomId, agent, ...ev });
+    if (agent === 'claude') {
+      if (!claude) claude = await claudeCli.locate();
+      if (!claude) throw new Error('Claude Code 를 찾지 못했습니다');
+    } else {
+      await needCodex();
+    }
+    // CLI 를 찾는 동안 중단·탭 닫기가 들어왔으면 실행하지 않는다 (아무도 보지 않는 Bypass 프로세스를 남기지 않게).
+    if (rooms.get(roomId) !== room || room.gen !== gen) throw new Error('중단됨');
+    room[agent] ||= agent === 'claude'
+      ? new ClaudeChat({ loc: claude, cwd: room.cwd, settingsPath: sessionSettingsPath, systemPrompt: CLAUDE_RULES, env: cleanEnv({ AGENT_OFFICE_TAB: roomId }), onEvent })
+      : new CodexChat({ loc: codex, cwd: room.cwd, systemPrompt: CODEX_RULES, hooks: codexCli.hookArgs({ port: hook.port, token: config.token, tab: roomId }), env: cleanEnv(), onEvent });
+  }
+  room[agent].send(String(text), { model, effort }, Number.isInteger(turn) ? turn : null);
+}
+
+// 협업 대화의 모델·단계 선택지: 각 CLI 에서 직접 받아 앱 실행 중 한 번만 조회한다 (못 받은 쪽은 다음 탭에서 다시 시도).
+let modelCatalog = null;
+function collabModels() {
+  modelCatalog ||= (async () => {
+    const errors = {};
+    let c = null; let x = null;
+    try {
+      if (!claude) claude = await claudeCli.locate();
+      const cx = await needCodex().catch(() => null);
+      const dir = app.getPath('userData');
+      const noHooks = path.join(dir, 'model-list-settings.json'); // hook 을 꺼서 목록 조회가 사무실에 세션으로 잡히지 않게
+      fs.writeFileSync(noHooks, JSON.stringify({ disableAllHooks: true }));
+      [c, x] = await Promise.all([
+        claude ? claudeModels({ loc: claude, settingsPath: noHooks, cwd: dir, env: cleanEnv(), onError: (r) => { errors.claude = r; } }) : null,
+        cx ? codexCli.models(cx) : null,
+      ]);
+      if (!claude) errors.claude = 'Claude Code 를 찾지 못했습니다';
+      if (!cx) errors.codex = 'Codex 를 찾지 못했습니다';
+      else if (!x?.length) errors.codex = 'codex debug models 응답을 읽지 못했습니다';
+    } catch (e) {
+      errors.claude ||= e.message; errors.codex ||= e.message;
+    }
+    const result = { claude: c?.length ? c : null, codex: x?.length ? x : null, errors };
+    if (!result.claude || !result.codex) { modelCatalog = null; console.warn('[collab] 모델 목록 조회 실패', errors); }
+    return result;
+  })();
+  return modelCatalog;
+}
+
+function collabStop({ roomId, agent }) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  room.gen++;
+  for (const a of agent ? [agent] : ['claude', 'codex']) room[a]?.stop();
+}
+
+function collabClose({ roomId }) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  room.gen++;
+  rooms.delete(roomId);
+  room.claude?.close(); room.codex?.close();
+}
+
+// 화면을 새로 고치거나 화면 프로세스가 죽으면 탭과의 연결이 끊긴다 — 남은 세션을 모두 정리한다.
+function dropSessions() {
+  ptys.killAll();
+  for (const roomId of [...rooms.keys()]) collabClose({ roomId });
+}
+
+function collabRunning() {
+  let n = 0;
+  for (const room of rooms.values()) n += (room.claude?.busy ? 1 : 0) + (room.codex?.proc ? 1 : 0);
+  return n;
+}
+
+async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli }) {
   if (!TAB_RE.test(String(tabId))) throw new Error('잘못된 탭 ID');
+  if (cli === 'codex') return createCodexPty({ tabId, cwd, cols, rows });
   if (!claude) claude = await claudeCli.locate();
   if (!claude) throw new Error('Claude Code 를 찾지 못했습니다');
   if (mode === 'login' && !cwd) cwd = os.homedir();
-  if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error(`폴더가 없습니다: ${cwd}`);
+  checkFolder(cwd);
 
   let args;
   let sessionId = null;
@@ -149,6 +274,10 @@ function createWindow() {
     return { action: 'deny' };
   });
   win.loadURL('app://office/src/renderer/index.html');
+  let loaded = false;
+  win.webContents.on('did-finish-load', () => { loaded = true; });
+  win.webContents.on('did-start-loading', () => { if (loaded) dropSessions(); });
+  win.webContents.on('render-process-gone', dropSessions);
   // 실수로 창을 닫아도 Claude 세션·사무실은 계속 돈다 — 창만 숨기고, 종료는 트레이 메뉴에서 한다.
   win.on('close', (e) => {
     if (quitting) return;
@@ -168,7 +297,7 @@ function showWindow() {
 }
 
 async function quitFromTray() {
-  const running = ptys.count();
+  const running = ptys.count() + collabRunning();
   if (running) {
     const opts = {
       type: 'question',
@@ -176,7 +305,7 @@ async function quitFromTray() {
       defaultId: 1,
       cancelId: 1,
       title: 'Agent Office 종료',
-      message: `실행 중인 Claude Code 세션 ${running}개가 함께 종료됩니다. 종료할까요?`,
+      message: `실행 중인 Claude Code·Codex 세션 ${running}개가 함께 종료됩니다. 종료할까요?`,
     };
     const r = win && win.isVisible() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
     if (r.response !== 0) return;
@@ -219,6 +348,7 @@ function runSmoke() {
       await fetch(`http://127.0.0.1:${hook.port}/hook?k=${config.token}&src=session`, { method: 'POST', body });
       await new Promise((r) => setTimeout(r, 500));
       report.headcount = await win.webContents.executeJavaScript("document.querySelector('#headcount').textContent");
+      if (process.env.AGENT_OFFICE_SMOKE === 'collab') report.collab = await smokeCollab();
       // 창을 닫아도 앱·세션은 계속 돈다 (실제 종료는 트레이 메뉴).
       win.close();
       await new Promise((r) => setTimeout(r, 300));
@@ -230,6 +360,75 @@ function runSmoke() {
     process.stdout.write(`SMOKE ${JSON.stringify(report)}\n`);
     app.quit();
   });
+}
+
+// AGENT_OFFICE_SMOKE=collab: 실제 화면에서 협업 대화(Claude·Codex 실제 호출)와 Codex 탭을 한 번 돌려 본다 (사용량 소량).
+async function smokeCollab() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-collab-'));
+  const js = (code) => win.webContents.executeJavaScript(code);
+  const wait = async (code, ms) => { for (let t = 0; t < ms; t += 1000) { if (await js(code)) return true; await new Promise((r) => setTimeout(r, 1000)); } return false; };
+  await js(`window.__hooks=[];window.office.onHookEvent(e=>window.__hooks.push({cli:e._cli,tab:e._tab,name:e.hook_event_name}));
+    document.querySelector('#gate-body .btn.primary')?.click();localStorage.setItem('ao.recent',JSON.stringify([${JSON.stringify(dir)}]));`);
+  await new Promise((r) => setTimeout(r, 1500));
+  const open = (kind) => js(`(()=>{const d=document.querySelector('#newtab');if(!d.open)document.querySelector('#new-tab').click();
+    document.querySelector('input[name=tab-kind][value=${kind}]').click();document.querySelector('#recent button').click();return document.querySelectorAll('.tab').length;})()`);
+  const out = { codexFound: await js('!!document.querySelector("input[name=tab-kind][value=codex]:not(:disabled)")') };
+  await open('collab');
+  // 모델·단계 선택지를 각 CLI 에서 받아 왔는지 — 받아 온 새 단계(Low)로 실제 대화도 해 본다.
+  const sels = `document.querySelectorAll('.pane:not([hidden]) .collab .collab-agent select')`;
+  out.catalogLoaded = await wait(`(()=>{const s=${sels};return s[0].options.length>4&&s[2].options.length>3;})()`, 40000);
+  out.catalog = await js(`[...${sels}].map(s=>[...s.options].map(o=>o.textContent).join(', '))`);
+  out.catalogNote = await js(`document.querySelector('.pane:not([hidden]) .collab-catalog').textContent`);
+  // 모델 선택 줄은 한 줄 · 오른쪽 영역은 손잡이로 넓히고(기본보다 좁게는 안 됨), 두 번 클릭하면 기본 너비.
+  const rowLines = `(()=>{const r=document.querySelector('.pane:not([hidden]) .collab-models');const s=r.querySelector('select');return Math.round(r.getBoundingClientRect().height/s.getBoundingClientRect().height);})()`;
+  const cliW = `Math.round(document.querySelector('.cli-pane').getBoundingClientRect().width)`;
+  out.modelRowLines = await js(rowLines);
+  const grip = await js(`(()=>{const r=document.querySelector('#cli-resizer').getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};})()`);
+  const drag = async (dx) => {
+    const ev = (type, x) => win.webContents.sendInputEvent({ type, x, y: grip.y, button: 'left', clickCount: 1 });
+    ev('mouseDown', grip.x); for (let i = 1; i <= 5; i++) { ev('mouseMove', grip.x + Math.round(dx * i / 5)); await new Promise((r) => setTimeout(r, 30)); } ev('mouseUp', grip.x + dx);
+    await new Promise((r) => setTimeout(r, 300));
+  };
+  out.cliWidthDefault = await js(cliW);
+  await drag(250); out.cliWidthNarrower = await js(cliW);
+  await drag(-400); out.cliWidthWider = await js(cliW); out.modelRowLinesWide = await js(rowLines);
+  const wide = await win.webContents.capturePage();
+  if (!wide.isEmpty()) { fs.mkdirSync(path.join(ROOT, 'output', 'design'), { recursive: true }); fs.writeFileSync(path.join(ROOT, 'output', 'design', 'collab-wide.png'), wide.toPNG()); }
+  const g2 = await js(`(()=>{const r=document.querySelector('#cli-resizer').getBoundingClientRect();return {x:Math.round(r.left+r.width/2),y:Math.round(r.top+r.height/2)};})()`);
+  win.webContents.sendInputEvent({ type: 'mouseDown', x: g2.x, y: g2.y, button: 'left', clickCount: 2 });
+  win.webContents.sendInputEvent({ type: 'mouseUp', x: g2.x, y: g2.y, button: 'left', clickCount: 2 });
+  await new Promise((r) => setTimeout(r, 300));
+  out.cliWidthReset = await js(cliW);
+  await js(`(()=>{const p=document.querySelector('.pane:not([hidden]) .collab');
+    p.querySelector('input[type=checkbox]').click();const sels=p.querySelectorAll('.collab-agent select');
+    const pick=(s,v)=>{s.value=v;s.dispatchEvent(new Event('change'));};pick(sels[0],'sonnet');pick(sels[1],'low');pick(sels[3],'low');
+    const t=p.querySelector('textarea');t.value='연결 점검입니다. 도구를 쓰지 말고 「확인」 한 단어로만 답하세요.';p.querySelector('.collab-compose .btn').click();})()`);
+  out.finished = await wait(`(()=>{const p=document.querySelector('.pane:not([hidden]) .collab');return p.querySelectorAll('.msg.from-claude:not(.streaming),.msg.from-codex:not(.streaming)').length>=2&&!p.querySelector('.msg.streaming');})()`, 240000);
+  out.messages = await js(`[...document.querySelectorAll('.pane:not([hidden]) .collab .msg')].map(m=>m.querySelector('.msg-head').innerText.replace(/\\s+/g,' ')+' | '+m.querySelector('.msg-body').innerText.slice(0,80))`);
+  out.status = await js(`document.querySelector('.pane:not([hidden]) .collab-status').textContent`);
+  await new Promise((r) => setTimeout(r, 1500));
+  // 답변 도중 중단 → 다시 보내기: 끝낸 프로세스의 늦은 출력이 새 턴에 섞이지 않고 같은 세션으로 이어 가는지.
+  const say = (text, to) => js(`(()=>{const p=document.querySelector('.pane:not([hidden]) .collab');const s=p.querySelector('.collab-compose select');s.value='${to}';
+    p.querySelector('textarea').value=${JSON.stringify(text)};p.querySelector('.collab-compose .btn').click();})()`);
+  const claudeCount = `document.querySelectorAll('.pane:not([hidden]) .collab .msg.from-claude').length`;
+  await say('도구 없이 「한국의 사계절」을 주제로 아주 긴 수필(2000단어 이상)을 써 주세요.', 'claude');
+  out.streamingBeforeStop = await wait(`!!document.querySelector('.pane:not([hidden]) .collab .msg.from-claude.streaming .msg-body')?.innerText.length`, 60000);
+  await js(`document.querySelector('.pane:not([hidden]) .collab-stop').click()`);
+  await wait(`document.querySelector('.pane:not([hidden]) .collab-status').classList.contains('stopped')`, 5000); // 화면 갱신은 프레임 단위
+  out.stoppedStatus = await js(`document.querySelector('.pane:not([hidden]) .collab-status').textContent`);
+  const before = await js(claudeCount);
+  await say('방금 중단했습니다. 도구 없이 「재개」 한 단어로만 답하세요.', 'claude');
+  out.resumed = await wait(`(()=>{const ms=[...document.querySelectorAll('.pane:not([hidden]) .collab .msg.from-claude')];const m=ms.at(-1);return ms.length===${before}+1&&!m.classList.contains('streaming');})()`, 180000);
+  out.lastClaude = await js(`[...document.querySelectorAll('.pane:not([hidden]) .collab .msg.from-claude')].pop().querySelector('.msg-body').innerText.slice(0,80)`);
+  out.feedLeaksRules = await js(`document.querySelector('#feed').innerText.includes('당신은 Agent Office')`);
+  out.hooks = await js('window.__hooks.reduce((a,h)=>{const k=h.cli+":"+h.name;a[k]=(a[k]||0)+1;return a;},{})');
+  out.headcount = await js("document.querySelector('#headcount').textContent");
+  const img = await win.webContents.capturePage();
+  if (!img.isEmpty()) { fs.mkdirSync(path.join(ROOT, 'output', 'design'), { recursive: true }); fs.writeFileSync(path.join(ROOT, 'output', 'design', 'collab-chat.png'), img.toPNG()); }
+  await open('codex');
+  await new Promise((r) => setTimeout(r, 12000));
+  out.codexTab = await js(`(document.querySelector('.pane:not([hidden]) .xterm-rows')?.innerText||'').replace(/\\s+/g,' ').slice(0,300)`);
+  return out;
 }
 
 if (!app.requestSingleInstanceLock()) {
@@ -265,6 +464,10 @@ if (!app.requestSingleInstanceLock()) {
     ipcMain.on('pty:resize', (_e, { tabId, cols, rows }) => ptys.resize(tabId, cols, rows));
     ipcMain.handle('pty:kill', (_e, { tabId }) => ptys.kill(tabId));
     ipcMain.handle('hooks:global:set', (_e, { enabled }) => setGlobalHooks(!!enabled));
+    ipcMain.handle('collab:send', (_e, opts) => collabSend(opts || {}));
+    ipcMain.handle('collab:stop', (_e, opts) => collabStop(opts || {}));
+    ipcMain.handle('collab:close', (_e, opts) => collabClose(opts || {}));
+    ipcMain.handle('collab:models', () => collabModels());
     ipcMain.handle('shell:open', (_e, url) => { if (/^https?:\/\//.test(String(url))) shell.openExternal(url); });
 
     createTray();
@@ -276,7 +479,7 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     quitting = true;
-    ptys.killAll();
+    dropSessions();
     if (hook) hook.server.close();
   });
   app.on('window-all-closed', () => app.quit());

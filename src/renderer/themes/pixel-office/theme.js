@@ -510,13 +510,22 @@ function bubble(ctx, a, p, t, occupied) {
   });
   const w = Math.ceil(Math.max(...lines.map(value => ctx.measureText(value).width))) + 18;
   const h = 12 + lines.length * 17;
-  const x = Math.max(4, Math.min(WIDTH - w - 4, Math.round(p.x - w / 2)));
-  let y = Math.max(50, p.y - 50 - h);
-  for (let tries = 0; tries < 8 && occupied.some(b => x < b.x + b.w + 4 && x + w + 4 > b.x && y < b.y + b.h + 4 && y + h + 4 > b.y); tries++) y -= h + 5;
+  let x = Math.max(4, Math.min(WIDTH - w - 4, Math.round(p.x - w / 2)));
+  const seatedCodex = a.cli === 'codex' && ['sit', 'type', 'read', 'run'].includes(a.pose);
+  const head = seatedCodex ? (a.isLead ? 78 : 68) : 50;
+  let y = Math.max(50, p.y - head - h);
+  const overlaps = (x, y) => occupied.some(b => x < b.x + b.w + 4 && x + w + 4 > b.x && y < b.y + b.h + 4 && y + h + 4 > b.y);
+  if (seatedCodex && overlaps(x, y)) {
+    for (const side of [p.x - w - 34, p.x + 34]) {
+      const candidate = Math.max(4, Math.min(WIDTH - w - 4, Math.round(side)));
+      if (!overlaps(candidate, y)) { x = candidate; break; }
+    }
+  }
+  for (let tries = 0; tries < 8 && overlaps(x, y); tries++) y -= h + 5;
   y = Math.max(4, y);
   occupied.push({ x, y, w, h });
   const tail = Math.min(x + w - 7, Math.max(x + 5, p.x));
-  line(ctx, { x: tail, y: y + h }, { x: p.x, y: p.y - 40 }, border);
+  line(ctx, { x: tail, y: y + h }, { x: p.x, y: p.y - head + 10 }, border);
   ctx.beginPath(); ctx.roundRect(x + 1, y + 2, w, h, 8);
   ctx.fillStyle = '#bfb49e'; ctx.fill();
   ctx.beginPath(); ctx.roundRect(x, y, w, h, 8);
