@@ -49,9 +49,9 @@ const state = {
 
 let theme = getTheme(store.get('ao.theme', 'pixel-office'));
 const engine = new OfficeEngine(theme.layout, { onFeed: addFeed, now: () => performance.now(), timing: { leadIdleToRestMs: 20000 } });
-const view = new OfficeView($('#office'), engine, theme, { tooltip: $('#tooltip'), onState({ zoom, playerTask, headcount, environment, interactionMenu, heldItem }) {
+const view = new OfficeView($('#office'), engine, theme, { tooltip: $('#tooltip'), onState({ zoom, minZoom, playerTask, headcount, environment, interactionMenu, heldItem }) {
   $('#zoom-level').textContent = `${zoom}%`;
-  $('#zoom-out').disabled = zoom <= 100;
+  $('#zoom-out').disabled = zoom <= minZoom;
   $('#player-state').textContent = playerTask || '사무실을 둘러보세요';
   $('#headcount').textContent = `에이전트 ${headcount}명`;
   $('#environment-state').textContent = environment.label;

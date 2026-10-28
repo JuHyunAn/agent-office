@@ -107,7 +107,7 @@ if (!process.versions.electron) {
       const result = await win.webContents.executeJavaScript(`(async()=>{
         const v=window.__view,life=v.life,camera=v.camera,held=life.player.heldItem;
         const sel=document.querySelector('#theme-select');sel.value=${JSON.stringify(id)};sel.dispatchEvent(new Event('change'));
-        const start=performance.now();while(v.theme.id!==${JSON.stringify(id)}){
+        const start=performance.now();while(v.theme.id!==${JSON.stringify(id)}||JSON.parse(localStorage.getItem('ao.theme'))!==${JSON.stringify(id)}){
           if(performance.now()-start>3000)throw new Error('테마 전환 시간 초과');
           await new Promise(r=>setTimeout(r,20));
         }
@@ -270,8 +270,28 @@ if (!process.versions.electron) {
       const restored=render('22:00','clear');
       return {changed,purple,rainIdentical,restored:neon.every((v,i)=>v===restored[i])};
     })()`);
-    assert.ok(neonCheck.changed>500000&&neonCheck.purple>100000,JSON.stringify(neonCheck));
+    assert.equal(neonCheck.changed,0,JSON.stringify(neonCheck));
     assert.ok(neonCheck.rainIdentical&&neonCheck.restored,JSON.stringify(neonCheck));
+
+    const sunsetCheck = await win.webContents.executeJavaScript(`(async()=>{
+      const {getTheme}=await import('./themes/index.js'),{OfficeEnvironment}=await import('./office/environment.js');
+      const c=document.createElement('canvas');c.width=3200;c.height=2000;const x=c.getContext('2d',{willReadFrequently:true});
+      const checks=[];
+      for(const id of ['pixel-office','pixel-office-plain']){
+        const theme=getTheme(id),p=theme.project(1000,576);
+        const render=(clock)=>{const time=Date.parse('2026-10-27T'+clock+':00+09:00'),env=new OfficeEnvironment({now:()=>time});env.setWeather({available:true,observedAt:time,condition:'clear',temperature:16});theme.drawScene(x,[],500,{environment:env.snapshot()});const pixels=x.getImageData(0,0,3200,2000).data,patch=x.getImageData(p.x-8,p.y-8,16,16).data;let warmth=0;for(let n=0;n<patch.length;n+=4)warmth+=patch[n]-patch[n+2];return {pixels,warmth:warmth/256};};
+        const day=render('14:59'),sunset=render('15:00'),late=render('17:59'),night=render('18:00'),lateNight=render('22:00');
+        checks.push({id,dayDifferent:day.pixels.some((v,n)=>v!==sunset.pixels[n]),sunsetStable:sunset.pixels.every((v,n)=>v===late.pixels[n]),nightDifferent:night.pixels.some((v,n)=>v!==sunset.pixels[n]),nightStable:night.pixels.every((v,n)=>v===lateNight.pixels[n]),dayWarmth:day.warmth,sunsetWarmth:sunset.warmth});
+      }
+      return checks;
+    })()`);
+    assert.ok(sunsetCheck.every(c=>c.dayDifferent&&c.sunsetStable&&c.nightDifferent&&c.nightStable&&c.sunsetWarmth>c.dayWarmth+5),JSON.stringify(sunsetCheck));
+    for(const [id,name] of [['pixel-office','office-sunset'],['pixel-office-plain','office-plain-sunset']]){
+      await selectTheme(id);
+      await win.webContents.executeJavaScript(`(()=>{const v=window.__view,time=Date.parse('2026-10-27T16:30:00+09:00');v.environment.now=()=>time;v.environment.setWeather({available:true,observedAt:time,temperature:16,condition:'clear'});v.fit();v.draw(performance.now());})()`);
+      await pause(100);fs.writeFileSync(path.join(OUT,name+'.png'),(await win.webContents.capturePage()).toPNG());
+    }
+    await selectTheme('pixel-office');
 
     for(const [name,night,condition,late] of [['office-day',false,'clear'],['office-night',true,'clear'],['office-night-rain',true,'rain'],['office-night-snow',true,'snow'],['office-neon',true,'clear',true],['office-late-rain',true,'rain',true]]){
       await win.webContents.executeJavaScript(`(()=>{const v=window.__view,time=Date.parse('${late?'2026-10-26T22:30:00':night?'2026-10-26T20:00:00':'2026-10-26T12:00:00'}+09:00');
@@ -305,7 +325,7 @@ if (!process.versions.electron) {
       window.__citypopBackground=background.toDataURL('image/png').split(',')[1];
       const order=[...document.querySelector('#theme-select').options].map(o=>o.value);
       const canvas=document.createElement('canvas');canvas.width=3200;canvas.height=2000;const c=canvas.getContext('2d');
-      const render=(night,condition,t=0)=>{theme.drawScene(c,[],t,{environment:{night,neon:night,condition}});return c.getImageData(0,0,3200,2000).data;};
+      const render=(night,condition,t=0)=>{theme.drawScene(c,[],t,{environment:{night,sunset:!night,neon:night,condition}});return c.getImageData(0,0,3200,2000).data;};
       const day=render(false,'clear'),night=render(true,'clear');
       const fixedDawn=day.every((value,i)=>value===night[i]);
       getTheme('pixel-office').drawScene(c,[],0,{environment:{night:true,neon:true,condition:'clear'}});
@@ -521,7 +541,7 @@ if (!process.versions.electron) {
     assert.ok(small.canvasWidth > 0);
     await fs.promises.writeFile(path.join(OUT, 'office-1100.png'), (await win.webContents.capturePage()).toPNG());
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({status,small,spriteChanges:spriteCheck.changes,artCheck,lightingCheck,neonCheck,themeSwitch,plainCheck,citypopCheck,interactionCheck,consoleErrors:errors,output:OUT}, null, 2));
+    console.log(JSON.stringify({status,small,spriteChanges:spriteCheck.changes,artCheck,lightingCheck,neonCheck,sunsetCheck,themeSwitch,plainCheck,citypopCheck,interactionCheck,consoleErrors:errors,output:OUT}, null, 2));
     clearTimeout(watchdog);
     app.exit(0);
   }).catch(e => { console.error(e.stack || e); console.error(JSON.stringify({ consoleErrors: errors })); clearTimeout(watchdog); app.exit(1); });

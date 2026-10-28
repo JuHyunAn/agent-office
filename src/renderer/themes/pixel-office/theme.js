@@ -536,7 +536,7 @@ export default {
   agentHead: 44,
   agentHitRadius: 32,
   background: PAPER,
-  sceneBackground(env) { return env?.neon ? '#2c2549' : env?.night ? '#24384f' : '#b4cbd5'; },
+  sceneBackground(env) { return env?.night ? '#24384f' : env?.sunset ? '#e8b699' : '#b4cbd5'; },
   project(x, y) { const p = projectPoint(x, y); return { x: p.x * 2, y: p.y * 2 }; },
   unproject(x, y) {
     const dx = (x / 2 - 780) / 0.36, dy = (y / 2 - 125) / 0.18;
@@ -567,8 +567,9 @@ export default {
   drawScene(ctx, agents, t, state = {}) {
     const pixel = frameCanvas.getContext('2d');
     pixel.setTransform(DETAIL, 0, 0, DETAIL, 0, 0);
-    const environment = state.environment || { night: false, condition: 'clear' };
-    const sunny = !environment.night && ['clear', 'unknown'].includes(environment.condition);
+    const environment = { ...(state.environment || { night: false, condition: 'clear' }), neon: this.id === 'pixel-office-citypop' && !!state.environment?.neon,
+      sunset: ['pixel-office', 'pixel-office-plain'].includes(this.id) && !state.environment?.night && !!state.environment?.sunset };
+    const sunny = !environment.night && !environment.sunset && ['clear', 'unknown'].includes(environment.condition);
     const showExterior = this.exteriorVisible !== false;
     if (!showExterior) { pixel.fillStyle = this.sceneBackground(environment); pixel.fillRect(0, 0, WIDTH, HEIGHT); }
     const backdrop = this.windowStyle === 'simple' ? null : exterior.drawBackground(pixel, t, environment, showExterior);

@@ -1,9 +1,6 @@
 /* 새 테마에서만 왼쪽 사무실 아래에 제작 바를 배치한다. */
 body.custom-office-active .layout { grid-template-rows: minmax(200px, 1fr) auto; }
 body.custom-office-active .office-pane { grid-column: 1; grid-row: 1; }
-body.custom-office-active .office-toolbar { padding: 8px 20px; }
-body.custom-office-active .office-toolbar .eyebrow { display: none; }
-body.custom-office-active .office-toolbar h2 { font-size: 17px; margin: 0; }
 body.custom-office-active .feed-panel { display: none; }
 body.custom-office-active .cli-pane { grid-column: 2; grid-row: 1 / 3; }
 .custom-builder { grid-column: 1; grid-row: 2; min-width: 0; background: #f9f5eb; border-top: 1px solid #d3c7b0; border-right: 1px solid var(--line); box-shadow: 0 -4px 20px #3445340b; padding: 8px 18px 5px; }

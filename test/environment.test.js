@@ -30,22 +30,37 @@ test('강수 코드·강수량을 판별하고 눈을 비보다 우선한다', (
   assert.equal(normalizeWeather(response({ weather_code: 45 }), noon).condition, 'fog');
 });
 
-test('네온 야경은 서울 22시부터 자정을 지나 07시 직전까지 적용된다', () => {
-  let time;
-  const env = new OfficeEnvironment({ now: () => time });
-  for (const [clock, expected] of [['21:59:59', false], ['22:00:00', true], ['23:59:59', true], ['00:00:00', true], ['06:59:59', true], ['07:00:00', false]]) {
-    time = Date.parse(`2026-10-26T${clock}+09:00`);
-    env.setWeather({ available: true, observedAt: time, condition: 'clear', temperature: 14 });
-    assert.equal(env.snapshot().neon, expected, clock);
+test('서울 15:00부터 일몰이며 18:00에는 밤으로 전환한다', () => {
+  let time; const env = new OfficeEnvironment({ now: () => time });
+  for (const [clock, sunset, night] of [['06:59:59', false, true], ['07:00:00', false, false], ['14:59:59', false, false], ['15:00:00', true, false], ['17:59:59', true, false], ['18:00:00', false, true], ['22:00:00', false, true]]) {
+    time = Date.parse(`2026-10-27T${clock}+09:00`);
+    assert.equal(env.snapshot().sunset, sunset, clock); assert.equal(env.snapshot().night, night, clock);
+    assert.match(env.snapshot().label, new RegExp(` · ${night ? '밤' : sunset ? '일몰' : '낮'} · `));
+  }
+  for (const condition of ['rain', 'snow', 'cloudy']) {
+    time = Date.parse('2026-10-27T16:30:00+09:00'); env.setWeather({ available: true, observedAt: time, condition, temperature: 14 });
+    assert.equal(env.snapshot().sunset, true); assert.equal(env.snapshot().condition, condition);
   }
 });
 
-test('같은 분에도 비가 시작되면 네온이 꺼지고 비가 그치면 다시 켜진다', () => {
+test('공통 환경은 22시 이후에도 일반 밤을 유지하고 네온을 자동 적용하지 않는다', () => {
+  let time;
+  const env = new OfficeEnvironment({ now: () => time });
+  for (const clock of ['21:59:59', '22:00:00', '23:59:59', '00:00:00', '06:59:59', '07:00:00']) {
+    time = Date.parse(`2026-10-26T${clock}+09:00`);
+    env.setWeather({ available: true, observedAt: time, condition: 'clear', temperature: 14 });
+    assert.equal(env.snapshot().neon, false, clock);
+    assert.equal(env.snapshot().night, clock !== '07:00:00', clock);
+  }
+});
+
+test('일반 밤은 날씨가 바뀌어도 네온 없이 현재 강수 상태만 반영한다', () => {
   let time = Date.parse('2026-10-26T22:30:00+09:00');
   const env = new OfficeEnvironment({ now: () => time });
   for (const condition of ['clear', 'rain', 'cloudy', 'fog', 'snow', 'rain']) {
     env.setWeather({ available: true, observedAt: time, condition, temperature: 14 });
-    assert.equal(env.snapshot().neon, condition !== 'rain', condition);
+    assert.equal(env.snapshot().neon, false, condition);
+    assert.equal(env.snapshot().condition, condition);
   }
   env.setWeather({ available: true, observedAt: time, condition: 'clear', temperature: 14 });
   time += 61 * 60000;

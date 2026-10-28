@@ -7,5 +7,5 @@ export default {
   name: '픽셀 오피스 · 배경 없음',
   exteriorVisible: false,
   windowStyle: 'simple',
-  sceneBackground(env) { return env?.night ? '#25313f' : '#edf2eb'; },
+  sceneBackground(env) { return env?.night ? '#25313f' : env?.sunset ? '#f8eddd' : '#edf2eb'; },
 };

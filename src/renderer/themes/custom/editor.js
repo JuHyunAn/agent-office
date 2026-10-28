@@ -3,6 +3,7 @@ import { footprint, snap, placementError, place, validate, area, BASE_AREA, make
 import { saveOffice, importBackground } from './storage.js';
 import { ENVIRONMENT_OPTIONS, environmentSettings } from './environment.js';
 
+const EDIT_MIN_ZOOM = 0.4; // 제작 중에는 40% 까지 줄여 넓게 보며 배치한다 (이용 중은 100%)
 const node = (tag, text, cls) => { const e = document.createElement(tag); if (text) e.textContent = text; if (cls) e.className = cls; return e; };
 export class OfficeEditor {
   constructor(theme, doc) {
@@ -73,10 +74,10 @@ export class OfficeEditor {
       else if (e.ctrlKey && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? this.redo() : this.undo(); }
       else if (e.ctrlKey && e.key.toLowerCase() === 'y') { e.preventDefault(); this.redo(); }
     }, { signal: this.signal });
-    this.applyLayout(false); view.resize(); view.fit();
+    this.applyLayout(false); view.resize(); view.setMinZoom(this.editing ? EDIT_MIN_ZOOM : 1); view.fit();
   }
   unmount() {
-    this.cancel(); this.abort?.abort(); this.panel?.remove(); document.body.classList.remove('custom-office-active'); this.view = null;
+    this.cancel(); this.abort?.abort(); this.panel?.remove(); document.body.classList.remove('custom-office-active'); this.view?.setMinZoom(1); this.view = null;
   }
   message(text) { if (this.status) this.status.textContent = text; }
   refresh() {
@@ -173,7 +174,7 @@ export class OfficeEditor {
   toggle() {
     if (this.editing && !this.nameEditor.hidden) this.renameSelected(this.nameInput.value);
     if (this.editing && !this.applyLayout()) return;
-    this.editing = !this.editing; this.selected = null; this.cancel(); this.refresh(); this.view.fit();
+    this.editing = !this.editing; this.selected = null; this.cancel(); this.refresh(); this.view.setMinZoom(this.editing ? EDIT_MIN_ZOOM : 1); this.view.fit();
     if (this.editing) { this.view.life?.closeMenu(); this.view.notify(); }
     this.message(this.editing ? '재료를 배치하고 저장 · 이용하기를 눌러 주세요.' : '저장했어요. 바닥을 클릭해 이동하고 가구를 클릭해 이용하세요.');
   }

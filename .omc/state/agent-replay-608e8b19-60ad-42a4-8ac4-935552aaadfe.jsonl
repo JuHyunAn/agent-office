@@ -1,3 +1,4 @@
 {"t":0,"agent":"system","event":"skill_invoked","skill_name":"superpowers:test-driven-development"}
 {"t":0,"agent":"a842609","agent_type":"code-reviewer","event":"agent_start","parent_mode":"none"}
 {"t":0,"agent":"a842609","agent_type":"code-reviewer","event":"agent_stop","success":true,"duration_ms":305550}
+{"t":0,"agent":"aaaa6cc","agent_type":"untracked-native-fork","event":"agent_stop","success":true,"synthetic":true,"telemetry_status":"unmatched_stop","reason":"SubagentStop arrived without a matching SubagentStart; native Agent/Task start telemetry was not observed."}

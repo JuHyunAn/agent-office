@@ -42,7 +42,7 @@ function glow(ctx, x, y, rx, ry, rgb, strength) {
 }
 
 export function createAtmosphere({ width, height, detail, project }) {
-  let shade, warmLights, sunlight, floorShadows, overcast;
+  let shade, warmLights, sunlight, sunsetLight, floorShadows, overcast;
   const simpleViews = new Map();
   const layer = draw => {
     const canvas = document.createElement('canvas'); canvas.width = width * detail; canvas.height = height * detail;
@@ -75,6 +75,25 @@ export function createAtmosphere({ width, height, detail, project }) {
           const p = project(pane.x + (side ? 65 : pane.w / 2), pane.y + (side ? pane.w / 2 : 65));
           glow(ctx, p.x, p.y, 120, 65, '255,233,164', 0.26);
           ctx.restore();
+        }
+        ctx.globalCompositeOperation = 'destination-in'; ctx.drawImage(mask, 0, 0, width, height);
+      });
+      sunsetLight = layer(ctx => {
+        ctx.fillStyle = '#e49b721b'; ctx.fillRect(0, 0, width, height);
+        for (const pane of WINDOWS) {
+          const near = project(pane.x + pane.w / 2, pane.y + 24), far = project(pane.x + pane.w / 2 - 110, pane.y + 660);
+          const light = ctx.createLinearGradient(near.x, near.y, far.x, far.y);
+          light.addColorStop(0, '#ffc46e8c'); light.addColorStop(.55, '#ffc48938'); light.addColorStop(1, '#ffc48900');
+          for (let n = 0; n < 4; n++) {
+            const x = pane.x + pane.w * n / 4, w = pane.w / 4 - 12;
+            trace(ctx, [project(x, pane.y + 18, 2), project(x + w, pane.y + 18, 2), project(x + w - 110, pane.y + 660, 2), project(x - 110, pane.y + 660, 2)]);
+            ctx.fillStyle = light; ctx.fill();
+          }
+          glow(ctx, near.x, near.y, pane.w * .45, 100, '255,189,105', .17);
+        }
+        for (const lamp of DESK_LIGHTS) {
+          const p = project(lamp.x + 36, lamp.y + 14, 23);
+          glow(ctx, p.x, p.y, 55, 24, '255,201,136', .12);
         }
         ctx.globalCompositeOperation = 'destination-in'; ctx.drawImage(mask, 0, 0, width, height);
       });
@@ -123,7 +142,7 @@ export function createAtmosphere({ width, height, detail, project }) {
 
     drawWindows(ctx, t, env, background, style) {
       if (style === 'simple') {
-        const key = `${Boolean(env.night)}:${['rain', 'snow', 'fog', 'cloudy'].includes(env.condition)}`;
+        const key = `${Boolean(env.night)}:${Boolean(env.sunset)}:${['rain', 'snow', 'fog', 'cloudy'].includes(env.condition)}`;
         if (!simpleViews.has(key)) simpleViews.set(key, layer(c => {
           for (const pane of WINDOWS) {
             c.save(); trace(c, windowPoints(pane, project)); c.clip();
@@ -142,21 +161,21 @@ export function createAtmosphere({ width, height, detail, project }) {
         const topY = Math.min(...points.map(p => p.y)), bottomY = Math.max(...points.map(p => p.y));
         const violet = env.neon && env.condition !== 'rain';
         const glass = ctx.createLinearGradient(left, topY, right, bottomY);
-        glass.addColorStop(0, env.night ? violet ? '#b88fe41a' : '#b9d6ea14' : '#edfff22b');
+        glass.addColorStop(0, env.night ? violet ? '#b88fe41a' : '#b9d6ea14' : env.sunset ? '#ffc47d48' : '#edfff22b');
         glass.addColorStop(0.45, '#c3e2ee02');
-        glass.addColorStop(0.7, env.night ? '#cad9e71c' : '#ffffff30');
+        glass.addColorStop(0.7, env.night ? '#cad9e71c' : env.sunset ? '#ffe4b54a' : '#ffffff30');
         glass.addColorStop(1, '#9ebedc04');
         ctx.fillStyle = glass; ctx.fillRect(left, topY, right - left, bottomY - topY);
         // 실내의 따뜻한 등과 창밖의 차가운 빛이 유리에 옅게 겹친다.
         const center = { x: (points[0].x + points[1].x) / 2, y: (points[0].y + points[1].y) / 2 };
-        glow(ctx, center.x, center.y - 17, (right - left) * 0.42, 24, env.night ? '255,211,153' : '255,247,207', env.night ? 0.15 : 0.10);
+        glow(ctx, center.x, center.y - 17, (right - left) * 0.42, 24, env.night ? '255,211,153' : env.sunset ? '255,192,112' : '255,247,207', env.sunset ? .22 : env.night ? 0.15 : 0.10);
         const shineX = left + (right - left) * 0.68;
-        ctx.fillStyle = env.night ? '#e7dbbe12' : '#ffffff25';
+        ctx.fillStyle = env.night ? '#e7dbbe12' : env.sunset ? '#ffe3a841' : '#ffffff25';
         ctx.fillRect(shineX, topY, 2, bottomY - topY); ctx.fillRect(shineX + 5, topY, 1, bottomY - topY);
         ctx.restore();
         ctx.strokeStyle = env.night ? '#344c60' : '#91aaa9'; ctx.lineWidth = 4;
         trace(ctx, points); ctx.stroke();
-        ctx.strokeStyle = env.night ? '#89949d' : '#f4edda'; ctx.lineWidth = 1.25;
+        ctx.strokeStyle = env.night ? '#89949d' : env.sunset ? '#f8d9a5' : '#f4edda'; ctx.lineWidth = 1.25;
         trace(ctx, points); ctx.stroke();
         const x = pane.x + (pane.axis === 'x' ? pane.w / 2 : 0), y = pane.y + (pane.axis === 'y' ? pane.w / 2 : 0);
         const top = project(x, y, pane.top), bottom = project(x, y, pane.bottom);
@@ -172,8 +191,10 @@ export function createAtmosphere({ width, height, detail, project }) {
     drawLighting(ctx, env) {
       if (env.night) {
         ctx.drawImage(shade, 0, 0, width, height);
-      } else if (['rain', 'snow', 'fog', 'cloudy'].includes(env.condition)) {
-        ctx.drawImage(overcast, 0, 0, width, height);
+      } else {
+        const cloudy = ['rain', 'snow', 'fog', 'cloudy'].includes(env.condition);
+        if (env.sunset) { ctx.save(); ctx.globalAlpha = cloudy ? .45 : 1; ctx.drawImage(sunsetLight, 0, 0, width, height); ctx.restore(); }
+        if (cloudy) ctx.drawImage(overcast, 0, 0, width, height);
       }
     },
   };

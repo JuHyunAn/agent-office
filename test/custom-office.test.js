@@ -18,11 +18,23 @@ test('제작 환경은 날씨·낮밤·조명을 독립 선택하고 자동 설�
   const snow = resolveEnvironment({ environment: { time: 'day', weather: 'snow' } }, { night: true, condition: 'clear' });
   assert.equal(snow.night, false); assert.equal(snow.condition, 'snow'); assert.equal(actual.condition, 'rain');
   assert.deepEqual(environmentSettings({ weather: '잘못된 값', time: '잘못된 값' }), { weather: 'auto', time: 'auto', lighting: 'standard' });
+  const afternoon = resolveEnvironment({}, { night: false, sunset: true, condition: 'clear', label: '서울 16:30 · 일몰 · 맑음' });
+  assert.equal(afternoon.sunset, true); assert.match(afternoon.label, / · 일몰 · /);
+});
+
+test('일몰은 실제 시간과 별도로 고정할 수 있고 낮·밤 선택으로 해제된다', () => {
+  const actual = { night: true, sunset: false, condition: 'rain' };
+  const sunset = resolveEnvironment({ environment: { time: 'sunset', lighting: 'citypop' } }, actual);
+  assert.equal(sunset.sunset, true); assert.equal(sunset.night, false); assert.equal(sunset.condition, 'rain'); assert.equal(sunset.citypop, true); assert.match(sunset.label, /일몰.*비.*시티팝/);
+  for (const time of ['day', 'night']) {
+    const env = resolveEnvironment({ environment: { time } }, { night: false, sunset: true });
+    assert.equal(env.sunset, false); assert.equal(env.night, time === 'night');
+  }
 });
 
 test('환경 선택은 배치와 함께 저장되며 이전 저장 형식도 읽을 수 있다', () => {
   const doc = exampleDocument(); assert.deepEqual(parseDocument(doc), doc);
-  doc.environment = { weather: 'snow', time: 'night', lighting: 'citypop' };
+  doc.environment = { weather: 'snow', time: 'sunset', lighting: 'citypop' };
   const values = new Map(), storage = { getItem: k => values.get(k), setItem: (k, v) => values.set(k, v) };
   saveOffice(storage, doc); assert.deepEqual(readOffice(storage), doc);
 });

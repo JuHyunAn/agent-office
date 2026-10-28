@@ -1,7 +1,7 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1792997292852,
-  "projectRoot": "c:\\Users\\dkswn\\Desktop\\agent-office",
+  "lastScanned": 1793146376330,
+  "projectRoot": "C:\\Users\\dkswn\\Desktop\\agent-office",
   "techStack": {
     "languages": [
       {
@@ -24,7 +24,10 @@
     "devCommand": "npm run start",
     "scripts": {
       "start": "node scripts/start.mjs",
-      "test": "node --test \"test/*.test.js\""
+      "test": "node --test \"test/*.test.js\"",
+      "test:renderer": "node scripts/check-renderer.cjs",
+      "test:custom": "node scripts/check-custom-office.cjs",
+      "dist": "electron-builder --win"
     }
   },
   "conventions": {
@@ -41,16 +44,54 @@
       "src",
       "test"
     ],
-    "gitBranches": null
+    "gitBranches": {
+      "defaultBranch": "main",
+      "branchingStrategy": null
+    }
   },
   "customNotes": [],
   "directoryMap": {
+    "dist": {
+      "path": "dist",
+      "purpose": "Distribution/build output",
+      "fileCount": 4,
+      "lastAccessed": 1793146376255,
+      "keyFiles": [
+        "AgentOffice-Setup-0.1.0.exe",
+        "AgentOffice-Setup-0.1.0.exe.blockmap",
+        "builder-debug.yml",
+        "latest.yml"
+      ]
+    },
+    "icon": {
+      "path": "icon",
+      "purpose": null,
+      "fileCount": 12,
+      "lastAccessed": 1793146376256,
+      "keyFiles": [
+        "app.ico",
+        "icons8-클로드-느낌표-144-2.png",
+        "icons8-클로드-느낌표-144.png",
+        "icons8-클로드-느낌표-192.png",
+        "icons8-클로드-느낌표-36.png"
+      ]
+    },
+    "output": {
+      "path": "output",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1793146376267,
+      "keyFiles": []
+    },
     "scripts": {
       "path": "scripts",
       "purpose": "Build/utility scripts",
-      "fileCount": 1,
-      "lastAccessed": 1792997292033,
+      "fileCount": 4,
+      "lastAccessed": 1793146376267,
       "keyFiles": [
+        "check-custom-office.cjs",
+        "check-renderer.cjs",
+        "make-icon.ps1",
         "start.mjs"
       ]
     },
@@ -58,140 +99,119 @@
       "path": "src",
       "purpose": "Source code",
       "fileCount": 0,
-      "lastAccessed": 1792997292036,
+      "lastAccessed": 1793146376268,
       "keyFiles": []
     },
     "test": {
       "path": "test",
       "purpose": "Test files",
-      "fileCount": 2,
-      "lastAccessed": 1792997292059,
+      "fileCount": 11,
+      "lastAccessed": 1793146376268,
       "keyFiles": [
+        "building.test.js",
+        "cityscape.test.js",
+        "custom-office.test.js",
         "engine.test.js",
-        "main.test.js"
+        "environment.test.js"
       ]
     }
   },
   "hotPaths": [
     {
-      "path": "src/renderer/office/engine.js",
-      "accessCount": 27,
-      "lastAccessed": 1793081177872,
+      "path": "src/renderer/office/camera.js",
+      "accessCount": 8,
+      "lastAccessed": 1793152092452,
       "type": "file"
     },
     {
-      "path": "test/engine.test.js",
-      "accessCount": 11,
-      "lastAccessed": 1793081191178,
+      "path": "src/renderer/styles.css",
+      "accessCount": 4,
+      "lastAccessed": 1793147153439,
       "type": "file"
+    },
+    {
+      "path": "output/design/office-1100.png",
+      "accessCount": 4,
+      "lastAccessed": 1793147206120,
+      "type": "file"
+    },
+    {
+      "path": "test/office-play.test.js",
+      "accessCount": 4,
+      "lastAccessed": 1793152085609,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/themes/custom/editor.js",
+      "accessCount": 4,
+      "lastAccessed": 1793152148527,
+      "type": "file"
+    },
+    {
+      "path": "scripts/check-custom-office.cjs",
+      "accessCount": 3,
+      "lastAccessed": 1793152116446,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer/office/view.js",
+      "accessCount": 3,
+      "lastAccessed": 1793152134543,
+      "type": "file"
+    },
+    {
+      "path": "CUSTOMIZING.md",
+      "accessCount": 3,
+      "lastAccessed": 1793152244621,
+      "type": "directory"
+    },
+    {
+      "path": "src/renderer/index.html",
+      "accessCount": 2,
+      "lastAccessed": 1793146540077,
+      "type": "file"
+    },
+    {
+      "path": "src/renderer",
+      "accessCount": 2,
+      "lastAccessed": 1793147150156,
+      "type": "directory"
     },
     {
       "path": "src/renderer/app.js",
-      "accessCount": 3,
-      "lastAccessed": 1793080817764,
+      "accessCount": 2,
+      "lastAccessed": 1793152137868,
       "type": "file"
     },
     {
       "path": "",
-      "accessCount": 3,
-      "lastAccessed": 1793080828699,
+      "accessCount": 1,
+      "lastAccessed": 1793146482977,
       "type": "directory"
     },
     {
-      "path": "src",
-      "accessCount": 2,
-      "lastAccessed": 1793080940281,
-      "type": "directory"
-    },
-    {
-      "path": "src/renderer/office/view.js",
-      "accessCount": 2,
-      "lastAccessed": 1793080949784,
+      "path": "src/renderer/themes/custom/editor.css",
+      "accessCount": 1,
+      "lastAccessed": 1793146545780,
       "type": "file"
     },
     {
-      "path": "src/main/main.cjs",
+      "path": "output/design/custom-office-built.png",
       "accessCount": 1,
-      "lastAccessed": 1793063753354,
-      "type": "file"
-    },
-    {
-      "path": "src/main/hookServer.cjs",
-      "accessCount": 1,
-      "lastAccessed": 1793063753892,
-      "type": "file"
-    },
-    {
-      "path": "src/main/hookSettings.cjs",
-      "accessCount": 1,
-      "lastAccessed": 1793063754491,
-      "type": "file"
-    },
-    {
-      "path": "src/main/claudeCli.cjs",
-      "accessCount": 1,
-      "lastAccessed": 1793063755016,
-      "type": "file"
-    },
-    {
-      "path": "src/main/ptyManager.cjs",
-      "accessCount": 1,
-      "lastAccessed": 1793063755513,
-      "type": "file"
-    },
-    {
-      "path": "src/main/env.cjs",
-      "accessCount": 1,
-      "lastAccessed": 1793063755981,
-      "type": "file"
-    },
-    {
-      "path": "src/main/weather.cjs",
-      "accessCount": 1,
-      "lastAccessed": 1793063756517,
+      "lastAccessed": 1793146635744,
       "type": "file"
     },
     {
       "path": "README.md",
       "accessCount": 1,
-      "lastAccessed": 1793063756879,
+      "lastAccessed": 1793146735800,
       "type": "file"
     },
     {
-      "path": "src/renderer/office/life.js",
+      "path": "output/design/custom-office-editor-zoomed-out.png",
       "accessCount": 1,
-      "lastAccessed": 1793063761591,
+      "lastAccessed": 1793152231384,
       "type": "file"
-    },
-    {
-      "path": "src/renderer/office/roles.js",
-      "accessCount": 1,
-      "lastAccessed": 1793063762186,
-      "type": "file"
-    },
-    {
-      "path": "src/renderer/office/navigation.js",
-      "accessCount": 1,
-      "lastAccessed": 1793063762607,
-      "type": "file"
-    },
-    {
-      "path": "THEME.md",
-      "accessCount": 1,
-      "lastAccessed": 1793063774812,
-      "type": "file"
-    },
-    {
-      "path": "CUSTOMIZING.md",
-      "accessCount": 1,
-      "lastAccessed": 1793074319167,
-      "type": "file"
-    },
-    {
-      "path": "src/main",
-      "accessCount": 1,
-      "lastAccessed": 1793080948759,
-      "type": "directory"
     }
   ],
   "userDirectives": []

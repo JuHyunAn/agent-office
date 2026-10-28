@@ -5,6 +5,7 @@ import { PIXEL_DETAIL } from './raster.js';
 // 최초 시안의 도시와 유리 외벽을 실제 바닥 외곽선에 맞춰 합성한다.
 const PLATES = {
   day: { url: new URL('../../assets/city/day-v2.png', import.meta.url), anchors: [[756, 137], [355, 334], [1463, 493]] },
+  sunset: { url: new URL('../../assets/city/sunset-v1.png', import.meta.url), anchors: [[739, 133], [346, 326], [1434, 484]] },
   night: { url: new URL('../../assets/city/night-v2.png', import.meta.url), anchors: [[740, 132], [349, 326], [1433, 482]] },
   neon: { url: new URL('../../assets/city/neon-v2.png', import.meta.url), anchors: [[754, 137], [353, 334], [1462, 493]] },
 };
@@ -21,7 +22,7 @@ function loadImage(key) {
 }
 
 export function loadCityImages() {
-  return loading ||= Promise.all(['day', 'night', 'neon'].map(loadImage)).catch(error => { loading = null; throw error; });
+  return loading ||= Promise.all(['day', 'sunset', 'night', 'neon'].map(loadImage)).catch(error => { loading = null; throw error; });
 }
 
 export const TOWER_FACES = [
@@ -60,7 +61,7 @@ export function createExterior({ width, height, project }) {
     }
   }
   function city(env) {
-    const variant = env.cityStyle === 'citypop' ? 'citypop' : env.night ? env.neon && env.condition !== 'rain' ? 'neon' : 'night' : 'day';
+    const variant = env.cityStyle === 'citypop' ? 'citypop' : env.night ? env.neon && env.condition !== 'rain' ? 'neon' : 'night' : env.sunset ? 'sunset' : 'day';
     const overcast = ['rain', 'snow', 'fog', 'cloudy'].includes(env.condition);
     const key = `${variant}:${overcast}`;
     if (!cache.has(key)) {
@@ -77,7 +78,7 @@ export function createExterior({ width, height, project }) {
         drawAligned(c, image, PLATES[variant].anchors, target);
       }
       // 배경의 대비를 낮춰 실제 사무실과 캐릭터가 먼저 보이도록 한다.
-      c.fillStyle = variant === 'citypop' ? '#2c124c35' : env.night ? variant === 'neon' ? '#11152c38' : '#14223830' : '#e1e9e51a';
+      c.fillStyle = variant === 'citypop' ? '#2c124c35' : env.night ? variant === 'neon' ? '#11152c38' : '#14223830' : env.sunset ? '#e9bd9610' : '#e1e9e51a';
       c.fillRect(0, 0, width, height);
       if (overcast) { c.fillStyle = env.night ? '#0d1b2a20' : '#40566a38'; c.fillRect(0, 0, width, height); }
       // 아래층 외벽은 화면 끝 아래로 이어지고, 멀어질수록 어둡게 물러난다.

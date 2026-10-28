@@ -1,13 +1,13 @@
 import { polygon, line } from '../pixel-office/raster.js';
 import { MATERIALS, isFloor, isWall, ROLES } from './catalog.js';
-import { footprint, localPoint } from './model.js';
+import { footprint, localPoint, onFloor } from './model.js';
 import { drawSimpleWindow, drawSimpleWindowWeather } from '../pixel-office/simple-windows.js';
 import { drawCharacter } from '../pixel-office/sprites.js';
 import { resolveEnvironment } from './environment.js';
 
 const shade = (hex, delta) => '#' + hex.slice(1).match(/../g).map(v => Math.max(0, Math.min(255, parseInt(v, 16) + delta)).toString(16).padStart(2, '0')).join('');
 export function createArt() {
-  let origin = { x: 800, y: 150 }, bounds = { width: 1600, height: 1000 }, revision = null, floorCanvas;
+  let origin = { x: 800, y: 150 }, bounds = { width: 1600, height: 1000 }, revision = null, floorCanvas, sunsetCanvas;
   const cache = new Map();
   const project = (x, y, z = 0) => ({ x: Math.round((origin.x + (x - y) * .36) * 2) / 2, y: Math.round((origin.y + (x + y) * .18 - z) * 2) / 2 });
   const plane = (c, item, x, y, w, d, z, color) => polygon(c, [[x, y], [x + w, y], [x + w, y + d], [x, y + d]].map(([u, v]) => { const p = localPoint(item, u, v); return project(p.x, p.y, z); }), color);
@@ -62,11 +62,11 @@ export function createArt() {
         drawSimpleWindow(c, pane, zeroProject, env);
         if (precipitation) drawSimpleWindowWeather(c, pane, zeroProject, t, env);
         c.restore();
-        face(c, i, 12, 13, w - 24, 15, 92, '#d7eff018');
+        face(c, i, 12, 13, w - 24, 15, 92, env.sunset ? '#ffe0aa2c' : '#d7eff018');
         for (const x of i.kind === 'window-grid' ? [48, 96, 144] : [96]) box(c, i, x, 13, 3, 2, 15, 92, '#e7dfca');
         if (i.kind === 'window-grid') face(c, i, 12, 14, 168, 59, 3, '#e7dfca');
         if (i.kind === 'window-round') for (let n = 0; n < 4; n++) for (const x of [12 + n * 6, 174 - n * 6]) face(c, i, x, 14, 6, 83 + n * 6, 24 - n * 6, m.color);
-        face(c, i, 26, 15, 3, 22, 78, '#ffffff55');
+        face(c, i, 26, 15, 3, 22, 78, env.sunset ? '#fff0c77a' : '#ffffff55');
       }
       return;
     }
@@ -124,16 +124,18 @@ export function createArt() {
     const minX = Math.min(...ext.map(i => i.x)), maxX = Math.max(...ext.map(i => i.x + 192)), minY = Math.min(...ext.map(i => i.y)), maxY = Math.max(...ext.map(i => i.y + 192));
     origin = { x: 100 - (minX - maxY) * .36, y: 155 - (minX + minY) * .18 };
     bounds = { width: (maxX - minX + maxY - minY) * .36 + 200, height: (maxX - minX + maxY - minY) * .18 + 255 };
-    floorCanvas = null;
+    floorCanvas = sunsetCanvas = null;
   }
   function paintCached(c, i, env) {
-    const key = `${i.id}:${!!env.citypop}` + (i.kind.startsWith('window') ? `:${!!env.night}:${['rain', 'snow', 'fog', 'cloudy'].includes(env.condition)}` : '');
+    const cloudy = ['rain', 'snow', 'fog', 'cloudy'].includes(env.condition);
+    const key = `${i.id}:${!!env.citypop}:${!!env.sunset}` + (i.kind.startsWith('window') ? `:${!!env.night}:${cloudy}` : env.sunset ? `:${cloudy}` : '');
     let image = cache.get(key);
     if (!image) {
       const f = footprint(i), p = project(i.x + f.w / 2, i.y + f.h / 2);
       const canvas = document.createElement('canvas'); canvas.width = 400; canvas.height = 360;
       const b = canvas.getContext('2d'); b.setTransform(2, 0, 0, 2, 200 - p.x * 2, 290 - p.y * 2);
       item(b, i, 0, env, 0, false);
+      if (env.sunset && !i.kind.startsWith('window')) { b.save(); b.setTransform(1, 0, 0, 1, 0, 0); b.globalCompositeOperation = 'source-atop'; b.fillStyle = cloudy ? '#efb57910' : '#efb57926'; b.fillRect(0, 0, canvas.width, canvas.height); b.restore(); }
       if (env.citypop) { b.save(); b.setTransform(1, 0, 0, 1, 0, 0); b.globalCompositeOperation = 'source-atop'; b.fillStyle = i.kind.startsWith('window') ? '#a458d44d' : '#a96bdd23'; b.fillRect(0, 0, canvas.width, canvas.height); b.restore(); }
       image = { canvas, x: p.x - 100, y: p.y - 145 }; cache.set(key, image);
     }
@@ -150,6 +152,21 @@ export function createArt() {
   function outline(c, i, color) {
     const f = footprint(i), pts = [[f.x, f.y], [f.x + f.w, f.y], [f.x + f.w, f.y + f.h], [f.x, f.y + f.h]].map(([x, y]) => project(x, y, 2));
     polygon(c, pts, color + '35'); for (let n = 0; n < 4; n++) line(c, pts[n], pts[(n + 1) % 4], color);
+  }
+  function sunsetFloor(doc) {
+    if (sunsetCanvas) return sunsetCanvas;
+    sunsetCanvas = document.createElement('canvas'); sunsetCanvas.width = floorCanvas.width; sunsetCanvas.height = floorCanvas.height;
+    const c = sunsetCanvas.getContext('2d'); c.scale(2, 2);
+    for (const floor of doc.items.filter(isFloor)) plane(c, floor, 0, 0, 192, 192, 1, '#eda87228');
+    for (const window of doc.items.filter(i => i.kind.startsWith('window'))) {
+      const direction = onFloor(doc, localPoint(window, 96, 72)) ? 1 : -1;
+      const point = (u, v) => { const p = localPoint(window, u, v * direction); return project(p.x, p.y, 1); };
+      const a = point(96, 18), b = point(56, 500), gradient = c.createLinearGradient(a.x, a.y, b.x, b.y);
+      gradient.addColorStop(0, '#ffd18d70'); gradient.addColorStop(.5, '#ffc18630'); gradient.addColorStop(1, '#ffc18600');
+      for (let n = 0; n < 3; n++) { const u = 12 + n * 56; polygon(c, [point(u, 18), point(u + 48, 18), point(u + 8, 500), point(u - 40, 500)], gradient); }
+    }
+    c.globalCompositeOperation = 'destination-in'; c.drawImage(floorCanvas, 0, 0, bounds.width, bounds.height);
+    return sunsetCanvas;
   }
   return {
     project, setDocument, item, outline,
@@ -168,8 +185,8 @@ export function createArt() {
       setDocument(doc); const env = resolveEnvironment(doc, state.environment);
       c.save(); c.scale(2, 2); c.imageSmoothingEnabled = false;
       if (!state.backdropDrawn) {
-        c.fillStyle = env.citypop ? env.night ? '#29223f' : '#e9e1ed' : env.night ? '#293342' : '#e9eee7'; c.fillRect(0, 0, bounds.width, bounds.height);
-        if (background) { const scale = Math.max(bounds.width / background.width, bounds.height / background.height); c.drawImage(background, (bounds.width - background.width * scale) / 2, (bounds.height - background.height * scale) / 2, background.width * scale, background.height * scale); c.fillStyle = '#1c253329'; c.fillRect(0, 0, bounds.width, bounds.height); }
+        c.fillStyle = env.citypop ? env.night ? '#29223f' : '#e9e1ed' : env.night ? '#293342' : env.sunset ? '#f8eddd' : '#e9eee7'; c.fillRect(0, 0, bounds.width, bounds.height);
+        if (background) { const scale = Math.max(bounds.width / background.width, bounds.height / background.height); c.drawImage(background, (bounds.width - background.width * scale) / 2, (bounds.height - background.height * scale) / 2, background.width * scale, background.height * scale); }
       }
       if (!floorCanvas) {
         floorCanvas = document.createElement('canvas'); floorCanvas.width = Math.ceil(bounds.width * 2); floorCanvas.height = Math.ceil(bounds.height * 2);
@@ -178,6 +195,7 @@ export function createArt() {
         for (const i of doc.items.filter(i => ['rug', 'mat', 'entry'].includes(i.kind))) item(f, i);
       }
       c.drawImage(floorCanvas, 0, 0, bounds.width, bounds.height);
+      if (env.sunset) { c.save(); c.globalAlpha = ['rain', 'snow', 'fog', 'cloudy'].includes(env.condition) ? .45 : 1; c.drawImage(sunsetFloor(doc), 0, 0, bounds.width, bounds.height); c.restore(); }
       if (env.night || env.citypop) {
         for (const i of doc.items.filter(isFloor)) plane(c, i, 0, 0, 192, 192, 1, env.citypop ? env.night ? '#35205780' : '#9467b12b' : '#14234065');
         const lights = doc.items.filter(i => ['lamp', 'desk'].includes(i.kind));

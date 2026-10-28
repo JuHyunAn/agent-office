@@ -19,13 +19,13 @@ const theme = {
   project(x, y) { const p = art.project(x, y); return { x: p.x * 2, y: p.y * 2 }; },
   unproject(x, y) { return art.unproject(x, y); },
   resolveEnvironment(env) { return resolveEnvironment(this.editor.doc, env); },
-  sceneBackground(env) { return env?.citypop ? env.night ? '#29223f' : '#e9e1ed' : env?.night ? '#293342' : '#e9eee7'; },
+  sceneBackground(env) { return env?.citypop ? env.night ? '#29223f' : '#e9e1ed' : env?.night ? '#293342' : env?.sunset ? '#f8eddd' : '#e9eee7'; },
   drawBackdrop(ctx, width, height) {
     if (!background) return false;
     const scale = Math.max(width / background.width, height / background.height);
     ctx.save(); ctx.imageSmoothingEnabled = true;
     ctx.drawImage(background, (width - background.width * scale) / 2, (height - background.height * scale) / 2, background.width * scale, background.height * scale);
-    ctx.fillStyle = '#1c253329'; ctx.fillRect(0, 0, width, height); ctx.restore(); return true;
+    ctx.restore(); return true;
   },
   createLife(layout, engine) { return new CustomLife(layout, engine); },
   setDraft(doc) {

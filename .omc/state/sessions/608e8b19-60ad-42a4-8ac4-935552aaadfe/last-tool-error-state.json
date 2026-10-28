@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"git status --short | grep -v \\\"\\\\.omc\\\"; node -e \\\"\\nconst asar=require('@electron/asar');const s=asar.extractFile('dist/win-unpacked/resources/app.asar','src\\\\\\\\\\\\\\\\main\\\\\\\\\\\\\\\\claudeCli....",
+  "error": "Exit code 1\nC:\\Users\\dkswn\\Desktop\\agent-office\\node_modules\\@electron\\asar\\lib\\filesystem.js:187\r\n            throw new Error(`\"${p}\" was not found in this archive`);\r\n            ^\r\n\r\nError: \"srcmainclaudeCli.cjs\" was not found in this archive\r\n    at Filesystem.getFile (C:\\Users\\dkswn\\Desktop\\agent-office\\node_modules\\@electron\\asar\\lib\\filesystem.js:187:19)\r\n    at Object.extractFile (C:\\Users\\dkswn\\Desktop\\agent-office\\node_modules\\@electron\\asar\\lib\\asar.js:256:33)\r\n    at [eval]:2:51\r\n   ...",
+  "timestamp": "2026-10-27T07:54:11.422Z",
+  "retry_count": 2
+}

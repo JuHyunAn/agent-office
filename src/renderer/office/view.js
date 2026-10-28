@@ -110,6 +110,8 @@ export class OfficeView {
   }
 
   zoomBy(factor) { this.camera.zoomAt(factor); this.syncCamera(); }
+  // 축소 하한 (기본 100%). 커스터마이징 제작 중에만 낮춰 넓게 보며 배치한다.
+  setMinZoom(min) { this.camera.minZoom = min; if (this.camera.zoom < min) this.camera.fit(); this.syncCamera(); }
   fit() { this.camera.fit(); this.syncCamera(); }
   chooseDrink(id) { const chosen = this.life?.chooseDrink(id); this.notify(); return chosen; }
   closeInteractionMenu() { this.life?.closeMenu(); this.notify(); }
@@ -134,7 +136,7 @@ export class OfficeView {
 
   notify(headcount) {
     if (!this.onState) return;
-    const state = { zoom: Math.round(this.camera.zoom * 100), playerTask: this.life?.player.task || '',
+    const state = { zoom: Math.round(this.camera.zoom * 100), minZoom: Math.round(this.camera.minZoom * 100), playerTask: this.life?.player.task || '',
       environment: this.environmentSnapshot(),
       interactionMenu: this.life?.menu || null,
       heldItem: this.life?.player.heldItem ? `${this.life.player.heldItem.label} · ${Math.ceil((this.life.player.heldItem.until - this.life.time) / 1000)}초` : '',

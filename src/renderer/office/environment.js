@@ -12,13 +12,13 @@ export class OfficeEnvironment {
     this.cachedMinute = minute;
     const clock = seoulClock.format(now), hour = Number(clock.slice(0, 2));
     const night = hour >= 18 || hour < 7;
+    const sunset = hour >= 15 && hour < 18;
     const weather = this.weather;
     const available = !!weather?.available && Number.isFinite(weather.observedAt) && now - weather.observedAt <= 3600000;
     const condition = available ? weather.condition : 'unknown';
-    const neon = (hour >= 22 || hour < 7) && available && condition !== 'rain';
     const status = available ? `${WEATHER_NAMES[condition] || '확인 중'} · ${Math.round(weather.temperature)}°${weather.stale ? ' · 갱신 지연' : ''}` : '날씨 연결 대기';
-    this.cached = { night, neon, condition, cloudCover: available ? weather.cloudCover : 0,
-      label: `서울 ${clock} · ${night ? '밤' : '낮'} · ${status}`, weatherAvailable: available };
+    this.cached = { night, sunset, neon: false, condition, cloudCover: available ? weather.cloudCover : 0,
+      label: `서울 ${clock} · ${night ? '밤' : sunset ? '일몰' : '낮'} · ${status}`, weatherAvailable: available };
     return this.cached;
   }
 }

@@ -65,11 +65,13 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .drink-choice:hover, .drink-choice:focus-visible { background: #e8f0e3; border-color: #8fae9d; }
 .drink-thumbnail { display: block; flex: 0 0 36px; width: 36px; height: 40px; object-fit: contain; }
 .held-item { padding: 3px 7px; background: #ece5d3; border-radius: 6px; color: #8b765a; white-space: nowrap; }
-.office-toolbar { display: flex; align-items: center; justify-content: space-between; padding: 20px 26px 0; }
+/* 사무실 화면을 넓게 쓰도록 제목·날씨·확대 버튼을 한 줄로 둔다. */
+.office-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 20px; background: #f9fbf4; }
 .eyebrow { font: 10px Consolas, monospace; letter-spacing: 1.8px; color: #a3957b; }
-.office-toolbar h2 { margin: 4px 0 0; font-size: 20px; font-weight: 600; letter-spacing: -1px; }
+.office-title { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.office-toolbar h2 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -1px; white-space: nowrap; }
 .office-note { color: #a79b86; font-size: 11px; }
-.environment-line { display: flex; gap: 10px; flex-wrap: wrap; color: #7b897d; font-size: 10px; }
+.environment-line { display: flex; gap: 10px; flex-wrap: wrap; color: #7b897d; font-size: 12px; font-weight: 700; }
 .environment-line a { color: #98a397; text-underline-offset: 2px; }
 .office-controls { display: flex; align-items: center; gap: 5px; font-size: 10px; }
 .office-controls button { border: 1px solid #ccd7c9; border-radius: 5px; background: #f7faf4; padding: 6px 8px; color: #617a68; }
@@ -80,7 +82,6 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .player-chip { padding: 2px 5px; border-radius: 3px; color: #fff; background: #739c99; }
 .camera-hint { margin-left: auto; color: #9ba491; white-space: nowrap; }
 #player-state { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.office-toolbar { padding-bottom: 13px; background: #f9fbf4; }
 .feed-panel { background: #f8f3e8; border-top: 1px solid var(--line); padding: 9px 24px; }
 .feed-heading { display: flex; align-items: center; gap: 12px; font-size: 10px; color: #b0a38e; margin-bottom: 8px; }
 .feed {

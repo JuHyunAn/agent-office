@@ -50,6 +50,13 @@ if (!process.versions.electron) {
     assert.equal(await checkLayout(), true);
     assert.deepEqual(await js(`(()=>{const r=document.querySelector('.cli-pane').getBoundingClientRect();return {x:r.x,y:r.y,width:r.width,height:r.height};})()`), terminalBounds);
     await capture('custom-office-editor');
+    // 제작 중에는 100% 아래로 줄여 넓게 보며 배치할 수 있다.
+    assert.equal(await js(`document.querySelector('#zoom-out').disabled`), false);
+    for (let i = 0; i < 8; i++) await click(await point('#zoom-out'));
+    assert.equal(await js(`v.camera.zoom`), 0.4); assert.equal(await js(`document.querySelector('#zoom-level').textContent`), '40%');
+    assert.equal(await js(`document.querySelector('#zoom-out').disabled`), true);
+    await capture('custom-office-editor-zoomed-out');
+    await click(await point('#zoom-fit')); assert.equal(await js(`v.camera.zoom`), 1);
     // 실제 책상 선택·한글 입력으로 부서명을 바꾸고 공간 이름도 저장한다.
     const desk = await js(`e.doc.items.find(i=>i.role==='dev')`);
     await click(await screen(desk.x + 72, desk.y + 36, 32));
@@ -105,6 +112,8 @@ if (!process.versions.electron) {
     await click(await point('[data-action="mode"]')); assert.equal(await js(`e.editing`), true); assert.ok(await js(`e.errors.length>0`));
     await click(await point('[data-action="undo"]'));
     await click(await point('[data-action="mode"]')); assert.equal(await js(`e.editing`), false, await js(`document.querySelector('.custom-status').textContent`));
+    // 이용 중에는 다시 100% 가 하한이다.
+    assert.equal(await js(`(v.zoomBy(0.1),v.camera.zoom)`), 1); assert.equal(await js(`document.querySelector('#zoom-out').disabled`), true);
     // 날씨·이미지 배경은 별개이고 창문 픽셀 풍경은 그대로다.
     await js(`(()=>{v.environment.now=()=>Date.parse('2026-10-27T12:00:00+09:00');v.environment.setWeather({available:true,observedAt:Date.parse('2026-10-27T12:00:00+09:00'),condition:'clear',temperature:16});v.engine.handleEvent({session_id:'custom-demo',hook_event_name:'SubagentStart',agent_id:'developer',agent_type:'executor'});for(let n=0;n<500;n++){v.engine.update(50);v.life.update(50);}v.fit();})()`);
     await capture('custom-office-built');
@@ -116,6 +125,8 @@ if (!process.versions.electron) {
     await click(await point('[data-action="mode"]'));
     await js(`(async()=>{const c=document.createElement('canvas');c.width=600;c.height=400;const x=c.getContext('2d');const g=x.createLinearGradient(0,0,0,400);g.addColorStop(0,'#30254b');g.addColorStop(1,'#b080a4');x.fillStyle=g;x.fillRect(0,0,600,400);for(let i=0;i<14;i++){x.fillStyle=i%2?'#3d3e69':'#56547e';x.fillRect(i*47,130+i%5*32,38,300);}const blob=await new Promise(resolve=>c.toBlob(resolve));const input=document.querySelector('.custom-builder input[type=file]');const dt=new DataTransfer();dt.items.add(new File([blob],'검증용-도시.png',{type:'image/png'}));input.files=dt.files;input.dispatchEvent(new Event('change'));})()`);
     await pause(250); assert.ok(await js(`e.doc.background?.startsWith('data:image/webp')`));
+    const uploadedBackgroundUntouched = await js(`(async()=>{const img=new Image();img.src=e.doc.background;await img.decode();const c=document.createElement('canvas');c.width=img.width;c.height=img.height;const x=c.getContext('2d');v.theme.drawBackdrop(x,c.width,c.height);const actual=x.getImageData(0,0,c.width,c.height).data;x.clearRect(0,0,c.width,c.height);x.drawImage(img,0,0);return x.getImageData(0,0,c.width,c.height).data.every((b,n)=>b===actual[n]);})()`);
+    assert.equal(uploadedBackgroundUntouched,true);
     await click(await point('[data-action="mode"]')); assert.equal(await js(`e.editing`), false);
     await js(`(()=>{const time=Date.parse('2026-10-27T22:30:00+09:00');v.environment.now=()=>time;v.environment.setWeather({available:true,observedAt:time,condition:'rain',temperature:14});})()`);
     await capture('custom-office-night-background');
@@ -143,11 +154,26 @@ if (!process.versions.electron) {
     assert.equal(await js(`document.querySelectorAll('.custom-material').length`), 22);
     await click(await point('[data-action="mode"]')); assert.equal(await js(`e.editing`), false);
     await capture('custom-office-citypop-lighting');
+    // 일몰 수동 선택·자동 시간 전환·창문 캐시 복원·저장을 확인한다.
+    await click(await point('[data-action="mode"]')); await click(await point('[data-category="환경"]'));
+    await chooseEnvironment('weather', 'clear'); await chooseEnvironment('lighting', 'standard'); await chooseEnvironment('time', 'sunset');
+    assert.equal(await js(`v.environmentSnapshot().sunset`), true); assert.equal(await js(`v.environmentSnapshot().night`), false);
+    assert.match(await js(`document.querySelector('#environment-state').textContent`), /일몰.*맑음/);
+    await capture('custom-office-sunset');
+    const sunsetCheck = await js(`(async()=>{const {createArt}=await import('./themes/custom/art.js');const doc={...e.doc,environment:{...e.doc.environment,time:'auto'}};const art=createArt();art.setDocument(doc);const c=document.createElement('canvas');c.width=art.viewport.width;c.height=art.viewport.height;const x=c.getContext('2d');const window=doc.items.find(i=>i.kind.startsWith('window'));const sky=art.project(window.x+96,window.y+12,75),floor=art.project(1008,624);const render=(night,sunset)=>{art.draw(x,doc,[],0,{environment:{night,sunset,condition:'clear'}},null,null);const patch=x.getImageData(floor.x*2-5,floor.y*2-5,10,10).data;let warmth=0;for(let n=0;n<patch.length;n+=4)warmth+=patch[n]-patch[n+2];return {sky:Array.from(x.getImageData(sky.x*2-4,sky.y*2-4,8,8).data),warmth:warmth/100};};const day=render(false,false),sunset=render(false,true),night=render(true,false),restored=render(false,false);return {windowChanged:sunset.sky.some((b,n)=>b!==day.sky[n]),nightChanged:night.sky.some((b,n)=>b!==sunset.sky[n]),cacheRestored:day.sky.every((b,n)=>b===restored.sky[n]),dayWarmth:day.warmth,sunsetWarmth:sunset.warmth};})()`);
+    assert.ok(sunsetCheck.windowChanged&&sunsetCheck.nightChanged&&sunsetCheck.cacheRestored&&sunsetCheck.sunsetWarmth>sunsetCheck.dayWarmth,JSON.stringify(sunsetCheck));
+    await chooseEnvironment('time', 'auto'); assert.equal(await js(`v.environmentSnapshot().night`), true);
+    for(const [clock,sunset,night] of [['16:30',true,false],['18:00',false,true]]){
+      await js(`(()=>{const time=Date.parse('2026-10-27T${clock}:00+09:00');v.environment.now=()=>time;v.environment.setWeather({available:true,observedAt:time,condition:'clear',temperature:16});v.notify();})()`);
+      assert.equal(await js(`v.environmentSnapshot().sunset`),sunset);assert.equal(await js(`v.environmentSnapshot().night`),night);
+    }
+    await chooseEnvironment('time', 'sunset');
+    await click(await point('[data-action="mode"]')); assert.equal(await js(`e.editing`),false);
     const stored = await js(`localStorage.getItem('ao.custom-office.v1')`); assert.ok(stored.includes('window-grid'));
     fs.writeFileSync(path.join(OUT,'custom-office-example.json'),stored);
     const maximum = await js(`(async()=>{const {exampleDocument,place,area,MAX_AREA,validate,makeLayout}=await import('./themes/custom/model.js');const {createArt}=await import('./themes/custom/art.js');const {Navigation}=await import('./office/navigation.js');let doc=exampleDocument();for(let y=0;y<3456;y+=192)for(let x=0;x<3456;x+=192){if(doc.items.some(i=>i.kind.startsWith('floor-')&&i.x===x&&i.y===y))continue;const result=place(doc,{id:'max-'+x+'-'+y,kind:'floor-wood',x,y,rotation:0});if(!result.error)doc=result.doc;}const issues=validate(doc);const layout=makeLayout(doc),nav=new Navigation(layout);const art=createArt();art.setDocument(doc);const c=document.createElement('canvas');c.width=art.viewport.width;c.height=art.viewport.height;const context=c.getContext('2d');art.draw(context,doc,[],0,{environment:{night:false,condition:'clear'}},null,null);const t=performance.now();for(let n=0;n<8;n++)art.draw(context,doc,[],n*100,{environment:{night:false,condition:'clear'}},null,null);return {percent:area(doc)/MAX_AREA*200,issues:issues.length,paths:layout.interactions.every(i=>nav.findPath(layout.entrance,i.stand).length),meanDrawMs:(performance.now()-t)/8};})()`);
     assert.ok(maximum.percent>198&&maximum.percent<=200);assert.equal(maximum.issues,0);assert.equal(maximum.paths,true);
-    await select('pixel-office'); assert.equal(await js(`document.body.classList.contains('custom-office-active')`), false); assert.equal(await js(`JSON.stringify(v.theme.layout)`), baseline); assert.equal(await js(`document.querySelectorAll('.custom-builder').length`), 0);
+    await select('pixel-office'); assert.equal(await js(`document.body.classList.contains('custom-office-active')`), false); assert.equal(await js(`v.camera.minZoom`), 1); assert.equal(await js(`JSON.stringify(v.theme.layout)`), baseline); assert.equal(await js(`document.querySelectorAll('.custom-builder').length`), 0);
     await select('custom-office'); assert.equal(await js(`document.querySelectorAll('.custom-builder').length`), 1);
     // 실제 재로딩으로 저장한 배치·배경 복원을 확인한다.
     await js(`localStorage.setItem('ao.theme',JSON.stringify('custom-office'))`); await win.reload(); await pause(400);
@@ -157,7 +183,16 @@ if (!process.versions.electron) {
     assert.equal(await js(`v.theme.editor.doc.items.find(i=>i.role==='dev').name`), '개발실');
     assert.equal(await js(`v.theme.editor.doc.items.find(i=>i.role==='lead').name`), '대표실');
     assert.equal(await js(`v.theme.editor.doc.items.some(i=>i.kind.startsWith('floor-')&&i.name==='라운지')`), true);
-    assert.deepEqual(await js(`v.theme.editor.doc.environment`), {weather:'snow',time:'night',lighting:'citypop'});
+    assert.deepEqual(await js(`v.theme.editor.doc.environment`), {weather:'clear',time:'sunset',lighting:'standard'});
+    // 업로드 복원 검증 후 임시 이미지를 지우고 기본 배경이 단색인지 확인한다.
+    await click(await point('[data-action="clear-background"]'));
+    assert.equal(await js(`v.theme.editor.doc.background`),null);
+    await click(await point('[data-action="mode"]')); await click(await point('[data-action="mode"]'));
+    await click(await point('[data-category="환경"]'));
+    const emptyBackground = await js(`(()=>{v.draw(0);const c=v.canvas,x=c.getContext('2d');const expected=[248,237,221,255];return [[4,4],[c.width-5,4],[4,c.height-5],[c.width-5,c.height-5]].every(([a,b])=>x.getImageData(a,b,1,1).data.every((v,n)=>v===expected[n]));})()`);
+    assert.equal(emptyBackground,true);
+    await capture('custom-office-sunset');
+    await capture('custom-office-empty-background');
     win.setSize(1100, 800); await pause(300); assert.equal(await js(`document.documentElement.scrollWidth>innerWidth`), false);
     assert.equal(await checkLayout(), true);
     await capture('custom-office-small');
@@ -165,7 +200,7 @@ if (!process.versions.electron) {
     assert.equal(await js(`document.documentElement.scrollWidth>innerWidth`), false);
     assert.equal(await checkLayout(), true);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ result: '통과', materials: 22, editing: '클릭·드래그·회전·실행 취소·동선 보정', persistence: '배치와 업로드 배경 재시작 복원', weather, maximum, legacyLayoutUnchanged: true, consoleErrors: errors, output: OUT }, null, 2));
+    console.log(JSON.stringify({ result: '통과', materials: 22, editing: '클릭·드래그·회전·실행 취소·동선 보정', persistence: '배치와 업로드 배경 재시작 복원', uploadedBackgroundUntouched, emptyBackground, weather, sunsetCheck, maximum, legacyLayoutUnchanged: true, consoleErrors: errors, output: OUT }, null, 2));
     clearTimeout(timeout); app.exit(0);
   }).catch(e => { console.error(e.stack || e); console.error(errors); clearTimeout(timeout); app.exit(1); });
 }
