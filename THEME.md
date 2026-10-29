@@ -137,7 +137,7 @@ export default {
 | `colorIndex` | 0~7 (팀장 -1) | 종류별 고정 색 번호 |
 | `label` | `executor #2` | 명찰 글자 |
 | `status` | `working` `reporting` `sharing` `resting` `away` `idle` `leaving` | 참고용 (`away` = 한가한 팀장이 휴게실에 간 상태) |
-| `bubble` | `{ text, kind }` 또는 `null` | 4절 |
+| `bubble` | `{ text, kind, summary?, attention? }` 또는 `null` | 4절 |
 
 | pose | 언제 | 그림 예시 |
 |---|---|---|
@@ -163,6 +163,10 @@ export default {
 | `done` | 완료·전달 완료 | 초록 |
 | `alert` | 사용자 확인 필요 (사라지지 않음) | 빨강 |
 | `chat` | 휴게실 잡담 | 보라 |
+
+`attention` 이 `true` 인 말풍선은 사용자가 봐야 하는 것이다 (작업 완료·권한 요청·질문). 앱은 사용자가 그 탭을 보면 끄고, 탭이 없는 다른 곳의 세션은 진행되거나 20분 뒤 끈다.
+테마는 말풍선 **배경**을 약 1.4초 주기로 조금 짙어졌다 돌아오게 그린다 (테두리·크기는 그대로, 공용 `themes/attention.js` 의 `attentionFill` — 색은 `#rrggbb` 만).
+사무실은 움직임이 없으면 초당 15번만 다시 그리므로 켜고 끄는 깜빡임 대신 `t`(ms) 기반의 부드러운 파형을 쓴다. 이때 kind 는 `done` 또는 `alert` 다.
 
 ## 5. 하지 말 것
 

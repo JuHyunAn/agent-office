@@ -3,7 +3,7 @@
 // IDE 안에서 실행하면 ELECTRON_RUN_AS_NODE=1 이 따라와 Electron 이 Node 로 뜬다 (scripts/start.mjs 도 지운다).
 delete process.env.ELECTRON_RUN_AS_NODE;
 
-const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, Tray, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, protocol, net, shell, Tray, Menu, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -17,6 +17,11 @@ const { ClaudeChat, CodexChat, claudeModels } = require('./collabAgents.cjs');
 const { PtyManager } = require('./ptyManager.cjs');
 const { cleanEnv } = require('./env.cjs');
 const { createWeatherService } = require('./weather.cjs');
+const { createPetController } = require('./pet.cjs');
+const { PET_KINDS, PET_ID_RE } = require('./petRules.cjs');
+const petImport = require('./petImport.cjs');
+const { createMainGuard } = require('./ipcGuard.cjs');
+const { createUsageService } = require('./usage.cjs');
 const getWeather = createWeatherService();
 // 점검 실행은 사용자 데이터(최근 폴더·설정)를 건드리지 않도록 별도 폴더를 쓸 수 있다.
 if (process.env.AGENT_OFFICE_USER_DATA) app.setPath('userData', process.env.AGENT_OFFICE_USER_DATA);
@@ -33,6 +38,9 @@ protocol.registerSchemesAsPrivileged([
 
 let win = null;
 let tray = null;
+let pet = null; // 바탕화면 펫 (whenReady 에서 만든다)
+let usage = null; // 사용량 서비스 (whenReady 에서 만든다)
+let rendererReady = false; // 메인 화면이 다 불러와져 hook 이벤트·펫 상태를 받을 수 있는지 (권한 요청을 붙잡아도 되는 조건)
 let quitting = false; // 트레이 「종료」·app.quit() 때만 창을 실제로 닫는다
 let hook = null;
 let config = null;
@@ -82,9 +90,49 @@ function loadConfig() {
   return cfg;
 }
 
-function writeSessionSettings() {
+// node 가 PATH 에 있는지. 상태 표시줄 중계는 node 로 실행하므로 없으면 쓰지 않는다 (사용자 표시줄 보존이 우선).
+// Claude 는 앱이 넘긴 환경(= 이 PATH)에서 상태 표시줄 명령을 셸로 실행하므로, 여기서 찾아지면 명령의 「node」 도 찾아진다.
+async function hasNode() {
+  const r = await claudeCli.run(process.platform === 'win32' ? 'where' : 'which', ['node']);
+  return r.stdout.split(/\r?\n/).some((p) => p.trim() && /(^|[\\/])node(\.exe)?$/i.test(p.trim()) && fs.existsSync(p.trim()));
+}
+
+// 사용자 상태 표시줄의 padding·refreshInterval 만 이어받는다 (읽기만 한다 — 사용자 설정 파일은 고치지 않는다).
+function userStatusLineLayout() {
+  try {
+    const dir = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+    const u = JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')).statusLine || {};
+    const out = {};
+    for (const k of ['padding', 'refreshInterval']) if (typeof u[k] === 'number') out[k] = u[k];
+    return out;
+  } catch { return {}; }
+}
+
+// 앱 탭에서만 쓰는 상태 표시줄 중계: Claude 가 상태 표시줄에 넘기는 사용량을 앱이 받고, 사용자 표시줄(OMC HUD 등)은 중계가 대신 실행해 그대로 보여 준다.
+// 복사 위치(userData)는 어떤 셸에서도 따옴표 안에서 그대로 읽히는 글자만 있을 때 쓴다. 반환: 명령줄 (슬래시 경로).
+// bashPath: 중계가 사용자 표시줄을 실행할 Git Bash (시작 때 한 번 찾아 relay.json 에 넣는다 — 중계가 매번 찾지 않게). 없으면 중계가 PowerShell 로 실행한다.
+function relayStatusLine(bashPath) {
+  const dir = app.getPath('userData');
+  const relay = path.join(dir, 'statusline-relay.cjs').replace(/\\/g, '/');
+  if (/["'`$!%^&|<>]/.test(relay)) throw new Error(`경로에 셸 특수문자가 있습니다: ${relay}`);
+  fs.writeFileSync(relay, fs.readFileSync(path.join(__dirname, 'statusline-relay.cjs')));
+  fs.writeFileSync(path.join(dir, 'relay.json'), JSON.stringify({ port: hook.port, token: config.token, ...(bashPath ? { bashPath } : {}) }));
+  return `node "${relay}"`;
+}
+
+async function writeSessionSettings() {
   sessionSettingsPath = path.join(app.getPath('userData'), 'session-hooks.json');
-  fs.writeFileSync(sessionSettingsPath, JSON.stringify(hookSettings.sessionSettings(hook.port, config.token), null, 2));
+  let extra;
+  try {
+    // Claude 의 statusLine 설정은 command 한 줄(+ padding·refreshInterval)뿐이라 인자는 명령줄에 함께 적는다 (2.1.312 실측 — args 키는 무시된다).
+    if (await hasNode()) {
+      const bashPath = process.platform === 'win32' ? await claudeCli.findGitBash() : null;
+      extra = { statusLine: { type: 'command', command: relayStatusLine(bashPath), ...userStatusLineLayout() } };
+    }
+  } catch (e) {
+    console.warn('[usage] 상태 표시줄 중계를 준비하지 못했습니다 (사용자 표시줄 그대로 둡니다)', e.message);
+  }
+  fs.writeFileSync(sessionSettingsPath, JSON.stringify(hookSettings.sessionSettings(hook.port, config.token, extra), null, 2));
 }
 
 async function status() {
@@ -94,11 +142,13 @@ async function status() {
   codex = await codexCli.locate();
   const codexVersion = codex ? await codexCli.version(codex) : null;
   if (auth.loggedIn || codex) collabModels(); // 협업 탭을 열기 전에 미리 받아 둔다 (Claude 쪽은 5초 안팎 걸림)
+  pet?.refresh(); // Codex 를 찾았는지에 따라 Codex 펫 표시가 달라진다
   return {
     claude: claude ? { path: claude.display, version } : null,
     codex: codex ? { path: codex.display, version: codexVersion } : null,
     auth,
     hook: { port: hook.port, global: hookSettings.readGlobalStatus(hook.port, config.token) },
+    pet: { mode: pet ? pet.mode() : 'always' },
   };
 }
 
@@ -194,6 +244,9 @@ function collabClose({ roomId }) {
 function dropSessions() {
   ptys.killAll();
   for (const roomId of [...rooms.keys()]) collabClose({ roomId });
+  hook?.releaseAll(); // 붙잡아 둔 권한 요청은 원래 터미널 승인으로 넘긴다
+  pet?.clearState(); // 연결이 끊긴 탭의 「확인 필요」가 펫에 유령으로 남지 않게
+  usage?.setFocus(null); // 사라진 탭을 가리키는 세션 줄도 비운다 (새 화면이 첫 포커스를 다시 알린다)
 }
 
 function collabRunning() {
@@ -275,9 +328,10 @@ function createWindow() {
   });
   win.loadURL('app://office/src/renderer/index.html');
   let loaded = false;
-  win.webContents.on('did-finish-load', () => { loaded = true; });
-  win.webContents.on('did-start-loading', () => { if (loaded) dropSessions(); });
-  win.webContents.on('render-process-gone', dropSessions);
+  rendererReady = false;
+  win.webContents.on('did-finish-load', () => { loaded = true; rendererReady = true; });
+  win.webContents.on('did-start-loading', () => { rendererReady = false; if (loaded) dropSessions(); });
+  win.webContents.on('render-process-gone', () => { rendererReady = false; dropSessions(); });
   // 실수로 창을 닫아도 Claude 세션·사무실은 계속 돈다 — 창만 숨기고, 종료는 트레이 메뉴에서 한다.
   win.on('close', (e) => {
     if (quitting) return;
@@ -285,7 +339,7 @@ function createWindow() {
     win.hide();
   });
   win.on('session-end', () => { quitting = true; }); // Windows 로그오프·종료는 막지 않는다
-  win.on('closed', () => { win = null; });
+  win.on('closed', () => { win = null; pet?.shutdown(); });
   if (process.env.AGENT_OFFICE_SMOKE) runSmoke();
 }
 
@@ -316,12 +370,17 @@ async function quitFromTray() {
 function createTray() {
   tray = new Tray(ICON);
   tray.setToolTip('Agent Office');
-  tray.setContextMenu(Menu.buildFromTemplate([
+  tray.setContextMenu(trayMenu());
+  tray.on('click', showWindow);
+}
+
+function trayMenu() {
+  return Menu.buildFromTemplate([
     { label: 'Agent Office 열기', click: showWindow },
     { type: 'separator' },
+    ...(pet ? [...pet.menuItems(), { type: 'separator' }] : []),
     { label: '종료', click: () => { quitFromTray(); } },
-  ]));
-  tray.on('click', showWindow);
+  ]);
 }
 
 // 창을 띄우지 않고 실제 경로를 한 번 점검한다: 화면 로드 → 터미널에서 claude 실행 → hook 수신.
@@ -445,33 +504,132 @@ if (!app.requestSingleInstanceLock()) {
     });
 
     config = loadConfig();
-    hook = await startHookServer({ port: config.port, token: config.token, onEvent: (ev) => send('hook:event', ev) });
+    usage = createUsageService({
+      locateClaude: () => claude, locateCodex: () => codex, userDataDir: app.getPath('userData'), appVersion: app.getVersion(),
+      onChange: (s) => pet?.setUsage(s), smoke: !!process.env.AGENT_OFFICE_SMOKE,
+    });
+    hook = await startHookServer({
+      port: config.port, token: config.token,
+      onEvent: (ev, meta) => { send('hook:event', ev); usage?.onHookEvent(ev, meta); },
+      onStatus: (payload, tab) => usage?.onStatus(payload, tab),
+      // 펫 카드로 답할 수 있을 때만 앱 탭의 권한 요청을 붙잡는다 (pet 은 hook 서버보다 나중에 만들어진다).
+      canHold: () => rendererReady && !!pet?.canAnswer(),
+      onHeld: () => pet?.watchPermissions(),
+      onClosed: (permId, how) => send('perm:closed', { permId, how }),
+    });
     if (hook.port !== config.port) {
       // 대체 포트로 떴으면 그 포트를 기억한다 — 다음 실행과 사용자 설정 hook 이 같은 포트를 보게.
       config.port = hook.port;
       saveConfig(config);
     }
-    writeSessionSettings();
+    await writeSessionSettings();
 
-    ipcMain.handle('app:status', () => status());
-    ipcMain.handle('weather:current', () => getWeather());
-    ipcMain.handle('dialog:pickFolder', async () => {
+    // 메인 창 전용 채널은 보낸 쪽이 메인 창일 때만 처리한다 (펫 창 등 다른 화면의 요청은 무시·거부).
+    const { handleMain, onMain } = createMainGuard(ipcMain, () => win);
+
+    handleMain('app:status', () => status());
+    // 활성 탭이 바뀔 때 메인 화면이 알린다 — 사용량 패널의 세션 줄이 이 탭을 기준으로 한다.
+    onMain('pet:focus', (f) => {
+      if (!f || typeof f !== 'object') return;
+      usage?.setFocus({
+        tabId: typeof f.tabId === 'string' && TAB_RE.test(f.tabId) ? f.tabId : null,
+        kind: ['claude', 'codex', 'collab'].includes(f.kind) ? f.kind : null,
+        label: typeof f.label === 'string' ? f.label.slice(0, 60) : '',
+      });
+    });
+    handleMain('weather:current', () => getWeather());
+    handleMain('dialog:pickFolder', async () => {
       const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '작업 폴더 선택' });
       return r.canceled ? null : r.filePaths[0];
     });
-    ipcMain.handle('pty:create', (_e, opts) => createTabPty(opts || {}));
-    ipcMain.on('pty:write', (_e, { tabId, data }) => ptys.write(tabId, data));
-    ipcMain.on('pty:resize', (_e, { tabId, cols, rows }) => ptys.resize(tabId, cols, rows));
-    ipcMain.handle('pty:kill', (_e, { tabId }) => ptys.kill(tabId));
-    ipcMain.handle('hooks:global:set', (_e, { enabled }) => setGlobalHooks(!!enabled));
-    ipcMain.handle('collab:send', (_e, opts) => collabSend(opts || {}));
-    ipcMain.handle('collab:stop', (_e, opts) => collabStop(opts || {}));
-    ipcMain.handle('collab:close', (_e, opts) => collabClose(opts || {}));
-    ipcMain.handle('collab:models', () => collabModels());
-    ipcMain.handle('shell:open', (_e, url) => { if (/^https?:\/\//.test(String(url))) shell.openExternal(url); });
+    handleMain('pty:create', (opts) => createTabPty(opts || {}));
+    onMain('pty:write', ({ tabId, data }) => ptys.write(tabId, data));
+    onMain('pty:resize', ({ tabId, cols, rows }) => ptys.resize(tabId, cols, rows));
+    handleMain('pty:kill', ({ tabId }) => ptys.kill(tabId));
+    handleMain('hooks:global:set', ({ enabled }) => setGlobalHooks(!!enabled));
+    handleMain('collab:send', (opts) => collabSend(opts || {}));
+    handleMain('collab:stop', (opts) => collabStop(opts || {}));
+    handleMain('collab:close', (opts) => collabClose(opts || {}));
+    handleMain('collab:models', () => collabModels());
+    handleMain('shell:open', (url) => { if (/^https?:\/\//.test(String(url))) shell.openExternal(url); });
+
+    // 펫 그림 선택·가져오기·삭제 (메인 창 전용). 오류는 정해진 문구만 화면에 돌려주고 원문은 메인 로그에만 남긴다.
+    const userPetsDir = () => path.join(app.getPath('userData'), 'pets');
+    const emptyPets = { pets: [], selected: { claude: null, codex: null }, resolved: { claude: 'none', codex: 'none' } };
+    let petImporting = false;
+    handleMain('pets:list', () => pet?.listPets() ?? emptyPets);
+    handleMain('pets:preview', (key) => {
+      const r = pet?.readPetByKey(key);
+      return r ? { type: r.type, bytes: r.bytes } : null;
+    });
+    handleMain('pets:import', async (kind) => {
+      if (!pet || (kind !== 'zip' && kind !== 'folder')) return { error: petImport.ERR.generic };
+      if (petImporting) return { error: '이미 가져오는 중입니다' };
+      petImporting = true;
+      try {
+        const r = await dialog.showOpenDialog(win, kind === 'zip'
+          ? { title: '펫 zip 선택', properties: ['openFile'], filters: [{ name: '펫 zip', extensions: ['zip'] }] }
+          : { title: '펫 폴더 선택', properties: ['openDirectory'] });
+        if (r.canceled || !r.filePaths[0]) return { cancelled: true };
+        const src = r.filePaths[0];
+        let prepared;
+        if (kind === 'zip') {
+          if (fs.statSync(src).size > petImport.MAX_ZIP_BYTES) return { error: petImport.ERR.zipBig };
+          prepared = petImport.importZip(fs.readFileSync(src), path.basename(src, path.extname(src)));
+        } else {
+          prepared = petImport.importFolder(src);
+        }
+        if (prepared.error) {
+          if (prepared.detail) console.error('[pets] 가져오기 검사 실패', prepared.detail);
+          return { error: prepared.error };
+        }
+        const done = await petImport.installPet(prepared, userPetsDir());
+        if (done.error) {
+          if (done.detail) console.error('[pets] 설치 실패', done.detail);
+          return { error: done.error };
+        }
+        pet.refreshUserPets();
+        return { ok: true, key: `user:${done.id}`, displayName: prepared.displayName };
+      } catch (e) {
+        console.error('[pets] 가져오기 실패', e);
+        return { error: petImport.ERR.generic };
+      } finally {
+        petImporting = false;
+      }
+    });
+    handleMain('pets:remove', (key) => {
+      const id = typeof key === 'string' && key.startsWith('user:') ? key.slice(5) : null;
+      if (!pet || !id || !PET_ID_RE.test(id)) return { ok: false };
+      const ok = petImport.removePet(userPetsDir(), id);
+      pet.refreshUserPets();
+      // 결과와 무관하게 목록에 없는 가져온 펫을 고른 종류는 기본으로 되돌린다
+      const listed = new Set(pet.listPets().pets.map((p) => p.key));
+      for (const kind of PET_KINDS) {
+        const v = config.pet.sprites[kind];
+        if (typeof v === 'string' && v.startsWith('user:') && !listed.has(v)) pet.selectPet(kind, null);
+      }
+      send('pets:changed', {});
+      return { ok };
+    });
+    handleMain('pets:select', (p) => {
+      const r = pet && p && typeof p === 'object' ? pet.selectPet(p.kind, p.value) : { ok: false };
+      if (r.ok) send('pets:changed', {});
+      return { ok: r.ok };
+    });
 
     createTray();
     createWindow();
+    pet = createPetController({
+      ipcMain, screen, BrowserWindow, getMainWindow: () => win, showMainWindow: showWindow, sendMain: send, config, saveConfig,
+      isCodexAvailable: () => !!codex, userDataDir: app.getPath('userData'),
+      builtinPetsDir: path.join(ROOT, 'src', 'renderer', 'assets', 'pets'),
+      onModeChanged: (mode) => { tray?.setContextMenu(trayMenu()); send('pet:mode', { mode }); },
+      permissions: { pending: () => hook?.pending() ?? [], resolve: (id, d) => !!hook?.resolve(id, d), releaseAll: () => hook?.releaseAll() },
+      onUsageRefresh: () => usage?.refresh({ manual: true }),
+    });
+    tray.setContextMenu(trayMenu());
+    pet.refresh();
+    pet.setUsage(usage.snapshot());
   }).catch((err) => {
     dialog.showErrorBox('Agent Office 시작 실패', String(err && err.stack || err));
     app.quit();
@@ -479,7 +637,11 @@ if (!app.requestSingleInstanceLock()) {
 
   app.on('before-quit', () => {
     quitting = true;
+    usage?.dispose(); // 진행 중인 /usage 읽기(숨긴 claude)와 타이머를 정리한다
     dropSessions();
+    pet?.shutdown(); // dropSessions 가 펫 상태를 지우는 뒤에 닫고, 이후 창을 다시 만들지 않는다
+    hook?.releaseAll(); // 보류 중인 응답이 서버 종료를 막지 않게 먼저 {} 로 푼다
+    hook?.server.closeAllConnections?.();
     if (hook) hook.server.close();
   });
   app.on('window-all-closed', () => app.quit());

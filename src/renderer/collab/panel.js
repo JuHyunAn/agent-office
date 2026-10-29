@@ -39,14 +39,23 @@ function select(options, value, onchange, label) {
 
 const hhmm = (t) => new Date(t).toTimeString().slice(0, 5);
 
-export function createCollabPanel({ api, roomId, cwd, onStatus = () => {} }) {
-  let frame = 0;
+export function createCollabPanel({ api, roomId, cwd, onStatus = () => {}, onTransition = () => {}, onSpeaker = () => {} }) {
+  let frame = 0, last = 'idle', lastRunning = null;
   const schedule = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; render(); }); };
   const mod = new Moderator({
     send: (agent, text, choice, turn) => api.collabSend({ roomId, agent, cwd, text, turn, ...choice }),
     stop: (agent) => api.collabStop(roomId, agent),
-    onChange: schedule,
+    onChange: () => { changed(); schedule(); },
   });
+
+  // 상태가 바뀐 순간을 바로 알린다 — 렌더(requestAnimationFrame)는 창이 숨겨지면 멈추므로 거기에 묶지 않는다.
+  function changed() {
+    if (mod.running !== lastRunning) { lastRunning = mod.running; onSpeaker(mod.running); } // 말하는 AI 가 바뀜 (null = 아무도 안 말함)
+    if (mod.status === last) return;
+    const prev = last;
+    last = mod.status;
+    onTransition(prev, mod.status, mod.status === 'question' ? mod.asker : mod.lastSpeaker);
+  }
 
   const status = node('span', { class: 'collab-status', role: 'status' });
   const catalogNote = node('span', { class: 'collab-catalog' });

@@ -1,0 +1,9 @@
+{
+  "id": "office-claude",
+  "displayName": "Office Claude",
+  "description": "Agent Office desktop buddy.",
+  "spritesheetPath": "spritesheet.webp",
+  "agentOffice": {
+    "sleepSheetPath": "sleep.webp"
+  }
+}

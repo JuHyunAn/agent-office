@@ -1,0 +1,9 @@
+{
+  "id": "office-codex",
+  "displayName": "Office Codex",
+  "description": "Agent Office desktop buddy.",
+  "spritesheetPath": "spritesheet.webp",
+  "agentOffice": {
+    "sleepSheetPath": "sleep.webp"
+  }
+}

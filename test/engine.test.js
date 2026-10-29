@@ -421,3 +421,62 @@ test('배치도를 바꿔도 사람은 같은 방에 남는다', () => {
   const a = agent(e, 'x1');
   assert.equal(e.roomAt(a.x, a.y), 'review');
 });
+
+test('setAttention: 말풍선이 사라진 뒤에도 확인할 내용을 깜빡임 표시와 함께 보여 준다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('UserPromptSubmit', { prompt: 'x' }), { label: 'p' });
+  e.handleEvent(ev('Stop'));
+  e.setAttention([{ sessionId: SID, agentId: null, text: '✅ 답변 완료', kind: 'done' }]);
+  run(e, 10000);
+  const lead = e.snapshot().find((a) => a.id === `${SID}:lead`);
+  assert.deepEqual(lead.bubble, { text: '✅ 답변 완료', kind: 'done', attention: true });
+});
+
+test('확인 요청 말풍선은 엔진 문구를 유지하고, 작업 요약은 확인 내용으로 바꾼다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('PermissionRequest', { tool_name: 'Bash' }));
+  e.setAttention([{ sessionId: SID, agentId: null, text: '❓ 권한 확인', kind: 'alert' }]);
+  run(e, 1000);
+  const bubble = e.snapshot().find((a) => a.id === `${SID}:lead`).bubble;
+  assert.equal(bubble.kind, 'alert');
+  assert.equal(bubble.attention, true);
+  assert.ok(bubble.text.includes('Bash'), bubble.text);
+
+  const { e: q } = mk();
+  q.handleEvent(ev('PreToolUse', { tool_name: 'AskUserQuestion', tool_input: {} }));
+  q.setAttention([{ sessionId: SID, agentId: null, text: '❓ 선택을 기다려요', kind: 'alert' }]);
+  run(q, 1000);
+  const asked = q.snapshot().find((a) => a.id === `${SID}:lead`).bubble;
+  assert.equal(asked.text, '❓ 선택을 기다려요');
+  assert.equal(asked.attention, true);
+});
+
+test('확인 필요 표시는 퇴근을 막지 않는다', () => {
+  const { e } = mk({ idleLeaveMs: 60000 });
+  e.handleEvent(ev('Stop'));
+  e.setAttention([{ sessionId: SID, agentId: null, text: '✅ 답변 완료', kind: 'done' }]);
+  run(e, 60000 + 60000);
+  const lead = agent(e, 'lead');
+  assert.ok(!lead || lead.status === 'leaving', lead?.status);
+  if (lead) assert.ok(!e.snapshot().find((a) => a.id === `${SID}:lead`).bubble?.attention);
+});
+
+test('완료 표시 뒤 「입력 대기」 알림이 와도 완료 내용을 그대로 보여 준다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('Stop'));
+  e.setAttention([{ sessionId: SID, agentId: null, text: '✅ 답변 완료', kind: 'done' }]);
+  e.handleEvent(ev('Notification', { notification_type: 'idle_prompt', message: 'Claude is waiting for your input' }));
+  assert.deepEqual(e.snapshot().find((a) => a.id === `${SID}:lead`).bubble, { text: '✅ 답변 완료', kind: 'done', attention: true });
+});
+
+test('setAttention 은 하위 에이전트도 가리키고, 빈 목록이면 지운다', () => {
+  const { e } = mk();
+  e.handleEvent(ev('SubagentStart', { agent_id: 'a1', agent_type: 'executor' }));
+  run(e, 5000);
+  e.setAttention([{ sessionId: SID, agentId: 'a1', text: '❓ 권한 확인', kind: 'alert' }]);
+  const by = () => Object.fromEntries(e.snapshot().map((a) => [a.id, a.bubble]));
+  assert.equal(by()[`${SID}:a1`]?.attention, true);
+  assert.ok(!by()[`${SID}:lead`]?.attention);
+  e.setAttention([]);
+  assert.ok(Object.values(by()).every((b) => !b?.attention));
+});

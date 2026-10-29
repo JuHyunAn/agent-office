@@ -62,11 +62,38 @@ function listenOnce(server, port, host) {
   });
 }
 
-async function startHookServer({ port, token, onEvent, host = '127.0.0.1', tries = 10 }) {
+// 붙잡아 둔 권한 요청에 돌려줄 본문. null 은 「결정 없음」(Claude·Codex 가 원래 터미널 승인으로 넘어간다).
+// updatedInput·updatedPermissions·interrupt 는 넣지 않는다 (Codex 는 이 필드가 있으면 실패로 처리한다).
+const DENY_MESSAGE = '사용자가 Agent Office 에서 거부했습니다. 다른 방법으로 우회하지 말고 사용자의 다음 지시를 기다리세요.';
+function permissionBody(decision) {
+  if (decision === 'allow') return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } });
+  if (decision === 'deny') return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'deny', message: DENY_MESSAGE } } });
+  return '{}';
+}
+
+// canHold(): 지금 카드로 답할 수 있는지. holdMs: 붙잡는 최대 시간 (hook 대기 시간 600초보다 짧게).
+// onStatus(payload, tab): 상태 표시줄 중계(/status)가 보낸 입력 JSON. 렌더러로는 보내지 않고 메인 안에서만 쓴다.
+async function startHookServer({ port, token, onEvent, onStatus = () => {}, host = '127.0.0.1', tries = 10, canHold = () => false, holdMs = 590000, onHeld = () => {}, onClosed = () => {} }) {
   const isDup = createDeduper();
+  const held = new Map(); // permId → { res, at, timer } — 응답을 붙잡고 있는 권한 요청
+
+  // 붙잡은 요청에 응답하고 보류를 푼다. 이미 풀렸으면 false.
+  function finish(id, decision, how) {
+    const h = held.get(id);
+    if (!h) return false;
+    held.delete(id);
+    clearTimeout(h.timer);
+    if (!h.res.writableEnded) {
+      try { h.res.writeHead(200, { 'content-type': 'application/json' }).end(permissionBody(decision)); } catch { /* 연결이 이미 끊김 */ }
+    }
+    try { onClosed(id, how); } catch { /* 화면 쪽 오류는 무시 */ }
+    return true;
+  }
+
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://localhost');
-    if (req.method !== 'POST' || url.pathname !== '/hook' || url.searchParams.get('k') !== token) {
+    const isStatus = url.pathname === '/status';
+    if (req.method !== 'POST' || (url.pathname !== '/hook' && !isStatus) || url.searchParams.get('k') !== token) {
       res.writeHead(404).end();
       return;
     }
@@ -78,16 +105,53 @@ async function startHookServer({ port, token, onEvent, host = '127.0.0.1', tries
       chunks.push(c);
     });
     req.on('end', () => {
-      // hook 에는 「결정 없음」으로 즉시 응답한다 — Claude 작업을 늦추지 않는 것이 최우선.
-      res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
       const body = Buffer.concat(chunks).toString('utf8');
+      if (isStatus) {
+        // 상태 표시줄은 Claude 가 응답을 기다리므로 받자마자 비운 채로 답한다. 보류·중복 제거와 무관.
+        res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+        let sp = null;
+        try { sp = JSON.parse(body); } catch { return; }
+        if (!sp || typeof sp !== 'object') return;
+        const rawTab = url.searchParams.get('tab');
+        try { onStatus(sp, rawTab && /^[a-z0-9-]{1,40}$/i.test(rawTab) ? rawTab : null); } catch { /* 사용량 쪽 오류는 무시 */ }
+        return;
+      }
       const key = crypto.createHash('sha1').update(body).digest('hex');
-      if (isDup(key)) return;
-      let payload;
-      try { payload = JSON.parse(body); } catch { return; }
-      if (!payload || typeof payload !== 'object' || !payload.hook_event_name) return;
+      let payload = null;
+      try { payload = JSON.parse(body); } catch { /* 파싱 실패는 아래에서 버린다 */ }
+      const valid = !!payload && typeof payload === 'object' && !!payload.hook_event_name;
+      // 렌더러로 가는 ev 에서는 지우는 transcript_path 를 메인(사용량)에만 따로 알린다.
+      const meta = { transcriptPath: valid && typeof payload.transcript_path === 'string' ? payload.transcript_path : null };
+      const src = url.searchParams.get('src');
       const query = { tab: url.searchParams.get('tab'), cli: url.searchParams.get('cli') };
-      try { onEvent(toEvent(payload, req.headers, url.searchParams.get('src'), Date.now(), query)); } catch { /* 화면 쪽 오류는 무시 */ }
+      const ev = valid ? toEvent(payload, req.headers, src, Date.now(), query) : null;
+      // 붙잡는 대상: 앱이 띄운 탭의 세션 hook 이 보낸 PermissionRequest 이고 지금 카드로 답할 수 있을 때뿐이다.
+      let hold = false;
+      if (ev && ev.hook_event_name === 'PermissionRequest' && src === 'session' && ev._tab) {
+        try { hold = !!canHold(); } catch { hold = false; }
+      }
+      if (!hold) {
+        // 그 밖의 hook 에는 「결정 없음」으로 즉시 응답한다 — Claude 작업을 늦추지 않는 것이 최우선.
+        res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+        if (isDup(key)) return;
+        if (!ev) return;
+        try { onEvent(ev, meta); } catch { /* 화면 쪽 오류는 무시 */ }
+        return;
+      }
+      // 붙잡는 요청은 전역 hook 과 중복돼도 이벤트를 내보낸다 (카드가 이 요청을 가리켜야 하므로). 본문 기록은 남겨 뒤에 오는 전역 사본을 막는다.
+      const dup = isDup(key);
+      const permId = crypto.randomUUID();
+      // 보류 시점의 도구·입력 원본도 함께 둔다 (메인이 카드의 미리보기와 대조한다).
+      held.set(permId, { res, at: Date.now(), tool: payload.tool_name, input: payload.tool_input, timer: setTimeout(() => finish(permId, null, 'timeout'), holdMs) });
+      res.on('close', () => { if (!res.writableEnded) finish(permId, null, 'close'); });
+      ev._permId = permId;
+      if (dup) ev._dupHold = true;
+      try {
+        onEvent(ev, meta);
+        onHeld(permId);
+      } catch {
+        finish(permId, null, 'released'); // 화면에 알리지 못했으면 붙잡지 않고 바로 푼다
+      }
     });
   });
 
@@ -95,7 +159,14 @@ async function startHookServer({ port, token, onEvent, host = '127.0.0.1', tries
   for (let i = 0; i < tries; i++) {
     try {
       const actual = await listenOnce(server, port + i, host);
-      return { server, port: actual };
+      return {
+        server,
+        port: actual,
+        // 카드의 결정을 붙잡은 요청에 전달한다. 'allow'·'deny' 가 아니면 「결정 없음」으로 푼다.
+        resolve: (id, decision) => finish(id, decision === 'allow' || decision === 'deny' ? decision : null, decision ? 'decided' : 'released'),
+        releaseAll: () => { for (const id of [...held.keys()]) finish(id, null, 'released'); },
+        pending: () => [...held].map(([id, h]) => ({ id, at: h.at, tool: h.tool, input: h.input })),
+      };
     } catch (err) {
       lastErr = err;
       if (err.code !== 'EADDRINUSE') break;

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'">
+  <title>Agent Office 펫</title>
+  <link rel="stylesheet" href="pet.css">
+</head>
+<body>
+  <div id="wrap">
+    <section id="usage" data-open="true" hidden>
+      <div id="usage-body">
+        <div class="usage-sec" id="usage-claude" hidden>
+          <div class="usage-title">Claude</div>
+          <div class="usage-rows"></div>
+          <div class="usage-err"></div>
+        </div>
+        <div class="usage-sec" id="usage-codex" hidden>
+          <div class="usage-title">Codex</div>
+          <div class="usage-rows"></div>
+          <div class="usage-err"></div>
+        </div>
+        <div id="usage-session" hidden></div>
+      </div>
+      <div id="usage-foot">
+        <span id="usage-updated"></span>
+        <button id="usage-refresh" type="button" aria-label="사용량 다시 읽기">⟳</button>
+        <button id="usage-toggle" type="button" aria-expanded="true">∨ 사용량</button>
+      </div>
+    </section>
+    <div id="pets"></div>
+  </div>
+  <script type="module" src="pet.js"></script>
+</body>
+</html>

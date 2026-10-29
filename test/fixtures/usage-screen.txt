@@ -1,0 +1,64 @@
+[?9001h[?1004h[?25l[2J[m[H]0;claude[?25h[?2004h[?2031h[?1004h[?25l[38;2;255;193;7m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[1m[3;2HAccessing[1Cworkspace:[m[1m[5;2HC:\Users\user\AppData\Roaming\agent-office\usage-probe[22m[7;2HQuick[1Csafety[1Ccheck:[1CIs[1Cthis[1Ca[1Cproject[1Cyou[1Ccreated[1Cor[1Cone[1Cyou[1Ctrust?[1C(Like[1Cyour[1Cown[1Ccode,[1Ca[1Cwell-known[1Copen[1Csource[8;2Hproject,[1Cor[1Cwork[1Cfrom[1Cyour[1Cteam).[1CIf[1Cnot,[1Ctake[1Ca[1Cmoment[1Cto[1Creview[1Cwhat's[1Cin[1Cthis[1Cfolder[1Cfirst.[10;2HClaude[1CCode'll[1Cbe[1Cable[1Cto[1Cread,[1Cedit,[1Cand[1Cexecute[1Cfiles[1Chere.[38;2;153;153;153m[12;2HSecurity[1Cguide[38;2;177;185;249m[14;2H❯[1CNo,[1Cexit[m[15;4HYes,[1CI[1Ctrust[1Cthis[1Cfolder[38;2;153;153;153m[17;2HEnter[1Cto[1Cconfirm[1C·[1CEsc[1Cto[1Ccancel[>0q[?u]7501;?[m[14;2H [1CNo, exit[38;2;177;185;249m[15;2H❯[1CYes, I trust this folder[m[>4m[?2031l[?2004l[H[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[120C[?2004h[?2031h[?1004h]0;✳ Claude Code[38;2;215;119;87m[H ▐[48;2;0;0;0m▛███▛█[m[1m[3CClaude[1CCode[38;2;153;153;153m[22m[1Cv2.1.312[38;2;215;119;87m
+▝▜[48;2;0;0;0m█████[49m█▀[38;2;153;153;153m[2CSonnet[1C5.5[1C·[1CClaude[1CMax[38;2;215;119;87m
+ ▝▝[3C▝▝[38;2;153;153;153m[3C~\AppData\Roaming\agent-office\usage-probe[38;2;215;119;87m[5;3HIntroducing[1COpus[1C5.5[m[6;3HGet[1Cto[1Cfinished[1Cwork[1Csooner[1Cwith[1COpus[1C5.5.[1CSwitch[1Canytime[1Cwith[38;2;177;185;249m[1C/model[m.[38;2;136;136;136m[8;1H────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[m
+❯ [2mTry[1C"write[1Ca[1Ctest[1Cfor[1C<filepath>"[38;2;136;136;136m[22m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[38;2;255;193;7m[11;3H⏵⏵[1Cauto[1Cmode[1Con [38;2;153;153;153m(shift+tab[1Cto[1Ccycle)[1C·[1C←[1Cfor[1Cagents[47C◐[1Cmedium[1C·[1C/effort[9;3H[?25h[m[>0q[?25l[38;2;177;185;249m/usage[K[11;3H❯ /[1musage[22m                      Show session cost, plan [1musage[22m, and activity stats[m[19C[K[38;2;153;153;153m[12;3H [1C/[m[1musage[38;2;153;153;153m[22m-credits[14CConfigure[m[1m[1Cusage[38;2;153;153;153m[22m credits[1Cor[1Crequest[1Cthem[1Cfrom[1Cyour[1Cadmin[1Cwhen[1Cyou[1Chit[1Ca[1Climit[13;3H [1C/context[20CVisualize[1Ccurrent[1Ccontext[m[1m[1Cusage[38;2;153;153;153m[22m as[1Ca[1Ccolored[1Cgrid[14;3H [1C/effort[21CSet[1Ceffort[1Clevel[1Cfor[1Cmodel[m[1m[1Cusage[38;2;153;153;153m[22m[15;3H [1C/rate-limit-options[9CManage[m[1m[1Cusage[38;2;153;153;153m[22m limits[1Cand[1Cupgrade[1Coptions[16;3H [1C/passes[21CShare[1Ca[1Cfree[1Cweek[1Cof[1CClaude[1CCode[1Cwith[1Cfriends[1Cand[1Cearn[m[1m[1Cusage[38;2;153;153;153m[22m credits[17;3H [1C/team-onboarding[12CHelp[1Cteammates[1Cramp[1Con[1CClaude[1CCode[1Cwith[1Ca[1Cguide[1Cfrom[1Cyour[m[1m[1Cusage[9;9H[?25h[22m[?25l[38;2;153;153;153m[48;2;55;55;55m[8;1H❯ [38;2;255;255;255m/usage                                                                                                                [m
+[K[38;2;177;185;249m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[1m[11;3HSettin[1Cs[m  Status   Config  [38;2;0;0;0m[48;2;177;185;249m[1m Usage [m  Stats[K[12;3H[K[1m
+Session[22m[K[14;3H[K[38;2;153;153;153m
+Total cost:[10X[12C$0.0000[K[16;3HTotal duration[1C(API):[2C0s[K[17;3HTotal duration (wall):[1C2s[K[18;3HTotal code changes:    0 lines added, 0 lines removed[19;3HUsage:                 0 input, 0 output, 0 cache read, 0 cache write[m[1m[21;3HCurrent session[38;2;177;185;249m[48;2;80;83;112m[22m[22;3H██████████▌[39X[m[40C21%[1Cused[38;2;153;153;153m[23;3HResets 6:20pm (Asia/Seoul)[m[1m[25;3HCurrent week (all models)[38;2;177;185;249m[48;2;80;83;112m[22m[26;3H██████████████████████████████▌[19X[m[20C61%[1Cused[38;2;153;153;153m[27;3HResets Nov 1, 7am (Asia/Seoul)[m[1m[29;3HWhat's contributing to your usage?[38;2;153;153;153m[22m[30;3HApproximate · sessions on this machine only[32;3HScanning local sessions…[34;3HRefreshing…[36;3HEsc[1Cto[1Ccancel[m[38;2;177;185;249m[48;2;80;83;112m[22;13H█[m[41C2[38;2;177;185;249m[48;2;80;83;112m[26;33H█[m[21C2[1m[29;3HCurrent week (Fable)[22m[K[38;2;177;185;249m[48;2;80;83;112m[30;3H█████████████████████[29X[m[30C42%[1Cused[38;2;153;153;153m[31;3HResets Nov 1, 7am (Asia/Seoul)[m[32;3H[K[1m
+What's contributing to your usage?[38;2;153;153;153m[22m[34;3HApp[1Coximate · sessions on this machine only[36;3HScanning local sessions…[m[1m[38;3HUsage credits[38;2;153;153;153m[22m[39;3HUsage credits are off · /usage-credits to turn them on[41;3HEsc to cancel[m[48;2;55;55;55m[8;2H [m[7C                                                                                                               [38;2;153;153;153m  ⎿  [mSettings[1Cdialog[1Cdismissed
+                                                                                                                        [38;2;136;136;136m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[m❯ [38;2;136;136;136m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[38;2;255;193;7m[14;3H⏵⏵ auto mode on [38;2;153;153;153m(shift+tab to cycle) · ← for agents[47C◐ medium · /effort[m
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[12;3H[?25h]0;◐ Claude Code[?25l[38;2;153;153;153m[48;2;55;55;55m[11;1H❯ [38;2;255;255;255m/exit                                                                                                                 [m
+[K[38;2;215;119;87m
+✶ Working…                                                                                                              [38;2;153;153;153m  ⎿  Tip: Use /voice to en[2Cle push-to-talk dictation[m[47C[K[38;2;136;136;136m[16;1H────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[38;2;153;153;153m
+❯ [38;2;136;136;136m
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[38;2;255;193;7m[19;3H⏵⏵[1Cauto[1Cmode[1Con [38;2;153;153;153m(shift+tab[1Cto[1Ccycle)[1C·[1Cesc[1Cto[1Cinterrupt[1C·[1C←[1Cfor[1Cagents[28C◐[1Cmedium[1C·[1C/effort[17;3H[?25h[?1006l[?1003l[?1002l[?1000l[>4m[?2031l[?2004l[?1016l[?25l[m[2m[21;1HResume this session with:
+claude --resume 00000000-0000-0000-0000-000000000000
+]0;[?25h[22m]0;✳ Claude Code

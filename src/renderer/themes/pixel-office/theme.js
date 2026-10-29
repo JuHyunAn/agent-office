@@ -4,6 +4,7 @@ import { createAtmosphere } from './atmosphere.js';
 import { loadDrinkImages } from './drink-images.js';
 import { createExterior, loadCityImages } from './exterior.js';
 import { polygon, line, PIXEL_DETAIL } from './raster.js';
+import { attentionFill } from '../attention.js';
 
 const WIDTH = 1600;
 const HEIGHT = 1000;
@@ -539,9 +540,8 @@ function bubble(ctx, a, p, t, occupied) {
   ctx.beginPath(); ctx.roundRect(x, y, w, h, 8);
   ctx.fillStyle = border; ctx.fill();
   ctx.beginPath(); ctx.roundRect(x + 1, y + 1, w - 2, h - 2, 7);
-  ctx.fillStyle = fill; ctx.fill();
+  ctx.fillStyle = a.bubble.attention ? attentionFill(fill, border, t) : fill; ctx.fill();
   lines.forEach((value, i) => text(ctx, value, x + 9, y + 18 + i * 17, i ? '#5a766d' : '#4f514a', '13px "Malgun Gothic", sans-serif'));
-  if (a.bubble.kind === 'alert' && Math.floor(t / 450) % 2) { ctx.fillStyle = '#bf6c54'; ctx.fillRect(x - 3, y + 5, 2, 7); }
 }
 
 export default {

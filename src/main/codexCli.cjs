@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
+const { execFile, spawn, spawnSync } = require('node:child_process');
 const claudeCli = require('./claudeCli.cjs');
 const { cleanEnv } = require('./env.cjs');
 
@@ -14,16 +14,21 @@ const HOOK_EVENTS = ['SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolU
 const SAFE = /^[A-Za-z0-9._:-]{1,80}$/;
 const EFFORT_RE = /^[a-z]{2,12}$/; // 단계 이름은 Codex 가 알려 준 목록(low … ultra)에서 온다
 
-function hookCommand({ port, token, tab }) {
+// maxSec: curl 이 응답을 기다리는 최대 시간. 권한 요청은 카드 승인을 기다리므로 길게 쓴다 (hookArgs 참고).
+function hookCommand({ port, token, tab, maxSec = 2 }) {
   const url = `http://127.0.0.1:${Number(port)}/hook?k=${token}&src=session&cli=codex&tab=${tab}`;
-  return `curl.exe -sS --noproxy "*" -m 2 -X POST -H "Content-Type: application/json" --data-binary "@-" "${url}"`;
+  return `curl.exe -sS --noproxy "*" -m ${Math.trunc(Number(maxSec))} -X POST -H "Content-Type: application/json" --data-binary "@-" "${url}"`;
 }
 
 // 실행할 때마다 -c 로 넣는다 — 사용자 ~/.codex 설정은 건드리지 않는다.
+// PermissionRequest 만 응답을 오래 기다린다 (앱이 590초에 먼저 풀고, curl 595초 · hook 600초는 그보다 늦게 끊는다. 0.163 실측: 130초 보류 뒤 allow 정상).
 function hookArgs({ port, token, tab }) {
   if (!SAFE.test(String(token)) || !SAFE.test(String(tab))) throw new Error('잘못된 hook 값');
-  const command = JSON.stringify(hookCommand({ port, token, tab })); // JSON 문자열은 TOML 기본 문자열과 호환
-  return HOOK_EVENTS.flatMap((ev) => ['-c', `hooks.${ev}=[{hooks=[{type="command",command=${command},timeout=3}]}]`]);
+  return HOOK_EVENTS.flatMap((ev) => {
+    const slow = ev === 'PermissionRequest';
+    const command = JSON.stringify(hookCommand({ port, token, tab, maxSec: slow ? 595 : 2 })); // JSON 문자열은 TOML 기본 문자열과 호환
+    return ['-c', `hooks.${ev}=[{hooks=[{type="command",command=${command},timeout=${slow ? 600 : 3}}]}]`];
+  });
 }
 
 // 앱 탭: 기본 승인 모드로 시작한다. 주입한 hook 은 탭마다 주소가 달라 신뢰 기록이 맞지 않으므로 이 실행에서만 검토를 건너뛴다.
@@ -109,4 +114,111 @@ async function version(loc) {
   return m ? m[0] : null;
 }
 
-module.exports = { HOOK_EVENTS, hookCommand, hookArgs, tabArgs, execArgs, parseModels, models, bundledCodex, npmVendorExe, pickCodex, locate, version };
+// 사용량 창 이름: 300분 → 세션, 10080분(7일) → 주간, 그 밖은 시간 단위.
+function windowLabel(mins) {
+  if (mins === 300) return '세션';
+  if (mins === 10080) return '주간';
+  return `${Math.round(Number(mins) / 60)}시간`;
+}
+
+// app-server(usedPercent·windowDurationMins·resetsAt)와 롤아웃(used_percent·window_minutes·resets_at)의 한도 객체 → Row[]. resetsAt 은 초 단위.
+// 세션·주간이 아닌 창은 계약의 id 모양에 맞게 model:<라벨> 로 둔다.
+function limitRows(rl, observedAt) {
+  const rows = [];
+  for (const w of [rl?.primary, rl?.secondary]) {
+    if (!w || typeof w !== 'object') continue;
+    const pct = Number(w.usedPercent ?? w.used_percent);
+    const mins = Number(w.windowDurationMins ?? w.window_minutes);
+    const resets = Number(w.resetsAt ?? w.resets_at);
+    if (!Number.isFinite(pct) || !Number.isFinite(mins)) continue;
+    const label = windowLabel(mins);
+    rows.push({
+      id: mins === 300 ? 'session' : mins === 10080 ? 'week' : `model:${label}`, label,
+      percent: Math.max(0, Math.min(100, Math.round(pct))), resetsAt: Number.isFinite(resets) ? resets * 1000 : null, resetsText: null, observedAt,
+    });
+  }
+  return rows;
+}
+
+// 롤아웃(세션 기록) 줄들에서 가장 최근 token_count 의 한도와 컨텍스트 사용률을 읽는다. 둘 다 못 찾으면 null.
+// 한도 값이 없는 token_count 가 최근에 있어도 그 앞의 한도 값을 쓰도록 각각 따로 찾는다.
+function parseRollout(lines, now = Date.now()) {
+  let rows = null;
+  let contextPercent = null;
+  for (let i = lines.length - 1; i >= 0 && (rows === null || contextPercent === null); i--) {
+    let o;
+    try { o = JSON.parse(lines[i]); } catch { continue; }
+    if (!o || o.type !== 'event_msg' || o.payload?.type !== 'token_count') continue;
+    const p = o.payload;
+    if (rows === null && p.rate_limits) {
+      const at = Date.parse(o.timestamp);
+      rows = limitRows(p.rate_limits, Number.isFinite(at) ? at : now);
+    }
+    const used = Number(p.info?.last_token_usage?.total_tokens);
+    const size = Number(p.info?.model_context_window);
+    if (contextPercent === null && used >= 0 && size > 0) contextPercent = Math.max(0, Math.min(100, Math.round(used / size * 100)));
+  }
+  return rows === null && contextPercent === null ? null : { rows: rows || [], contextPercent };
+}
+
+function killTree(pid) {
+  if (process.platform !== 'win32' || !pid) return;
+  try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }); } catch { /* 이미 종료 */ }
+}
+
+// codex app-server(줄 단위 JSON-RPC)에 대화 없이 계정 한도를 묻는다 (0.163 실측: 약 1초). 반환: { rows, at } 또는 { error }.
+// signal(AbortSignal)이 중단되면 (앱 종료) 바로 자식을 정리하고 { error } 로 끝낸다.
+function rateLimits(loc, { timeoutMs = 10000, appVersion = '0.1.0', signal } = {}) {
+  return new Promise((resolve) => {
+    if (!loc || loc.cmdShim) { resolve({ error: 'Codex 를 실행할 수 없습니다' }); return; }
+    if (signal?.aborted) { resolve({ error: '중단됨' }); return; }
+    let child;
+    try {
+      child = spawn(loc.file, [...loc.prefixArgs, 'app-server'], { env: cleanEnv(), windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] });
+    } catch (e) { resolve({ error: `Codex 를 실행하지 못했습니다: ${String(e && e.message || e).slice(0, 80)}` }); return; }
+    let done = false;
+    let exited = false; // 이미 끝난 자식의 pid 는 다른 프로세스가 물려받았을 수 있으므로 killTree 하지 않는다
+    let buf = '';
+    const send = (o) => { try { child.stdin.write(JSON.stringify(o) + '\n'); } catch { /* 이미 닫힘 */ } };
+    const onAbort = () => { finish({ error: '중단됨' }); if (!exited) killTree(child.pid); };
+    const finish = (res) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      try { child.stdin.end(); } catch { /* 이미 닫힘 */ }
+      setTimeout(() => { if (!exited) killTree(child.pid); }, 300).unref?.();
+      resolve(res);
+    };
+    const timer = setTimeout(() => finish({ error: 'Codex 응답 시간 초과' }), timeoutMs);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    child.stdin.on('error', () => {});
+    child.on('error', (e) => finish({ error: `Codex 를 실행하지 못했습니다: ${String(e.message).slice(0, 80)}` }));
+    child.on('exit', () => { exited = true; finish({ error: 'Codex 가 응답 없이 끝났습니다' }); });
+    child.stdout.on('data', (d) => {
+      buf += d.toString('utf8');
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i);
+        buf = buf.slice(i + 1);
+        let j;
+        try { j = JSON.parse(line); } catch { continue; }
+        if (!j || typeof j !== 'object' || 'method' in j) continue; // 서버가 보낸 요청·알림은 응답이 아니다 (id 가 같아도)
+        if (j.id === 1) {
+          send({ method: 'initialized' });
+          send({ method: 'account/rateLimits/read', id: 2 });
+        } else if (j.id === 2) {
+          const rl = j.result?.rateLimits;
+          if (j.error || !rl) finish({ error: String(j.error?.message || '한도 정보가 없습니다').slice(0, 100) });
+          else finish({ rows: limitRows(rl, Date.now()), at: Date.now() });
+        }
+      }
+    });
+    send({ method: 'initialize', id: 1, params: { clientInfo: { name: 'agent-office', title: 'Agent Office', version: String(appVersion) } } });
+  });
+}
+
+module.exports = {
+  HOOK_EVENTS, hookCommand, hookArgs, tabArgs, execArgs, parseModels, models, bundledCodex, npmVendorExe, pickCodex, locate, version,
+  windowLabel, limitRows, parseRollout, rateLimits,
+};

@@ -220,3 +220,19 @@ body.resizing-cli iframe, body.resizing-cli canvas, body.resizing-cli .xterm { p
 .kind-pick { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-bottom: 6px; }
 .kind-pick label { display: flex; align-items: center; gap: 5px; }
 .kind-pick label:has(input:disabled) { color: var(--muted); }
+
+/* ── 펫 그림 선택 대화상자 ── */
+.petpick { max-height: 90vh; overflow: auto; }
+.petpick h3 { margin: 12px 0 6px; }
+.petpick-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 8px; }
+.petcard { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.petcard-pick { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--bg); cursor: pointer; text-align: center; }
+.petcard-pick:hover { border-color: var(--accent); }
+.petcard-pick:has(input:checked) { border-color: var(--accent); background: var(--panel-2); box-shadow: 0 0 0 1px var(--accent); }
+.petcard-pick input { align-self: flex-start; margin: 0; }
+.petcard-art { width: 96px; height: 104px; margin-top: -10px; }
+.petcard-none { display: grid; place-items: center; color: var(--muted); font-size: 12px; }
+.petcard-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.petcard-sub { color: var(--muted); font-size: 11px; }
+.petpick-msg { min-height: 18px; margin-top: 10px; }
+.petpick-actions { gap: 8px; align-items: center; }

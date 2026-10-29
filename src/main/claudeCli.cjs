@@ -13,6 +13,19 @@ function run(file, args, timeoutMs = 20000) {
   });
 }
 
+// Claude 가 Windows 에서 쓰는 셸(Git Bash)의 경로. 못 찾으면 null.
+// 순서: CLAUDE_CODE_GIT_BASH_PATH → PATH 의 git 옆(..\..\bin\bash.exe) → Program Files. System32·WindowsApps 의 bash.exe 는 WSL 이므로 쓰지 않는다.
+async function findGitBash({ env = process.env, exists = fs.existsSync, runWhere = () => run('where', ['git']) } = {}) {
+  const usable = (c) => !!c && !/\\(System32|WindowsApps)\\/i.test(c) && exists(c);
+  if (usable(env.CLAUDE_CODE_GIT_BASH_PATH)) return env.CLAUDE_CODE_GIT_BASH_PATH;
+  try {
+    const git = (await runWhere()).stdout.split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+    const viaGit = git && path.win32.resolve(path.win32.dirname(git), '..', 'bin', 'bash.exe');
+    if (usable(viaGit)) return viaGit;
+  } catch { /* where 실패 — 고정 위치로 */ }
+  return ['C:\\Program Files\\Git\\bin\\bash.exe', 'C:\\Program Files (x86)\\Git\\bin\\bash.exe'].find(usable) || null;
+}
+
 // npm 설치본의 claude.cmd 는 `"%dp0%\node_modules\...\claude.exe" %*` 한 줄로 실제 exe 를 부른다.
 // pty 로 .cmd 를 직접 띄우면 cmd.exe 인용 규칙에 걸리므로 exe 경로를 찾아 바로 실행한다.
 function exeFromCmdShim(cmdPath) {
@@ -105,4 +118,4 @@ async function authStatus(loc) {
   }
 }
 
-module.exports = { locate, version, authStatus, exeFromCmdShim, commandFor, tabArgs, run, runClaude };
+module.exports = { locate, version, authStatus, exeFromCmdShim, commandFor, tabArgs, run, runClaude, findGitBash };

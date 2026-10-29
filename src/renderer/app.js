@@ -1,10 +1,11 @@
 // 화면 조립: 진입(로그인) → 왼쪽 사무실(항상 표시) + 오른쪽 Claude Code 탭.
-import { OfficeEngine } from './office/engine.js';
+import { OfficeEngine, NON_BLOCKING_NOTIFICATIONS } from './office/engine.js';
 import { OfficeView } from './office/view.js';
 import { baseName } from './office/phrases.js';
 import { THEMES, getTheme } from './themes/index.js';
 import { createCollabPanel } from './collab/panel.js';
 import { setupCliResizer } from './layout.js';
+import { cardPreview } from './pet/model.js';
 
 const api = window.office;
 const $ = (sel) => document.querySelector(sel);
@@ -47,6 +48,7 @@ const state = {
   external: new Map(), // 앱 탭이 아닌 세션 (사용자 전역 hook 으로 들어온 것)
   closedTabs: new Set(), // 닫은 탭 ID (탭 ID 는 다시 쓰지 않는다)
   seq: 0,
+  attention: new Map(), // 「확인 필요」: 탭 id(외부 세션은 ext:<세션 id>) → 항목 — 사무실 말풍선 반짝임(과 다음 단계 펫)의 단일 출처
   entered: false,
 };
 
@@ -138,6 +140,7 @@ async function refreshStatus() {
   }
   renderGate();
   renderTopbar();
+  publishPet();
 }
 
 function renderGate() {
@@ -215,6 +218,7 @@ async function enter() {
 
 function renderTopbar() {
   const st = state.status;
+  if (st?.pet?.mode) $('#pet-mode').value = st.pet.mode;
   const acc = $('#account');
   if (st && st.auth && st.auth.loggedIn) {
     acc.textContent = `● ${st.auth.email || '로그인됨'}${st.auth.subscriptionType ? ` · ${st.auth.subscriptionType}` : ''}`;
@@ -255,6 +259,19 @@ $('#global-hooks').addEventListener('click', async () => {
   }
   renderTopbar();
 });
+
+$('#pet-mode').addEventListener('change', async (e) => {
+  const sel = e.target, want = sel.value;
+  try {
+    const r = await api.setPetMode(want);
+    if (state.status) state.status.pet = { mode: r?.mode || want };
+    sel.value = r?.mode || want;
+  } catch (err) {
+    sel.value = state.status?.pet?.mode || 'always';
+    addFeed({ text: `펫 설정 실패: ${err.message}` });
+  }
+});
+api.onPetMode?.(({ mode } = {}) => { if (state.status) state.status.pet = { mode }; $('#pet-mode').value = mode || 'always'; });
 
 function renderThemes() {
   const sel = $('#theme-select');
@@ -311,11 +328,16 @@ async function openTab({ cwd, mode = 'new', resumeId = null, kind = 'claude' }) 
   store.set('ao.recent', [cwd, ...store.get('ao.recent', []).filter((p) => p !== cwd)].slice(0, 8));
 
   // sessions: 이 탭에서 나온 모든 세션 (탭 안에서 실행한 중첩 claude 포함) — 탭을 닫을 때 함께 정리한다.
-  const tab = { id, kind, label, cwd, mode, sessionId: null, sessions: new Set(), term: null, fit: null, panel: null, pane, btn, dot, status: 'idle', exited: false };
+  const tab = { id, kind, label, cwd, mode, sessionId: null, sessions: new Set(), term: null, fit: null, panel: null, pane, btn, dot, status: 'idle', exited: false,
+    collabSpeaker: null, collabLast: null, collabPrev: null, collabTurn: 0, collabAt: 0 };
   state.tabs.set(id, tab);
+  // 탭 영역(터미널·대화창)을 클릭하거나 포커스가 들어오면 「확인 필요」를 끈다.
+  pane.addEventListener('focusin', () => lookedAt(id));
+  pane.addEventListener('pointerdown', () => lookedAt(id));
   if (kind === 'collab') {
     pane.classList.add('pane-collab');
-    tab.panel = createCollabPanel({ api, roomId: id, cwd, onStatus: (s) => setTabStatus(tab, s === 'running' ? 'working' : s === 'question' ? 'alert' : 'idle') });
+    // 작업 상태는 전이 알림(동기)으로도 정한다 — 창이 숨겨져 렌더가 멈춰도 펫이 협업 진행을 바로 알게.
+    tab.panel = createCollabPanel({ api, roomId: id, cwd, onStatus: (s) => setTabStatus(tab, s === 'running' ? 'working' : 'idle'), onTransition: (prev, next, agent) => { setTabStatus(tab, next === 'running' ? 'working' : 'idle'); collabAttention(tab, prev, next, agent); }, onSpeaker: (agent) => collabSpeaker(tab, agent) });
     pane.append(tab.panel.root);
     activate(id);
     return;
@@ -355,9 +377,21 @@ function activate(id) {
   $('#empty').hidden = state.tabs.size > 0;
   const tab = state.tabs.get(id);
   if (tab) {
-    if (tab.status === 'alert' && !tab.panel) setTabStatus(tab, 'idle');
+    lookedAt(id);
     requestAnimationFrame(() => { fitTab(tab); if (tab.panel) tab.panel.focus(); else tab.term.focus(); });
   }
+  publishFocus();
+}
+
+// 지금 보고 있는 탭을 메인에 알린다 (사용량 패널의 세션 줄용) — 같은 내용이면 보내지 않는다.
+let lastFocus = '';
+function publishFocus() {
+  const tab = state.tabs.get(state.active);
+  const focus = tab ? { tabId: tab.id, kind: tab.kind, label: tab.label } : { tabId: null, kind: null, label: '' };
+  const json = JSON.stringify(focus);
+  if (json === lastFocus) return;
+  lastFocus = json;
+  api.petFocus?.(focus);
 }
 
 async function closeTab(id) {
@@ -374,12 +408,150 @@ async function closeTab(id) {
   tab.btn.remove();
   endTabSessions(tab);
   const next = [...state.tabs.keys()].pop() || null;
-  if (next) activate(next); else { state.active = null; $('#empty').hidden = false; }
+  if (next) activate(next); else { state.active = null; $('#empty').hidden = false; publishFocus(); }
+  publishPet();
 }
+
+// ───────────────────────── 확인 필요 ─────────────────────────
+// 완료·권한 요청·질문처럼 사용자가 봐야 할 것. 켜고 끄는 일은 모두 attend/dismiss 를 거쳐 publishAttention 한 곳으로 나간다.
+
+const EXTERNAL_ATTENTION_MS = 20 * 60000; // 앱 탭이 아닌 세션은 끌 탭이 없다 — 퇴근 규칙(20분)과 같은 시간 뒤 저절로 끈다
+const ATTENTION_TEXT = {
+  done: '✅ 답변 완료', permission: '❓ 권한 확인', notification: '❓ 확인이 필요합니다', question: '❓ 선택을 기다려요',
+  'collab-question': '❓ 질문이 있어요', 'collab-idle': '✅ 대화 완료', 'collab-error': '⚠ 오류 — 확인 필요',
+};
+
+// 사용자가 그 탭을 보고 있다: 활성 탭이고 창이 보이며 포커스가 있고, 새 탭·펫 그림 대화상자가 닫혀 있다.
+function isLooking(tabId) {
+  return tabId != null && state.active === tabId && document.visibilityState === 'visible' && document.hasFocus() && !$('#newtab').open && !$('#petpick').open;
+}
+
+function renderDot(tab) {
+  tab.dot.className = `dot ${state.attention.has(tab.id) ? 'alert' : tab.status}`;
+}
+
+function publishAttention() {
+  engine.setAttention([...state.attention.values()]);
+  for (const t of state.tabs.values()) renderDot(t);
+  publishPet();
+}
+
+// 바탕화면 펫에 보낼 상태 — 같은 내용이면 보내지 않는다 (hook 이벤트마다 불린다).
+let lastPet = '';
+function publishPet() {
+  const kinds = { claude: { working: false, attention: [] }, codex: { working: false, attention: [] } };
+  for (const t of state.tabs.values()) if (t.status === 'working') for (const k of t.kind === 'collab' ? ['claude', 'codex'] : [t.kind]) if (kinds[k]) kinds[k].working = true;
+  for (const x of [...state.attention.values()].sort((a, b) => a.at - b.at)) {
+    kinds[x.cli === 'codex' ? 'codex' : 'claude'].attention.push({ key: x.key, tabId: x.tabId, label: x.label, reason: x.reason, kind: x.kind, text: x.text, at: x.at,
+      permId: x.permId ?? null, tool: x.tool ?? '', preview: x.preview ?? '', canAnswer: !!x.canAnswer });
+  }
+  // 협업 대화: 답변 중인 협업 탭 가운데 말하는 AI 가 가장 최근에 바뀐 탭 기준 (두 캐릭터 상호작용용).
+  let best = null;
+  for (const t of state.tabs.values()) if (t.kind === 'collab' && t.status === 'working' && (!best || t.collabAt >= best.collabAt)) best = t;
+  const collab = best ? { active: true, tabId: best.id, speaker: best.collabSpeaker, turn: best.collabTurn, prev: best.collabPrev } : { active: false };
+  const json = JSON.stringify({ kinds, collab });
+  if (json === lastPet) return;
+  lastPet = json;
+  api.petState?.({ kinds, collab });
+}
+
+const attentionTimers = new Map(); // 외부 세션 key → 자동 해제 타이머 (항목마다 하나만)
+
+function attend(key, entry) {
+  if (entry.tabId && isLooking(entry.tabId)) return;
+  state.attention.set(key, { ...entry, key, at: Date.now() });
+  if (!entry.tabId) {
+    clearTimeout(attentionTimers.get(key));
+    attentionTimers.set(key, setTimeout(() => dismiss((x) => x.key === key), EXTERNAL_ATTENTION_MS));
+  }
+  publishAttention();
+}
+
+function dismiss(match) {
+  let changed = false;
+  for (const [k, x] of state.attention) {
+    if (!match(x)) continue;
+    state.attention.delete(k);
+    clearTimeout(attentionTimers.get(k));
+    attentionTimers.delete(k);
+    changed = true;
+  }
+  if (changed) publishAttention();
+}
+
+const lookedAt = (tabId) => dismiss((x) => x.tabId === tabId);
+
+// hook 이벤트로 켜고 끈다. 탭은 주 세션만 본다 (탭 안에서 실행된 claude -p 등의 완료로 깜빡이지 않게).
+// 외부 세션은 답이 필요한 것만 켠다 (VS Code 등에서 턴이 끝날 때마다 깜빡이지 않게).
+// 카드로 답할 수 없는 권한 요청의 안내용 한 줄 (명령·파일·주소 등). 문자열인 첫 값만 쓴다. 답할 수 있는 요청은 model.js 의 cardPreview (승인 대상 전체) 를 쓴다.
+function permissionPreview(input) {
+  if (!input || typeof input !== 'object') return '';
+  for (const k of ['command', 'file_path', 'notebook_path', 'pattern', 'url', 'query', 'description']) if (typeof input[k] === 'string') return input[k];
+  return '';
+}
+
+function noteAttention(tab, ev) {
+  const sid = ev.session_id, name = ev.hook_event_name, agentId = ev.agent_id || null;
+  if (tab?.kind === 'collab') { if (ev._cli) (tab.cliSession ||= {})[ev._cli] = sid; return; } // 협업 대화는 대화창 상태로 정한다 (Stop 은 턴마다 온다)
+  if (tab ? sid !== tab.sessionId : ev._tab === 'login' || ev._cli === 'codex') return;
+  const key = tab ? tab.id : `ext:${sid}`, prev = state.attention.get(key);
+  let reason = null;
+  if (name === 'Stop' && !agentId) reason = tab ? 'done' : null;
+  else if (name === 'PermissionRequest') reason = prev?.reason === 'question' && ev.tool_name === 'AskUserQuestion' ? '' : 'permission'; // 질문 도구의 권한 요청은 「질문」 그대로
+  else if (name === 'Notification' && !NON_BLOCKING_NOTIFICATIONS.has(ev.notification_type)) reason = (prev?.reason === 'permission' || prev?.reason === 'question') && ev.notification_type === 'permission_prompt' ? '' : 'notification'; // 권한 요청·질문 뒤 따라오는 알림
+  else if (name === 'PreToolUse' && ev.tool_name === 'AskUserQuestion') reason = 'question';
+  if (reason === '') return;
+  if (reason) {
+    if (!engine.isLive(sid)) return;
+    const permId = reason === 'permission' ? ev._permId || null : null;
+    const tool = ev.tool_name || '';
+    const exact = cardPreview(tool, ev.tool_input); // 카드로 답할 수 있으면 승인 대상 전체 (아니면 null → 안내만)
+    const preview = exact ?? permissionPreview(ev.tool_input);
+    attend(key, { tabId: tab?.id ?? null, sessionId: sid, agentId: reason === 'done' ? null : agentId, cli: ev._cli || 'claude',
+      label: tab?.label || baseName(ev.cwd || ''), reason, kind: reason === 'done' ? 'done' : 'alert', text: ATTENTION_TEXT[reason],
+      permId, tool, preview, canAnswer: !!permId && !!tab && exact !== null }); // 앱 탭이 아닌 세션은 안내만
+    return;
+  }
+  // 진행 신호: 답을 보냈거나 승인돼 다음 도구로 넘어갔거나 턴이 끝났다 (외부 세션의 Stop — 탭의 Stop 은 위에서 「완료」가 된다).
+  // 같은 액터만 — 백그라운드 에이전트의 작업은 팀장 표시를 끄지 않는다.
+  if (!prev || prev.sessionId !== sid) return;
+  if (name === 'UserPromptSubmit' || name === 'SessionEnd' || (name === 'Stop' && !agentId)
+    || ((name === 'PreToolUse' || name === 'SubagentStop') && prev.agentId === agentId)) dismiss((x) => x.key === key);
+}
+
+// 협업 대화: AI 가 [질문]했거나, 대화가 끝났거나, 오류로 멈추면 켜고, 사용자가 답을 보내 다시 진행하면 끈다.
+function collabAttention(tab, prev, next, agent) {
+  if (next === 'running') { lookedAt(tab.id); return; }
+  const reason = `collab-${next}`;
+  if (prev !== 'running' || !ATTENTION_TEXT[reason]) return;
+  attend(tab.id, { tabId: tab.id, sessionId: tab.cliSession?.[agent] ?? null, agentId: null, cli: agent || 'claude', label: tab.label,
+    reason, kind: next === 'idle' ? 'done' : 'alert', text: ATTENTION_TEXT[reason] });
+}
+
+// 협업 대화에서 말하는 AI 가 바뀜 (null = 아무도 안 말함): 펫이 서로 주고받는 모습을 보이도록 직전 발언자와 차례를 기록한다.
+function collabSpeaker(tab, agent) {
+  tab.collabSpeaker = agent;
+  if (agent) {
+    tab.collabPrev = tab.collabLast;
+    tab.collabLast = agent;
+    tab.collabTurn += 1;
+    tab.collabAt = Date.now();
+  }
+  publishPet();
+}
+
+// 창으로 돌아오면(트레이에서 다시 열기 포함) 보고 있는 탭의 「확인 필요」를 끈다.
+const lookAgain = () => { if (isLooking(state.active)) lookedAt(state.active); };
+window.addEventListener('focus', lookAgain);
+document.addEventListener('visibilitychange', lookAgain);
+$('#newtab').addEventListener('close', lookAgain);
+$('#petpick').addEventListener('close', lookAgain);
 
 function setTabStatus(tab, status) {
   tab.status = status;
-  tab.dot.className = `dot ${status}`;
+  renderDot(tab);
+  publishPet();
+  if (state.active === tab.id) publishFocus();
 }
 
 function tabForEvent(ev) {
@@ -391,11 +563,14 @@ function tabForEvent(ev) {
 function endTabSessions(tab) {
   for (const sid of tab.sessions) engine.endSession(sid);
   tab.sessions.clear();
+  lookedAt(tab.id);
 }
 
 function onHookEvent(ev) {
   // 닫은 탭의 늦은 이벤트(Codex hook 은 PowerShell 을 거쳐 늦게 오기도 한다)는 버린다 — 유령 캐릭터·외부 세션 오인 방지.
   if (ev._tab && state.closedTabs.has(ev._tab)) return;
+  // 붙잡힌 권한 요청이 전역 hook 사본과 겹쳐 두 번째로 온 사본: 엔진·탭 상태는 건드리지 않고 카드 정보(permId)만 갱신한다.
+  if (ev._dupHold) { noteAttention(tabForEvent(ev), ev); updateHeadcount(); return; }
   const tab = tabForEvent(ev);
   let label = null;
   if (tab && ev.session_id) {
@@ -415,7 +590,7 @@ function onHookEvent(ev) {
   if (tab && tab.kind !== 'collab' && ev.session_id === tab.sessionId) {
     const name = ev.hook_event_name;
     if (name === 'Notification' || name === 'PermissionRequest') {
-      setTabStatus(tab, 'alert');
+      setTabStatus(tab, 'idle'); // 답을 기다리는 중 — 눈에 띄는 표시는 「확인 필요」가 맡는다
     } else if (name === 'Stop' || name === 'SessionEnd') {
       setTabStatus(tab, 'idle');
     } else if (!tab.exited) {
@@ -433,10 +608,21 @@ function onHookEvent(ev) {
   // 협업 대화가 AI 에게 보내는 프롬프트에는 진행 규칙·이전 발언이 붙는다 — 사무실에는 사용자의 실제 요청만 보여 준다.
   if (tab?.kind === 'collab' && ev.hook_event_name === 'UserPromptSubmit') ev = { ...ev, prompt: tab.panel.moderator.lastUserText() || ev.prompt };
   engine.handleEvent(ev, { label });
+  noteAttention(tab, ev);
   updateHeadcount();
 }
 
 api.onHookEvent(onHookEvent);
+// 메인이 붙잡은 권한 요청을 풀었다: 카드로 결정했으면(decided) 항목을 지우고, 그 밖(시간 초과·연결 끊김·해제)이면 표시는 남기고 카드는 안내로 바꾼다.
+// 렌더러는 보류 해제를 직접 보내지 않는다 — 메인이 펫 상태와 대조해서 푼다.
+api.onPermClosed?.(({ permId, how } = {}) => {
+  if (typeof permId !== 'string') return;
+  if (how === 'decided') { dismiss((x) => x.permId === permId); return; }
+  let changed = false;
+  for (const [k, x] of state.attention) if (x.permId === permId) { state.attention.set(k, { ...x, permId: null, canAnswer: false }); changed = true; }
+  if (changed) publishAttention();
+});
+api.onPetActivate?.(({ tabId } = {}) => { if (tabId && state.tabs.has(tabId)) activate(tabId); });
 api.onPtyData(({ tabId, data }) => {
   if (tabId === 'login') { if (gateTerm) gateTerm.term.write(data); return; }
   const tab = state.tabs.get(tabId);
@@ -510,7 +696,157 @@ $('#pick-folder').addEventListener('click', async () => {
 $('#new-tab').addEventListener('click', openNewTabDialog);
 $('#empty-new').addEventListener('click', openNewTabDialog);
 
+// ───────────────────────── 펫 그림 선택 ─────────────────────────
+
+const PICK_KINDS = ['claude', 'codex'];
+const PREVIEW_W = 96, PREVIEW_H = 104; // 미리보기 캔버스 CSS 크기 (시트 한 칸 192x208 의 절반)
+let petpickGen = 0; // 대화상자를 열고 닫을 때마다 올린다 — 닫은 뒤 늦게 오는 목록·미리보기 결과를 버린다
+let petpickSig = ''; // 마지막으로 그린 목록의 모양 — 같으면 선택 표시만 갱신한다
+let petpickBusy = false;
+let previewTargets = new Map(); // 펫 키 → 그 펫을 그리는 캔버스들 (두 구역에 모두 나온다). 대화상자가 열려 있는 동안만 둔다
+
+const petpickMsg = (text) => { $('#petpick-msg').textContent = text; };
+
+function setPetpickBusy(busy) {
+  petpickBusy = busy;
+  for (const id of ['#petpick-zip', '#petpick-folder']) $(id).disabled = busy;
+  for (const b of document.querySelectorAll('#petpick .petcard-del')) b.disabled = busy; // 가져오는 중에는 삭제도 막는다
+}
+
+// 라디오 카드 하나. key 가 있으면 미리보기 캔버스를 달고, user 면 삭제 버튼도 단다. 글은 모두 textContent 로만 들어간다.
+function petCard(kind, value, title, sub, key, user) {
+  const input = el('input', { type: 'radio', name: `petpick-${kind}`, value });
+  input.addEventListener('change', () => { if (input.checked) selectPetArt(kind, value); });
+  let art;
+  if (key) {
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    art = el('canvas', { class: 'petcard-art', width: Math.round(PREVIEW_W * dpr), height: Math.round(PREVIEW_H * dpr) });
+    if (!previewTargets.has(key)) previewTargets.set(key, []);
+    previewTargets.get(key).push(art);
+  } else {
+    art = el('div', { class: 'petcard-art petcard-none' }, value === 'none' ? '아이콘' : '기본');
+  }
+  const card = el('div', { class: 'petcard' },
+    el('label', { class: 'petcard-pick' }, input, art, el('span', { class: 'petcard-name', title }, title), el('span', { class: 'petcard-sub' }, sub)));
+  if (user) {
+    const del = el('button', { type: 'button', class: 'btn small petcard-del', onclick: () => removePetArt(key, title) }, '삭제');
+    del.disabled = petpickBusy; // 가져오는 중에 새로 그려진 카드도 막는다
+    card.append(del);
+  }
+  return card;
+}
+
+// 미리보기: 펫을 하나씩 받아 첫 칸만 그리고 비트맵은 바로 닫는다. 대화상자를 닫거나 목록을 다시 그리면 멈춘다.
+async function loadPetPreviews(gen, targets) {
+  for (const [key, canvases] of targets) {
+    if (gen !== petpickGen || targets !== previewTargets) return;
+    try {
+      const r = await api.petsPreview(key);
+      if (!r?.bytes) continue;
+      const bitmap = await createImageBitmap(new Blob([r.bytes], { type: r.type }), 0, 0, 192, 208);
+      try {
+        if (gen === petpickGen && targets === previewTargets) {
+          for (const c of canvases) {
+            const ctx = c.getContext('2d');
+            ctx.imageSmoothingQuality = 'high';
+            ctx.clearRect(0, 0, c.width, c.height);
+            ctx.drawImage(bitmap, 0, 0, 192, 208, 0, 0, c.width, c.height);
+          }
+        }
+      } finally { bitmap.close(); }
+    } catch { /* 이 펫의 미리보기만 비워 둔다 */ }
+  }
+}
+
+function renderPetPick(data, gen) {
+  const pets = Array.isArray(data?.pets) ? data.pets : [];
+  const sig = pets.map((p) => `${p.key}=${p.displayName}`).join('|');
+  if (sig !== petpickSig) {
+    petpickSig = sig;
+    previewTargets = new Map();
+    for (const kind of PICK_KINDS) {
+      $(`#petpick-${kind}`).replaceChildren(
+        petCard(kind, '', '기본', '앱 기본 그림', null, false),
+        petCard(kind, 'none', '아이콘만', '그림 없이 아이콘', null, false),
+        ...pets.map((p) => petCard(kind, p.key, p.displayName, p.source === 'builtin' ? '기본 제공' : '가져옴', p.key, p.source === 'user')));
+    }
+    loadPetPreviews(gen, previewTargets);
+  }
+  const values = new Set(['', 'none', ...pets.map((p) => p.key)]);
+  for (const kind of PICK_KINDS) {
+    // 실제로 쓰이는 그림(resolved)을 기준으로 표시한다: 설정이 null 이고 기본 펫(또는 기본 그림이 아이콘)이면 「기본」, 'none' 이면 「아이콘만」, 그 밖은 그 펫의 카드.
+    const raw = data?.selected?.[kind] ?? null;
+    const resolved = data?.resolved?.[kind];
+    let want;
+    if (typeof resolved !== 'string') want = raw === null ? '' : values.has(raw) ? raw : 'none';
+    else if (raw === null && (resolved === `builtin:office-${kind}` || resolved === 'none')) want = '';
+    else if (resolved === 'none') want = 'none';
+    else want = values.has(resolved) ? resolved : 'none';
+    for (const r of document.querySelectorAll(`input[name="petpick-${kind}"]`)) r.checked = r.value === want;
+  }
+}
+
+async function refreshPetPick() {
+  const gen = petpickGen;
+  let data;
+  try { data = await api.petsList(); } catch { if (gen === petpickGen) petpickMsg('펫 목록을 읽지 못했습니다'); return; }
+  if (gen !== petpickGen || !$('#petpick').open) return;
+  renderPetPick(data, gen);
+}
+
+async function selectPetArt(kind, value) {
+  petpickMsg('');
+  try {
+    const r = await api.petsSelect(kind, value === '' ? null : value);
+    if (r?.ok) return;
+    petpickMsg('선택하지 못했습니다');
+  } catch { petpickMsg('선택하지 못했습니다'); }
+  await refreshPetPick(); // 화면의 선택을 실제 저장된 값으로 되돌린다
+}
+
+async function importPetArt(kind) {
+  if (petpickBusy) return;
+  setPetpickBusy(true);
+  petpickMsg(kind === 'zip' ? 'zip 파일을 확인하는 중…' : '폴더를 확인하는 중…');
+  try {
+    const r = await api.petsImport(kind);
+    if (r?.cancelled) petpickMsg('');
+    else if (r?.ok) { petpickMsg(`「${r.displayName}」 펫을 가져왔습니다. 위 목록에서 골라 주세요.`); await refreshPetPick(); }
+    else petpickMsg(typeof r?.error === 'string' ? r.error.slice(0, 200) : '펫을 가져오지 못했습니다');
+  } catch { petpickMsg('펫을 가져오지 못했습니다'); } finally { setPetpickBusy(false); }
+}
+
+async function removePetArt(key, name) {
+  if (petpickBusy || !confirm(`「${name}」 펫을 삭제할까요?\n이 펫을 고른 종류는 기본 그림으로 돌아갑니다.`)) return;
+  try {
+    const r = await api.petsRemove(key);
+    petpickMsg(r?.ok ? `「${name}」 펫을 삭제했습니다` : '삭제하지 못했습니다');
+  } catch { petpickMsg('삭제하지 못했습니다'); }
+  await refreshPetPick();
+}
+
+$('#pet-art').addEventListener('click', async () => {
+  const dlg = $('#petpick');
+  if (dlg.open || !api.petsList) return;
+  petpickGen++;
+  petpickSig = '';
+  petpickMsg('');
+  setPetpickBusy(false);
+  dlg.showModal();
+  await refreshPetPick();
+});
+$('#petpick').addEventListener('close', () => {
+  petpickGen++; // 늦게 오는 결과를 버린다
+  petpickSig = '';
+  previewTargets = new Map(); // 미리보기 캔버스는 열려 있는 동안만 둔다
+  for (const kind of PICK_KINDS) $(`#petpick-${kind}`).replaceChildren();
+});
+$('#petpick-zip').addEventListener('click', () => importPetArt('zip'));
+$('#petpick-folder').addEventListener('click', () => importPetArt('folder'));
+api.onPetsChanged?.(() => { if ($('#petpick').open) refreshPetPick(); });
+
 // ───────────────────────── 시작 ─────────────────────────
 
 renderThemes();
 refreshStatus();
+publishFocus(); // 새로 고친 화면이 첫 포커스(탭 없음)를 한 번 알린다 — 메인이 dropSessions 로 비운 상태와 맞춘다

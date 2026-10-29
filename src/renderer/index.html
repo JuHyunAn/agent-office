@@ -26,6 +26,10 @@
     <button id="global-hooks" class="pill pill-btn" title="VS Code·터미널 등 다른 곳의 Claude Code 세션도 사무실에 표시">다른 세션 보기: 확인 중</button>
     <span id="headcount" class="pill">근무 중 0명</span>
     <span class="spacer"></span>
+    <label class="theme-pick" title="바탕화면 펫 표시 방식">펫
+      <select id="pet-mode"><option value="always">상시 표시</option><option value="alerts">알림만 표시</option><option value="off">끄기</option></select>
+    </label>
+    <button id="pet-art" class="pill pill-btn" type="button" title="바탕화면 펫의 그림을 고르거나 가져옵니다">펫 그림</button>
     <label class="theme-pick">테마
       <select id="theme-select"></select>
     </label>
@@ -85,6 +89,28 @@
         <ul id="external" class="list"></ul>
       </section>
       <div class="dialog-actions"><button class="btn">닫기</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="petpick" class="dialog petpick">
+    <form method="dialog" class="dialog-inner">
+      <h2>펫 그림</h2>
+      <p class="hint">바탕화면 펫에 쓸 그림을 종류마다 고릅니다. 가져온 zip·폴더는 이 앱의 데이터 폴더에 복사되며, 그림 크기가 1536x1872(9줄) 또는 1536x2288(11줄)인 펫만 쓸 수 있습니다.</p>
+      <section>
+        <h3>Claude 펫</h3>
+        <div id="petpick-claude" class="petpick-list" role="radiogroup" aria-label="Claude 펫 그림"></div>
+      </section>
+      <section>
+        <h3>Codex 펫</h3>
+        <div id="petpick-codex" class="petpick-list" role="radiogroup" aria-label="Codex 펫 그림"></div>
+      </section>
+      <p id="petpick-msg" class="hint petpick-msg" role="status"></p>
+      <div class="dialog-actions petpick-actions">
+        <button type="button" id="petpick-zip" class="btn">zip 가져오기</button>
+        <button type="button" id="petpick-folder" class="btn">폴더 가져오기</button>
+        <span class="spacer"></span>
+        <button class="btn">닫기</button>
+      </div>
     </form>
   </dialog>
 

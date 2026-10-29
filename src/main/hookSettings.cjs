@@ -10,25 +10,28 @@ const EVENTS = [
   'SubagentStart', 'SubagentStop', 'Notification', 'PermissionRequest', 'Stop',
 ];
 
-function hookEntry(port, token, src) {
+// 앱이 띄운 세션의 권한 요청(PermissionRequest)만 카드 승인을 기다리므로 대기 시간을 길게 둔다 (앱이 590초에 먼저 푼다).
+// 전역 hook(앱 밖 세션)은 2초 그대로 — 앱 밖 세션은 안내만 하고 응답을 붙잡지 않는다.
+function hookEntry(port, token, src, ev) {
   return {
     type: 'http',
     url: `http://127.0.0.1:${port}/hook?k=${token}&src=${src}&app=${MARK}`,
     // 앱이 띄운 탭이면 AGENT_OFFICE_TAB 이 채워진다 (헤더 치환은 2.1.241 실측).
     headers: { 'X-Office-Tab': '$AGENT_OFFICE_TAB' },
     allowedEnvVars: ['AGENT_OFFICE_TAB'],
-    timeout: 2,
+    timeout: ev === 'PermissionRequest' && src === 'session' ? 600 : 2,
   };
 }
 
 function buildHooks(port, token, src) {
   const hooks = {};
-  for (const ev of EVENTS) hooks[ev] = [{ hooks: [hookEntry(port, token, src)] }];
+  for (const ev of EVENTS) hooks[ev] = [{ hooks: [hookEntry(port, token, src, ev)] }];
   return hooks;
 }
 
-function sessionSettings(port, token) {
-  return { hooks: buildHooks(port, token, 'session') };
+// extra: 세션 설정에 함께 넣을 키 (예: 상태 표시줄 중계 statusLine). 없으면 hook 만.
+function sessionSettings(port, token, extra) {
+  return { hooks: buildHooks(port, token, 'session'), ...extra };
 }
 
 function isOurs(h) {

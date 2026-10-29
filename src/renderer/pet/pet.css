@@ -1,0 +1,77 @@
+html, body { background: transparent; margin: 0; overflow: hidden; user-select: none; font-family: "Malgun Gothic", sans-serif; }
+/* 창 크기는 #wrap 의 실제 크기를 따른다: 위에 사용량 패널(#usage), 아래에 펫(#pets). 둘 다 오른쪽 끝에 붙는다. */
+#wrap { position: fixed; right: 0; bottom: 0; display: flex; flex-direction: column; align-items: flex-end; width: max-content; }
+#pets { display: flex; align-items: flex-end; gap: 8px; padding: 6px; width: max-content; }
+/* 협업 중에는 날아가는 💬 가 캔버스 위로 20px 나오므로 그만큼 창에 포함시킨다. */
+#pets.collab { padding-top: 26px; }
+/* 말풍선이 112px 보다 넓어도 잘리지 않게 폭은 최소값으로만 둔다 (창 크기는 #pets 의 실제 크기를 따른다). */
+.pet { position: relative; display: flex; flex-direction: column; align-items: center; min-width: 112px; max-width: 200px; }
+.pet-bubble {
+  max-width: 200px; box-sizing: border-box; background: #fffbef; border: 1px solid #afa18a; border-radius: 8px;
+  font-size: 12px; color: #4f514a; padding: 4px 8px; margin-bottom: 4px; overflow: hidden; cursor: pointer;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; word-break: break-all;
+}
+.pet[data-attn="alert"] .pet-bubble { border-color: #c57761; background: #fae1d6; }
+.pet[data-attn="done"] .pet-bubble { border-color: #829569; background: #e7edda; }
+.pet-bubble[hidden] { display: none; }
+/* 권한 요청 카드: 있으면 말풍선 대신 펫 위에 뜬다. 허용·거부는 작은 버튼. */
+.pet-card {
+  box-sizing: border-box; width: 200px; max-width: 200px; background: #fae1d6; border: 1px solid #c57761; border-radius: 8px;
+  font-size: 12px; color: #4f514a; padding: 6px 8px; margin-bottom: 4px; cursor: pointer; display: flex; flex-direction: column; gap: 4px;
+}
+.pet-card[hidden], .pet-card [hidden] { display: none; }
+.pet-card-head { font-weight: bold; word-break: break-all; }
+/* 미리보기는 승인 대상 전체를 줄임 없이 보인다 (줄 수 제한·말줄임 없음). 버튼 없는 안내 카드만 4줄까지. */
+.pet-card-preview {
+  white-space: pre-wrap; word-break: break-all;
+  background: #fffbef; border-radius: 4px; padding: 2px 4px; font-family: Consolas, "Malgun Gothic", monospace;
+}
+.pet-card.hint .pet-card-preview { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+.pet-card.hint .pet-card-preview[hidden] { display: none; }
+.pet-card-more, .pet-card-hint { color: #7a6a5c; }
+.pet-card-actions { display: flex; gap: 6px; }
+.pet-card-actions button {
+  flex: 1; font: inherit; color: #fff; border: 1px solid; border-radius: 6px; padding: 2px 0; cursor: pointer;
+}
+.pet-card-allow { background: #829569; border-color: #6c7e55; }
+.pet-card-deny { background: #c57761; border-color: #a9604b; }
+.pet-card-actions button:disabled { opacity: 0.4; cursor: default; }
+.pet-art { position: relative; width: 96px; height: 104px; }
+.pet-badge {
+  position: absolute; top: 0; right: 4px; box-sizing: border-box; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px; background: #c57761; color: #fff; font-size: 11px; line-height: 18px; text-align: center;
+}
+.pet-badge[hidden] { display: none; }
+/* 협업 대화에서 말하는 쪽이 바뀔 때 날아가는 💬 — 위치는 pet.js 가 정하고 transform 으로 옮긴다. */
+.pet-chat { position: fixed; margin: -20px 0 0 -10px; font-size: 18px; line-height: 20px; pointer-events: none; z-index: 5; }
+canvas { display: block; width: 96px; height: 104px; cursor: grab; }
+canvas:active { cursor: grabbing; }
+/* 사용량 패널: 펫 위 오른쪽 정렬, 폭 280px 고정. .pet 밖이라 카드 배치(layoutSig)에 영향을 주지 않는다. 접으면 토글 버튼만 남는다. */
+#usage {
+  box-sizing: border-box; width: 280px; margin: 6px 6px 0 0; padding: 8px 10px; border-radius: 10px;
+  background: #1f2430e6; color: #fff; font-size: 12px; line-height: 16px; display: flex; flex-direction: column; gap: 6px;
+}
+#usage[hidden] { display: none; }
+#usage[data-open="false"] { width: auto; padding: 0; background: none; }
+#usage[data-open="false"] #usage-body, #usage[data-open="false"] #usage-updated, #usage[data-open="false"] #usage-refresh { display: none; }
+#usage-body { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; }
+#usage-body[hidden], .usage-sec[hidden], #usage-session[hidden] { display: none; }
+.usage-sec { display: flex; flex-direction: column; gap: 4px; }
+.usage-title { font-weight: bold; color: #c9d1e6; }
+.usage-rows { display: flex; flex-direction: column; gap: 4px; }
+.usage-row-text { word-break: keep-all; }
+.usage-bar { height: 4px; border-radius: 2px; background: #ffffff33; overflow: hidden; margin-top: 2px; }
+.usage-fill { height: 100%; width: 0; background: #7fb685; }
+.usage-fill[data-level="warn"] { background: #e0b255; }
+.usage-fill[data-level="high"] { background: #d9715f; }
+.usage-err { color: #9aa1b3; font-size: 11px; word-break: break-all; }
+.usage-err:empty { display: none; }
+#usage-session { color: #c9d1e6; border-top: 1px solid #ffffff22; padding-top: 6px; word-break: keep-all; }
+#usage-foot { display: flex; align-items: center; gap: 6px; }
+#usage-updated { flex: 1; color: #9aa1b3; font-size: 11px; }
+#usage button {
+  font: inherit; color: #fff; background: #ffffff1f; border: 1px solid #ffffff33; border-radius: 6px; padding: 0 6px; cursor: pointer;
+}
+#usage button:disabled { opacity: 0.4; cursor: default; }
+#usage[data-open="false"] #usage-foot { justify-content: flex-end; }
+#usage[data-open="false"] #usage-toggle { background: #1f2430e6; }

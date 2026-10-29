@@ -13,12 +13,12 @@ if (!process.versions.electron) {
   child.on('error', e => { console.error(e); process.exitCode = 1; });
   child.on('exit', code => { process.exitCode = code ?? 1; });
 } else {
-  const { app, BrowserWindow, protocol, net, ipcMain } = require('electron');
+  const { app, BrowserWindow, protocol, net, ipcMain, nativeImage } = require('electron');
   const { pathToFileURL } = require('node:url');
   const assert = require('node:assert/strict');
   const OUT = path.join(ROOT, 'output', 'design');
   const errors = [];
-  let win, tabId;
+  let win, tabId, lastPetState = null;
   const pause = ms => new Promise(r => setTimeout(r, ms));
   const event = (name, extra = {}) => win.webContents.send('hook:event', {
     session_id: 'preview-main', cwd: ROOT, hook_event_name: name, _tab: tabId, ...extra,
@@ -40,6 +40,26 @@ if (!process.versions.electron) {
       observedAt: Date.parse('2026-10-26T12:00:00+09:00'), temperature: 16, cloudCover: 10, condition: 'clear' }));
     ipcMain.handle('dialog:pickFolder', () => ROOT);
     ipcMain.handle('pty:create', (_e, options) => { tabId = options.tabId; return { sessionId: options.cli === 'codex' ? null : 'preview-main' }; });
+    ipcMain.handle('pet:mode:set', (_e, { mode } = {}) => ({ mode }));
+    ipcMain.on('pet:state', (_e, payload) => { lastPetState = payload; }); // 펫에 보낸 마지막 상태 (권한 카드 점검용)
+    // 펫 그림 선택 대화상자 점검용 스텁: 목록·미리보기(단색 1536x1872 PNG)·선택·삭제·가져오기
+    const petsData = {
+      pets: [
+        { key: 'builtin:office-claude', source: 'builtin', id: 'office-claude', displayName: '기본 클로드' },
+        { key: 'user:mine', source: 'user', id: 'mine', displayName: '<b>내 펫</b>' },
+      ],
+      selected: { claude: null, codex: 'user:mine' },
+      resolved: { claude: 'builtin:office-claude', codex: 'user:mine' },
+    };
+    const petCalls = { select: [], remove: [], import: [], preview: [] };
+    const previewBgra = Buffer.alloc(1536 * 1872 * 4);
+    for (let i = 0; i < previewBgra.length; i += 4) { previewBgra[i] = 200; previewBgra[i + 1] = 90; previewBgra[i + 2] = 40; previewBgra[i + 3] = 255; }
+    const previewPng = nativeImage.createFromBitmap(previewBgra, { width: 1536, height: 1872 }).toPNG();
+    ipcMain.handle('pets:list', () => petsData);
+    ipcMain.handle('pets:preview', (_e, key) => { petCalls.preview.push(key); return { type: 'image/png', bytes: previewPng }; });
+    ipcMain.handle('pets:select', (_e, p) => { petCalls.select.push(p); petsData.selected[p.kind] = p.value; return { ok: true }; });
+    ipcMain.handle('pets:remove', (_e, key) => { petCalls.remove.push(key); return { ok: true }; });
+    ipcMain.handle('pets:import', (_e, kind) => { petCalls.import.push(kind); return { error: '올바른 zip 파일이 아닙니다' }; });
     ipcMain.handle('pty:kill', () => {});
     ipcMain.on('pty:write', () => {});
     ipcMain.on('pty:resize', () => {});
@@ -87,6 +107,7 @@ if (!process.versions.electron) {
     ]) event('PreToolUse', { agent_id: id, tool_name: tool, tool_input: input });
     event('PreToolUse', { agent_id: 'plan1', tool_name: 'Skill', tool_input: { skill: 'documents:documents' } });
     event('PreToolUse', { agent_id: 'review1', tool_name: 'Skill', tool_input: { skill: 'spreadsheets:Spreadsheets' } });
+    await win.webContents.executeJavaScript(`document.hasFocus=()=>false;0`); // 「확인 필요」 점검: 사용자가 이 탭을 보고 있지 않은 상황으로 고정
     event('PermissionRequest', { tool_name: 'Bash' });
     await pause(100);
     await win.webContents.executeJavaScript(`window.__view.environment.now=()=>Date.parse('2026-10-26T12:00:00+09:00'); window.__view.environment.cachedMinute=null;
@@ -123,6 +144,102 @@ if (!process.versions.electron) {
     assert.ok(workSummaries.every(b => b?.kind === 'alert' || (b?.summary && b.text.includes('\n'))),JSON.stringify(workSummaries));
     assert.equal(workSummaries.filter(b=>b?.summary).length,5);
     await fs.promises.writeFile(path.join(OUT, 'office-isometric.png'), (await win.webContents.capturePage()).toPNG());
+    // 「확인 필요」: 보고 있지 않은 탭의 권한 요청은 탭 점·말풍선에 표시되고, 탭 영역을 누르면 꺼진다.
+    // 외부 세션(탭 없음)의 권한 요청은 켜지고, 그 세션의 턴이 끝나면(Stop) 꺼진다.
+    const lead = id => `window.__snapshot.find(a=>a.id==='${id}:lead')?.bubble`;
+    const attention = await win.webContents.executeJavaScript(`(async()=>{
+      const dot=()=>document.querySelector('.tab .dot').className;
+      const before={dot:dot(),bubble:${lead('preview-main')}};
+      document.querySelector('.pane:not([hidden])').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}));
+      await new Promise(r=>setTimeout(r,200));
+      return {before,after:{dot:dot(),bubble:${lead('preview-main')}}};
+    })()`);
+    assert.match(attention.before.dot, /alert/, JSON.stringify(attention));
+    assert.equal(attention.before.bubble?.attention, true, JSON.stringify(attention));
+    assert.doesNotMatch(attention.after.dot, /alert/, JSON.stringify(attention));
+    assert.ok(!attention.after.bubble?.attention, JSON.stringify(attention));
+    const outside = (name, extra = {}) => win.webContents.send('hook:event', { session_id: 'preview-outside', cwd: ROOT, hook_event_name: name, _tab: null, ...extra });
+    outside('SessionStart'); outside('PermissionRequest', { tool_name: 'Edit' });
+    await pause(200);
+    attention.outside = { asked: await win.webContents.executeJavaScript(lead('preview-outside')) };
+    outside('Stop');
+    await pause(200);
+    attention.outside.stopped = await win.webContents.executeJavaScript(lead('preview-outside'));
+    assert.equal(attention.outside.asked?.attention, true, JSON.stringify(attention));
+    assert.ok(!attention.outside.stopped?.attention, JSON.stringify(attention));
+
+    // 펫 권한 카드: 메인이 붙잡은 요청(_permId)이 있는 PermissionRequest 는 펫 상태에 canAnswer 로 실리고,
+    // 메인이 풀었다고 알리면(perm:closed) 표시는 남되 카드는 안내로 바뀌며, 탭 영역을 누르면 항목이 사라진다.
+    // 시간이 걸리는 점검이라 사무실 장면 점검이 끝난 뒤(맨 끝)에 부른다 — 중간에 두면 외부 세션 캐릭터가 퇴근해 버린다.
+    const mainTabId = tabId; // 뒤에서 Codex 탭이 열리면 tabId 가 바뀐다 — Claude 탭의 ID 를 붙잡아 둔다
+    const permCardCheck = async () => {
+    const PERM = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const permItems = () => (lastPetState?.kinds?.claude?.attention || []).filter(x => x.reason === 'permission');
+    const permCase = async (extra, closed) => {
+      event('PermissionRequest', { tool_name: 'Bash', tool_input: { command: 'npm test' }, _tab: mainTabId, ...extra });
+      await pause(200);
+      if (closed) { win.webContents.send('perm:closed', closed); await pause(200); }
+      return permItems();
+    };
+    const asked = await permCase({ _permId: PERM });
+    assert.equal(asked.length, 1, JSON.stringify(asked));
+    assert.deepEqual({ permId: asked[0].permId, canAnswer: asked[0].canAnswer, tool: asked[0].tool, preview: asked[0].preview }, { permId: PERM, canAnswer: true, tool: 'Bash', preview: 'npm test' });
+    // 전역 hook 사본과 겹친 두 번째 사본(_dupHold)은 카드 정보만 갱신한다
+    const PERM_DUP = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    const dup = await permCase({ _permId: PERM_DUP, _dupHold: true });
+    assert.deepEqual([dup.length, dup[0].permId, dup[0].canAnswer], [1, PERM_DUP, true]);
+    // 카드로 허용하면 안 되는 요청: 잘린 명령 · 사용자 답이 필요한 도구 · 보여 줄 내용 없음 · permId 없음(붙잡지 않은 요청)
+    const longCmd = 'x'.repeat(300) + '…';
+    assert.equal((await permCase({ _permId: PERM, tool_input: { command: longCmd } }))[0].canAnswer, false, '잘린 명령');
+    assert.equal((await permCase({ _permId: PERM, tool_name: 'AskUserQuestion' }))[0].canAnswer, false, 'AskUserQuestion');
+    assert.equal((await permCase({ _permId: PERM, tool_name: 'ExitPlanMode' }))[0].canAnswer, false, 'ExitPlanMode');
+    assert.equal((await permCase({ _permId: PERM, tool_input: undefined }))[0].canAnswer, false, '미리보기 없음');
+    assert.equal((await permCase({ _permId: PERM, tool_input: { command: '   ' } }))[0].canAnswer, false, '빈 미리보기');
+    const noId = await permCase({});
+    assert.deepEqual([noId[0].permId, noId[0].canAnswer], [null, false]);
+    const mcpOnly = await permCase({ _permId: PERM, tool_name: 'mcp__x__y', tool_input: { foo: 'bar' } });
+    assert.equal(mcpOnly[0].canAnswer, false, '알려진 필드가 없는 도구 입력');
+    assert.equal((await permCase({ _permId: PERM, tool_input: { command: 'x'.repeat(161) } }))[0].canAnswer, false, '161자 명령은 안내만');
+    assert.equal((await permCase({ _permId: PERM, tool_input: { command: 'x'.repeat(160) } }))[0].canAnswer, true, '160자 명령은 카드로 답할 수 있다');
+    assert.equal((await permCase({ _permId: PERM, tool_name: 'Write', tool_input: { file_path: 'a.txt' } }))[0].canAnswer, false, '허용 목록 밖 도구');
+    assert.equal((await permCase({ _permId: PERM, tool_input: { command: 'a‮b' } }))[0].canAnswer, false, '양방향 제어 문자');
+    // 메인이 시간 초과 등으로 풀었다: 항목은 남고 카드는 안내로
+    const timedOut = await permCase({ _permId: PERM }, { permId: PERM, how: 'timeout' });
+    assert.equal(timedOut.length, 1, JSON.stringify(timedOut));
+    assert.deepEqual([timedOut[0].permId, timedOut[0].canAnswer], [null, false]);
+    assert.match(await win.webContents.executeJavaScript(`document.querySelector('.tab .dot').className`), /alert/, '표시(탭 점)는 남아 있어야 함');
+    // 다른 permId 의 closed 는 무관하다
+    const other = await permCase({ _permId: PERM }, { permId: PERM_DUP, how: 'released' });
+    assert.deepEqual([other[0].permId, other[0].canAnswer], [PERM, true]);
+    // 카드로 결정해 풀렸으면(decided) 항목이 사라진다
+    assert.equal((await (async () => { win.webContents.send('perm:closed', { permId: PERM, how: 'decided' }); await pause(200); return permItems(); })()).length, 0);
+    // 풀린 뒤 탭 영역을 눌러 끄는 경로: 안내로 남은 항목은 탭을 누르면 사라진다
+    await permCase({ _permId: PERM }, { permId: PERM, how: 'close' });
+    assert.equal(permItems().length, 1);
+    await win.webContents.executeJavaScript(`document.querySelector('#panes .pane').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))`); // 첫 탭 = Claude 탭
+    await pause(200);
+    assert.equal(permItems().length, 0, '탭 영역을 누르면 항목이 사라진다');
+    // 같은 세션의 진행 신호가 오면 펫 상태에서 그 permId 가 사라진다 (메인의 대조가 풀 수 있게): Stop → 항목이 done, UserPromptSubmit·같은 agent 의 PreToolUse → 항목이 꺼진다
+    const allItems = () => lastPetState?.kinds?.claude?.attention || [];
+    const PERM3 = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    const asked3 = await permCase({ _permId: PERM3 });
+    assert.deepEqual([asked3[0].permId, asked3[0].canAnswer], [PERM3, true]);
+    event('Stop', { _tab: mainTabId });
+    await pause(200);
+    assert.ok(!allItems().some(x => x.permId === PERM3 || x.canAnswer), `Stop 뒤에도 permId 가 남음: ${JSON.stringify(allItems())}`);
+    const doneItem = allItems().find(x => x.tabId === mainTabId);
+    assert.deepEqual([doneItem?.reason, doneItem?.kind], ['done', 'done'], JSON.stringify(allItems()));
+    await win.webContents.executeJavaScript(`document.querySelector('#panes .pane').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))`);
+    await pause(200);
+    for (const [name, extra] of [['PreToolUse', { tool_name: 'Bash', tool_input: { command: 'ls' } }], ['UserPromptSubmit', { prompt: '계속' }]]) {
+      assert.equal((await permCase({ _permId: PERM3 })).length, 1, name);
+      event(name, { _tab: mainTabId, ...extra });
+      await pause(200);
+      assert.ok(!allItems().some(x => x.permId === PERM3), `${name} 뒤에도 permId 가 남음: ${JSON.stringify(allItems())}`);
+      assert.equal(allItems().length, 0, `${name} 뒤에는 항목이 꺼진다`);
+    }
+    attention.permCard = { asked: asked[0], timedOut: timedOut[0] };
+    };
 
     const spriteCheck = await win.webContents.executeJavaScript(`(async () => {
       const {drawCharacter} = await import('./themes/pixel-office/sprites.js');
@@ -611,8 +728,67 @@ if (!process.versions.electron) {
     await pause(100);fs.writeFileSync(path.join(OUT,'office-codex-applied.png'),(await win.webContents.capturePage()).toPNG());
     await win.webContents.executeJavaScript(`(()=>{const v=window.__view,a=window.__engine.snapshot().find(a=>a.id==='preview-codex:codex-worker');v.zoomBy(2.4/v.camera.zoom);v.camera.centerOn(v.theme.project(a.x,a.y));v.syncCamera();v.draw(0);})()`);
     await pause(100);fs.writeFileSync(path.join(OUT,'office-codex-face-closeup.png'),(await win.webContents.capturePage({x:0,y:105,width:1119,height:753})).toPNG());
+    const petMode = await win.webContents.executeJavaScript("document.querySelector('#pet-mode').value");
+    assert.equal(petMode, 'always');
+
+    // 「펫 그림」 버튼 → 선택 대화상자: 목록 렌더 · 미리보기 · 선택 · 가져오기 오류 한 줄 · 삭제 확인 · 닫으면 비운다
+    const petpickRead = () => win.webContents.executeJavaScript(`(() => {
+      const radios = k => [...document.querySelectorAll('input[name="petpick-' + k + '"]')].map(r => ({ value: r.value, checked: r.checked }));
+      const names = k => [...document.querySelectorAll('#petpick-' + k + ' .petcard-name')].map(n => n.textContent);
+      return { open: document.querySelector('#petpick').open, claude: radios('claude'), codex: radios('codex'), names: names('claude'), codexNames: names('codex'),
+        injected: document.querySelectorAll('#petpick b').length, deletes: [...document.querySelectorAll('#petpick .petcard .btn')].map(b => b.textContent),
+        canvases: document.querySelectorAll('#petpick canvas').length, msg: document.querySelector('#petpick-msg').textContent,
+        painted: [...document.querySelectorAll('#petpick canvas')].map(c => { const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data; let s = 0; for (let i = 3; i < d.length; i += 4) s += d[i]; return s > 0; }) };
+    })()`);
+    await win.webContents.executeJavaScript(`document.querySelector('#pet-art').click()`);
+    await pause(700);
+    const pick = await petpickRead();
+    assert.equal(pick.open, true, '펫 그림 버튼으로 대화상자가 열린다');
+    assert.deepEqual(pick.claude, [{ value: '', checked: true }, { value: 'none', checked: false }, { value: 'builtin:office-claude', checked: false }, { value: 'user:mine', checked: false }]);
+    assert.deepEqual(pick.codex.map(r => [r.value, r.checked]), [['', false], ['none', false], ['builtin:office-claude', false], ['user:mine', true]], '설정 원값대로 선택 표시');
+    assert.deepEqual(pick.names, ['기본', '아이콘만', '기본 클로드', '<b>내 펫</b>'], '이름은 textContent 로만');
+    assert.equal(pick.injected, 0, 'HTML 이 해석되지 않는다');
+    assert.deepEqual(pick.deletes, ['삭제', '삭제'], '가져온 펫(두 구역)에만 삭제 버튼');
+    assert.equal(pick.canvases, 4, '펫 카드마다 미리보기 캔버스 (두 구역 × 두 펫)');
+    assert.ok(pick.painted.every(Boolean), `미리보기가 그려짐: ${pick.painted}`);
+    assert.deepEqual(petCalls.preview.slice().sort(), ['builtin:office-claude', 'user:mine'], '미리보기는 펫마다 한 번씩만 받는다');
+    // 라디오를 바꾸면 선택을 보낸다 (기본 = null)
+    await win.webContents.executeJavaScript(`document.querySelector('input[name="petpick-claude"][value="none"]').click()`);
+    await pause(150);
+    await win.webContents.executeJavaScript(`document.querySelector('input[name="petpick-codex"][value=""]').click()`);
+    await pause(150);
+    assert.deepEqual(petCalls.select, [{ kind: 'claude', value: 'none' }, { kind: 'codex', value: null }]);
+    // 가져오기 오류는 한 줄로 (정해진 문구)
+    await win.webContents.executeJavaScript(`document.querySelector('#petpick-zip').click()`);
+    await pause(200);
+    assert.deepEqual(petCalls.import, ['zip']);
+    assert.equal((await petpickRead()).msg, '올바른 zip 파일이 아닙니다');
+    await win.webContents.executeJavaScript(`document.querySelector('#petpick-folder').click()`);
+    await pause(200);
+    assert.deepEqual(petCalls.import, ['zip', 'folder']);
+    // 삭제는 확인을 거친다
+    await win.webContents.executeJavaScript(`window.confirm = () => false; document.querySelector('#petpick .petcard .btn').click()`);
+    await pause(150);
+    assert.deepEqual(petCalls.remove, [], '확인에서 취소하면 삭제하지 않는다');
+    await win.webContents.executeJavaScript(`window.confirm = () => true; document.querySelector('#petpick .petcard .btn').click()`);
+    await pause(200);
+    assert.deepEqual(petCalls.remove, ['user:mine']);
+    // 닫으면 목록과 미리보기 캔버스를 비운다
+    await win.webContents.executeJavaScript(`[...document.querySelectorAll('#petpick .petpick-actions button')].at(-1).click()`);
+    await pause(150);
+    const closedPick = await petpickRead();
+    assert.deepEqual([closedPick.open, closedPick.canvases, closedPick.claude.length], [false, 0, 0]);
+    // 다시 열면 처음부터 다시 그린다
+    await win.webContents.executeJavaScript(`document.querySelector('#pet-art').click()`);
+    await pause(400);
+    assert.equal((await petpickRead()).claude.length, 4);
+    await win.webContents.executeJavaScript(`document.querySelector('#petpick').close()`);
+    await pause(100);
+    assert.equal((await petpickRead()).open, false);
+
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({status,small,spriteChanges:spriteCheck.changes,codexSprites,codexScene,artCheck,lightingCheck,neonCheck,sunsetCheck,themeSwitch,plainCheck,citypopCheck,interactionCheck,consoleErrors:errors,output:OUT}, null, 2));
+    await permCardCheck();
+    console.log(JSON.stringify({petMode,status,small,attention,spriteChanges:spriteCheck.changes,codexSprites,codexScene,artCheck,lightingCheck,neonCheck,sunsetCheck,themeSwitch,plainCheck,citypopCheck,interactionCheck,consoleErrors:errors,output:OUT}, null, 2));
     clearTimeout(watchdog);
     app.exit(0);
   }).catch(e => { console.error(e.stack || e); console.error(JSON.stringify({ consoleErrors: errors })); clearTimeout(watchdog); app.exit(1); });

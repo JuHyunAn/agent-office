@@ -9,6 +9,7 @@
     "start": "node scripts/start.mjs",
     "test": "node --test \"test/*.test.js\"",
     "test:renderer": "node scripts/check-renderer.cjs",
+    "test:pet": "node scripts/check-pet.cjs",
     "test:custom": "node scripts/check-custom-office.cjs",
     "dist": "electron-builder --win"
   },

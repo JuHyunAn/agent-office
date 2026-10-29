@@ -24,6 +24,20 @@ test('Codex hook 은 curl 로 앱 서버에 보내며, PowerShell·cmd 어디서
   assert.ok(args[1].includes(`command=${JSON.stringify(cmd)}`), 'TOML 문자열 안의 따옴표는 이스케이프');
 });
 
+test('Codex hook: 권한 요청만 카드 승인을 오래 기다린다 (curl -m 595 · timeout=600), 나머지는 -m 2 · timeout=3', () => {
+  const args = codexCli.hookArgs({ port: 47821, token: 'abc', tab: 't1' });
+  const byEvent = Object.fromEntries(args.filter((a, i) => args[i - 1] === '-c').map((a) => [a.match(/^hooks\.(\w+)=/)[1], a]));
+  assert.deepEqual(Object.keys(byEvent), codexCli.HOOK_EVENTS);
+  for (const [ev, a] of Object.entries(byEvent)) {
+    const slow = ev === 'PermissionRequest';
+    assert.ok(a.includes(slow ? '-m 595 ' : '-m 2 '), `${ev}: curl 대기`);
+    assert.ok(a.endsWith(slow ? 'timeout=600}]}]' : 'timeout=3}]}]'), `${ev}: hook timeout`);
+    assert.ok(slow ? !a.includes('-m 2 ') : !a.includes('-m 595'), ev);
+  }
+  assert.ok(codexCli.hookCommand({ port: 1, token: 'k', tab: 't' }).includes(' -m 2 '), '기본 대기는 2초');
+  assert.ok(codexCli.hookCommand({ port: 1, token: 'k', tab: 't', maxSec: 595 }).includes(' -m 595 '));
+});
+
 test('Codex 탭은 앱 hook 을 주입하고, 그 hook 만 신뢰 검토 없이 실행한다', () => {
   const hooks = codexCli.hookArgs({ port: 1, token: 'k', tab: 't9' });
   const args = codexCli.tabArgs({ hooks });

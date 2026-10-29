@@ -22,7 +22,7 @@ export const TIMING = {
 
 const ENDED_TASK = '세션 종료 · 퇴근 대기';
 // 사용자가 답해야 진행되는 알림만 퇴근을 막는다 (답변 후 「입력 대기」 알림 등은 제외).
-const NON_BLOCKING_NOTIFICATIONS = new Set(['idle_prompt', 'auth_success']);
+export const NON_BLOCKING_NOTIFICATIONS = new Set(['idle_prompt', 'auth_success']);
 const CHAT = ['☕ 커피 맛있네요', '💬 아까 그 버그 말이죠…', '😴 잠깐만 쉴게요', '🍪 간식 드실래요?', '📈 오늘 순조롭네요', '🎧 음악 듣는 중', '🌿 화분 물 줬어요'];
 const SITTING_ROOMS = new Set(['lead', 'analysis', 'planning', 'dev', 'review', 'skills']);
 // 오래 켜 둬도 세션 기록이 끝없이 늘지 않게, 가장 오래된 것부터 지운다.
@@ -55,6 +55,7 @@ export class OfficeEngine {
     this.leadLooks = new Map(); // 세션별 팀장 외형 — 세션 기록이 지워진 뒤 다시 와도 같은 사람으로
     this.seats = new Map();
     this.feed = [];
+    this.attention = new Map(); // 「확인 필요」: 액터 key → { text, kind } — app.js 가 정하고 엔진은 말풍선에 보여 주기만 한다 (퇴근 규칙과 무관)
   }
 
   // ───────────────────────── 공개 API ─────────────────────────
@@ -117,6 +118,17 @@ export class OfficeEngine {
       a.task = ENDED_TASK;
       this.rest(a);
     }
+  }
+
+  // 「확인 필요」 목록을 통째로 바꾼다: [{ sessionId, agentId, text, kind }] — kind 는 말풍선 종류(done·alert).
+  setAttention(list) {
+    this.attention = new Map(list.map((x) => [`${x.sessionId}:${x.agentId || 'lead'}`, { text: x.text, kind: x.kind }]));
+  }
+
+  // 이벤트를 받아들인 살아 있는 세션인가 (닫혔거나 끝난 세션의 늦은 이벤트는 아니다).
+  isLive(sessionId) {
+    const s = this.sessions.get(sessionId);
+    return !!s && s.endedAt == null;
   }
 
   // 테마가 바뀌면 배치도도 바뀐다 — 사람은 그대로 두고 같은 방의 새 자리로 옮긴다.
@@ -230,7 +242,7 @@ export class OfficeEngine {
         status: a.status,
         task: a.task,
         skill: a.skill || null,
-        bubble: this.workBubble(a),
+        bubble: this.attentionBubble(a, this.workBubble(a)),
       });
     }
     return out;
@@ -246,6 +258,14 @@ export class OfficeEngine {
       return { text: lines.join('\n'), kind: 'work', summary: true };
     }
     return a.bubble ? { text: a.bubble.text, kind: a.bubble.kind } : null;
+  }
+
+  // 「확인 필요」 액터의 말풍선: 확인 요청이면 엔진의 확인 요청 말풍선(권한 대상 등)이 더 구체적이라 그대로 두고,
+  // 그 밖(작업 요약·잡담·말풍선 없음, 완료 뒤 따라오는 「입력 대기」 알림)은 확인할 내용으로 바꾼다. 테마는 attention 이면 배경을 깜빡인다.
+  attentionBubble(a, bubble) {
+    const mark = a.status !== 'leaving' && this.attention.get(a.key);
+    if (!mark) return bubble;
+    return mark.kind === 'alert' && bubble?.kind === 'alert' ? { ...bubble, attention: true } : { text: mark.text, kind: mark.kind, attention: true };
   }
 
   roomAt(x, y) {
