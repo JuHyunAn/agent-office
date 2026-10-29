@@ -4,3 +4,4 @@ node_modules/
 /output/design/
 /dist/
 /.omc/state/
+/.omc/project-memory.json
