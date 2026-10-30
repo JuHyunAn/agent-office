@@ -23,6 +23,7 @@
   <header class="topbar">
     <span class="brand"><span class="brand-mark" aria-hidden="true"></span>AGENT OFFICE</span>
     <span id="account" class="pill">계정 확인 중</span>
+    <button id="codex-account" class="pill pill-btn" type="button" hidden>Codex 확인 중</button>
     <button id="global-hooks" class="pill pill-btn" title="VS Code·터미널 등 다른 곳의 Claude Code 세션도 사무실에 표시">다른 세션 보기: 확인 중</button>
     <span id="headcount" class="pill">근무 중 0명</span>
     <span class="spacer"></span>
@@ -77,6 +78,7 @@
           <label><input type="radio" name="tab-kind" value="collab"> 협업 대화 (Claude + Codex)</label>
         </div>
         <p id="kind-hint" class="hint"></p>
+        <p id="kind-login" class="hint" hidden><button type="button" id="kind-login-btn" class="btn small">Codex 로그인 탭 열기</button></p>
       </section>
       <section>
         <h3>작업 폴더</h3>

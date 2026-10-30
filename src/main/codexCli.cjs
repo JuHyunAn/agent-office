@@ -166,9 +166,10 @@ function killTree(pid) {
   try { spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true, timeout: 5000 }); } catch { /* 이미 종료 */ }
 }
 
-// codex app-server(줄 단위 JSON-RPC)에 대화 없이 계정 한도를 묻는다 (0.163 실측: 약 1초). 반환: { rows, at } 또는 { error }.
+// codex app-server(줄 단위 JSON-RPC)에 대화 없이 요청 하나를 보낸다 (한도 0.163 실측: 약 1초). 반환: { result } 또는 { error }.
 // signal(AbortSignal)이 중단되면 (앱 종료) 바로 자식을 정리하고 { error } 로 끝낸다.
-function rateLimits(loc, { timeoutMs = 10000, appVersion = '0.1.0', signal } = {}) {
+// fallbackError: 오류 응답에 message 가 없을 때 쓸 문구 (요청마다 기존 문구를 유지하려고).
+function appServerRequest(loc, method, params, { timeoutMs = 10000, appVersion = '0.1.0', signal, fallbackError = '요청 실패' } = {}) {
   return new Promise((resolve) => {
     if (!loc || loc.cmdShim) { resolve({ error: 'Codex 를 실행할 수 없습니다' }); return; }
     if (signal?.aborted) { resolve({ error: '중단됨' }); return; }
@@ -206,11 +207,10 @@ function rateLimits(loc, { timeoutMs = 10000, appVersion = '0.1.0', signal } = {
         if (!j || typeof j !== 'object' || 'method' in j) continue; // 서버가 보낸 요청·알림은 응답이 아니다 (id 가 같아도)
         if (j.id === 1) {
           send({ method: 'initialized' });
-          send({ method: 'account/rateLimits/read', id: 2 });
+          send({ method, id: 2, ...(params === undefined ? {} : { params }) });
         } else if (j.id === 2) {
-          const rl = j.result?.rateLimits;
-          if (j.error || !rl) finish({ error: String(j.error?.message || '한도 정보가 없습니다').slice(0, 100) });
-          else finish({ rows: limitRows(rl, Date.now()), at: Date.now() });
+          if (j.error) finish({ error: String(j.error.message || fallbackError).slice(0, 100) });
+          else finish({ result: j.result });
         }
       }
     });
@@ -218,7 +218,47 @@ function rateLimits(loc, { timeoutMs = 10000, appVersion = '0.1.0', signal } = {
   });
 }
 
+// 계정 한도. 반환: { rows, at } 또는 { error }.
+async function rateLimits(loc, opts) {
+  const r = await appServerRequest(loc, 'account/rateLimits/read', undefined, { fallbackError: '한도 정보가 없습니다', ...opts });
+  if (r.error) return { error: r.error };
+  const rl = r.result?.rateLimits;
+  if (!rl) return { error: '한도 정보가 없습니다' };
+  return { rows: limitRows(rl, Date.now()), at: Date.now() };
+}
+
+// `codex login status` 출력 → 로그인 여부. 종료 0 이고 「Logged in using …」 줄이 있을 때만 로그인으로 본다 (미로그인 출력은 실측 못 함).
+// API 키 방식은 뒤에 ` - sk-…` 가 붙을 수 있어 잘라 낸다.
+function parseLoginStatus(code, text) {
+  const m = code === 0 && String(text || '').match(/^\s*Logged in using (.+?)\s*$/m);
+  if (m) return { loggedIn: true, method: m[1].replace(/\s+-\s+.*$/, '') };
+  if (/Not logged in/i.test(String(text || ''))) return { loggedIn: false };
+  const first = String(text || '').split(/\r?\n/).map((s) => s.trim()).find(Boolean);
+  return { loggedIn: false, error: (first || '').slice(0, 200) || '로그인 상태를 읽지 못했습니다' };
+}
+
+function methodLabel(method) {
+  const s = String(method || '');
+  if (/^ChatGPT/i.test(s)) return 'ChatGPT';
+  if (/^an? API key/i.test(s)) return 'API 키';
+  if (/^personal access token/i.test(s)) return '개인 액세스 토큰';
+  if (/access token/i.test(s)) return '액세스 토큰';
+  if (/Bedrock/i.test(s)) return 'Amazon Bedrock';
+  return s.slice(0, 60);
+}
+
+// 로그인 판정은 CLI login status(빠르고 안정), 이메일·플랜은 app-server account/read 로 덧붙인다 (실패해도 판정 유지).
+async function authStatus(loc, { appVersion, timeoutMs = 3000 } = {}) {
+  // 실측 0.3초 — 멈추면 진입 화면이 함께 기다리므로 짧게 끊는다 (Codex 는 cmd shim 이 아니라 exe 를 바로 실행).
+  const r = loc.cmdShim ? await claudeCli.runClaude(loc, ['login', 'status']) : await claudeCli.run(loc.file, [...loc.prefixArgs, 'login', 'status'], 5000);
+  const s = parseLoginStatus(r.code, `${r.stdout}\n${r.stderr}`);
+  if (!s.loggedIn) return s;
+  const a = await appServerRequest(loc, 'account/read', { refreshToken: false }, { timeoutMs, appVersion });
+  const acc = a.result?.account;
+  return { ...s, methodLabel: methodLabel(s.method), email: acc?.email || null, plan: acc?.planType || null };
+}
+
 module.exports = {
   HOOK_EVENTS, hookCommand, hookArgs, tabArgs, execArgs, parseModels, models, bundledCodex, npmVendorExe, pickCodex, locate, version,
-  windowLabel, limitRows, parseRollout, rateLimits,
+  windowLabel, limitRows, parseRollout, rateLimits, appServerRequest, parseLoginStatus, methodLabel, authStatus,
 };

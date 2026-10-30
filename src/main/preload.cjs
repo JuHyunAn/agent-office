@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('office', {
   openExternal: (url) => ipcRenderer.invoke('shell:open', url),
   collabSend: (opts) => ipcRenderer.invoke('collab:send', opts),
   collabStop: (roomId, agent) => ipcRenderer.invoke('collab:stop', { roomId, agent }),
+  collabSteer: (roomId, agent, text, turn) => ipcRenderer.invoke('collab:steer', { roomId, agent, text, turn }),
   collabClose: (roomId) => ipcRenderer.invoke('collab:close', { roomId }),
   collabModels: () => ipcRenderer.invoke('collab:models'),
   petState: (payload) => ipcRenderer.send('pet:state', payload),

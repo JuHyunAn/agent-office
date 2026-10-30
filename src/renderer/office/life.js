@@ -17,6 +17,12 @@ const ACTIONS = {
   read: { pose: 'read', ms: 7500, text: '📖 책장을 넘기며 쉬어요' },
   stretch: { pose: 'stretch', ms: 6000, text: '🙌 쭉쭉, 어깨를 풀어요' },
 };
+// 상주 캐릭터의 산책 범위: 라운지·카페·화장실 별채와 복도 전체. 업무 방은 실제 에이전트 자리라 넣지 않는다.
+const WANDER_ROOMS = ['rest', 'cafe', 'restroom'];
+// 다른 캐릭터가 있거나 가는 곳에서 이만큼은 떨어진 목적지를 고른다.
+const SPREAD = 160;
+// 문 앞은 실제 에이전트가 드나드는 자리라 산책 목적지로 고르지 않는다.
+const DOOR_CLEAR = 90;
 
 // Local life is separate from Claude sessions and is never counted as executing agents.
 export class OfficeLife {
@@ -28,16 +34,24 @@ export class OfficeLife {
     this.player = this.makeActor('player', '나', layout.playerStart, true, 5);
     this.residents = [
       this.makeActor('resident-mocha', '모카', { x: 1850, y: 842 }, false, 4),
-      this.makeActor('resident-loop', '루프', { x: 1330, y: 922 }, false, 1),
+      this.makeActor('resident-loop', '루프', { x: 1150, y: 930 }, false, 1),
       this.makeActor('resident-coco', '코코', { x: 1680, y: 1080 }, false, 2),
+      this.makeActor('resident-dex', '덱스', { x: 1500, y: 1000 }, false, 3, 'codex'),
     ];
-    this.residents.forEach((a, i) => { a.nextAt = 1800 + i * 2600; });
+    // 걷는 속도를 조금씩 달리해 같은 길에서 나란히 붙어 다니지 않게 한다.
+    this.residents.forEach((a, i) => { a.nextAt = 1800 + i * 2600; a.speed = [165, 150, 185, 200][i % 4]; });
+    // 복도는 엘리베이터가 반응하지 않도록 왼쪽 끝을 비운다.
+    const { hallway, walkBounds } = layout;
+    const band = hallway && walkBounds && { x: walkBounds.x + 200, y: hallway.y0 + 24, w: walkBounds.w - 280, h: hallway.y1 - hallway.y0 - 48 };
+    this.wanderAreas = [...WANDER_ROOMS.map(k => layout.rooms[k]?.wander).filter(Boolean), ...(band?.h > 0 ? [band] : [])];
+    this.doorSpots = [...Object.values(layout.rooms).flatMap(r => r.doors || (r.door ? [r.door] : [])),
+      ...layout.interactions.filter(i => i.door).map(i => i.stand)];
   }
 
-  makeActor(id, label, p, isPlayer, colorIndex) {
-    return { id, label, x: p.x, y: p.y, isPlayer, isAmbient: !isPlayer, isLead: false, colorIndex,
+  makeActor(id, label, p, isPlayer, colorIndex, cli = 'claude') {
+    return { id, label, cli, x: p.x, y: p.y, isPlayer, isAmbient: !isPlayer, isLead: false, colorIndex,
       appearance: createAppearance(this.random), heldItem: null,
-      role: 'visitor', status: 'idle', pose: 'stand', facing: 'down', path: [], action: null,
+      role: 'visitor', status: 'idle', pose: 'stand', facing: 'down', path: [], action: null, recent: [],
       task: isPlayer ? '바닥을 클릭해 이동하세요' : '사무실 상주 캐릭터', until: 0, nextAt: 0, bubble: null };
   }
 
@@ -109,7 +123,7 @@ export class OfficeLife {
   }
 
   step(a, dt) {
-    let budget = dt * (a.isPlayer ? 240 : 170) / 1000;
+    let budget = dt * (a.isPlayer ? 240 : a.speed || 170) / 1000;
     while (budget > 0 && a.path.length) {
       const p = a.path[0], dx = p.x - a.x, dy = p.y - a.y, d = Math.hypot(dx, dy);
       if (d > 0.01) a.facing = Math.abs(dx) > Math.abs(dy) ? (dx < 0 ? 'left' : 'right') : (dy < 0 ? 'up' : 'down');
@@ -119,6 +133,8 @@ export class OfficeLife {
     if (!a.path.length) {
       a.facing = 'down'; a.status = 'idle'; a.pose = 'stand';
       if (a.isPlayer) this.destination = null;
+      // 오래 걸어도 도착하면 잠시 머문다.
+      else a.nextAt = Math.max(a.nextAt, this.time + 2000 + this.random() * 3000);
     }
   }
 
@@ -169,26 +185,37 @@ export class OfficeLife {
   }
 
   autonomous(a, activeSkills) {
-    a.nextAt = this.time + 7000;
+    // 다음 행동 시점을 엇갈려 여럿이 한꺼번에 움직이지 않게 한다.
+    a.nextAt = this.time + 5000 + this.random() * 5000;
     if (activeSkills && a.id !== 'resident-mocha') {
       const room = this.layout.rooms.skills;
-      const target = { x: room.x + (a.id === 'resident-loop' ? 170 : 325), y: room.y + 308 };
+      const target = { x: room.x + ({ 'resident-loop': 140, 'resident-dex': 250 }[a.id] ?? 360), y: room.y + 308 };
       if (Math.hypot(a.x - target.x, a.y - target.y) > 15) this.moveTo(target, { label: '스킬 협업', action: 'collaborate' }, a);
       else { a.action = 'collaborate'; a.pose = 'talk'; a.status = 'working'; a.task = '스킬 스튜디오 · 협업 연출'; a.until = this.time + 7000; }
       return;
     }
-    const choices = this.layout.interactions.filter(i => !i.door && i.id !== 'laptop');
-    const choice = Math.floor(this.random() * (choices.length + 2));
-    if (choice < choices.length) {
-      for (let i = 0; i < choices.length; i++) {
-        const item = choices[(choice + i) % choices.length];
-        if (this.moveTo(item.stand, item, a)) break;
+    const others = [...this.residents.filter(r => r !== a).map(r => r.path.length ? r.path[r.path.length - 1] : r),
+      this.destination || this.player, ...this.engine.agents.values()];
+    const gap = p => Math.min(Infinity, ...others.map(o => Math.hypot(o.x - p.x, o.y - p.y)));
+    const items = this.layout.interactions.filter(i => !i.door && i.id !== 'laptop' && !a.recent.includes(i.id)
+      && !this.isBusy(i.id, a) && gap(i.stand) >= SPREAD);
+    if (items.length && this.random() < 0.5) {
+      const start = Math.floor(this.random() * items.length);
+      for (let n = 0; n < items.length; n++) {
+        const item = items[(start + n) % items.length];
+        if (this.moveTo(item.stand, item, a)) { a.recent = [item.id, ...a.recent].slice(0, 3); return; }
       }
-    } else {
-      const points = [{ x: 1350, y: 850 }, { x: 1850, y: 1100 }, { x: 1500, y: 576 }, { x: 980, y: 576 }];
-      this.moveTo(points[Math.floor(this.random() * points.length)], null, a);
-      a.bubble = { text: choice === 3 ? '🌿 잠깐 산책할까요?' : '💬 아이디어가 떠올랐어요', kind: 'chat', until: this.time + 3500 };
     }
+    // 산책 범위에서 몇 곳을 뽑아 다른 캐릭터와 가장 먼 곳으로 간다. 모두 붐비면 이번에는 쉰다.
+    let best = null, bestGap = SPREAD * 0.6;
+    for (let n = 0; n < 6 && this.wanderAreas.length; n++) {
+      const area = this.wanderAreas[Math.floor(this.random() * this.wanderAreas.length)];
+      const p = { x: area.x + this.random() * area.w, y: area.y + this.random() * area.h };
+      if (this.doorSpots.some(d => Math.hypot(d.x - p.x, d.y - p.y) < DOOR_CLEAR)) continue;
+      if (this.navigation.isWalkable(p) && gap(p) > bestGap) { best = p; bestGap = gap(p); }
+    }
+    if (best && this.moveTo(best, null, a) && this.random() < 0.3)
+      a.bubble = { text: this.random() < 0.5 ? '🌿 잠깐 산책할까요?' : '💬 아이디어가 떠올랐어요', kind: 'chat', until: this.time + 3500 };
   }
 
   snapshot() {

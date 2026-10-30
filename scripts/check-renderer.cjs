@@ -35,7 +35,8 @@ if (!process.versions.electron) {
       if (!target.startsWith(ROOT + path.sep)) return new Response('forbidden', { status: 403 });
       return net.fetch(pathToFileURL(target).toString());
     });
-    ipcMain.handle('app:status', () => ({ claude: { version: '디자인 검증' }, codex: { version: '디자인 검증' }, auth: { loggedIn: true }, hook: { global: { installed: false } } }));
+    ipcMain.handle('app:status', () => ({ claude: { version: '디자인 검증' }, codex: { version: '디자인 검증' }, auth: { loggedIn: true }, hook: { global: { installed: false } },
+      codexAuth: { loggedIn: true, method: 'ChatGPT', methodLabel: 'ChatGPT', email: 'preview@example.com', plan: 'plus' } }));
     ipcMain.handle('weather:current', () => ({ available: true, stale: false, location: '서울',
       observedAt: Date.parse('2026-10-26T12:00:00+09:00'), temperature: 16, cloudCover: 10, condition: 'clear' }));
     ipcMain.handle('dialog:pickFolder', () => ROOT);
@@ -59,7 +60,11 @@ if (!process.versions.electron) {
     ipcMain.handle('pets:preview', (_e, key) => { petCalls.preview.push(key); return { type: 'image/png', bytes: previewPng }; });
     ipcMain.handle('pets:select', (_e, p) => { petCalls.select.push(p); petsData.selected[p.kind] = p.value; return { ok: true }; });
     ipcMain.handle('pets:remove', (_e, key) => { petCalls.remove.push(key); return { ok: true }; });
-    ipcMain.handle('pets:import', (_e, kind) => { petCalls.import.push(kind); return { error: '올바른 zip 파일이 아닙니다' }; });
+    ipcMain.handle('pets:import', (_e, kind) => {
+      petCalls.import.push(kind);
+      if (kind === 'folder') return { results: [{ name: 'a', ok: true, key: 'user:a', displayName: '에이' }, { name: 'b', error: '그림 크기가 맞지 않습니다' }] }; // 여러 개 중 일부 실패
+      return { error: '올바른 zip 파일이 아닙니다' };
+    });
     ipcMain.handle('pty:kill', () => {});
     ipcMain.on('pty:write', () => {});
     ipcMain.on('pty:resize', () => {});
@@ -71,6 +76,9 @@ if (!process.versions.electron) {
     win.webContents.on('did-fail-load', (_e, code, detail) => errors.push(`${code}: ${detail}`));
     await win.loadURL('app://office/src/renderer/index.html');
     await pause(200);
+    const codexAccount = await win.webContents.executeJavaScript(`({ hidden: document.querySelector('#codex-account').hidden, text: document.querySelector('#codex-account').textContent, gate: document.querySelector('.gate-codex')?.textContent || '' })`);
+    assert.deepEqual([codexAccount.hidden, codexAccount.text], [false, '● Codex · preview@example.com · plus']); // Codex 계정 칸 (상단)
+    assert.match(codexAccount.gate, /Codex · preview@example\.com · plus 플랜/); // 진입 화면의 Codex 줄 (입장하기 버튼 뒤)
     await win.webContents.executeJavaScript(`document.querySelector('#gate-body button').click()`);
     await pause(200);
     await win.webContents.executeJavaScript(`document.querySelector('#pick-folder').click()`);
@@ -766,6 +774,7 @@ if (!process.versions.electron) {
     await win.webContents.executeJavaScript(`document.querySelector('#petpick-folder').click()`);
     await pause(200);
     assert.deepEqual(petCalls.import, ['zip', 'folder']);
+    assert.equal((await petpickRead()).msg, '1개 펫을 가져왔습니다 (「에이」). 위 목록에서 골라 주세요. 1개 실패: b — 그림 크기가 맞지 않습니다', '여러 개 가져오기 결과 요약');
     // 삭제는 확인을 거친다
     await win.webContents.executeJavaScript(`window.confirm = () => false; document.querySelector('#petpick .petcard .btn').click()`);
     await pause(150);

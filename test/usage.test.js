@@ -667,6 +667,13 @@ test('rateLimits: initialize → initialized → account/rateLimits/read 를 거
   assert.ok(Number.isFinite(r.at) && r.rows[0].observedAt <= r.at);
 });
 
+test('rateLimits: message 없는 오류 응답은 기존처럼 「한도 정보가 없습니다」', async () => {
+  const r = await codexCli.rateLimits(fakeCodex(`
+    if (m.method === 'initialize') out({ id: 1, result: {} });
+    if (m.method === 'account/rateLimits/read') out({ id: 2, error: { code: -1 } });`));
+  assert.equal(r.error, '한도 정보가 없습니다');
+});
+
 test('rateLimits: 응답이 없으면 시간 초과, 오류 응답·즉시 종료·실행 실패는 { error }', async () => {
   const silent = await codexCli.rateLimits(fakeCodex(`if (m.method === 'initialize') out({ id: 1, result: {} });`), { timeoutMs: 400 });
   assert.match(silent.error, /시간 초과/);
@@ -707,6 +714,88 @@ test('rateLimits: 중단 신호를 받으면 자식 app-server 를 정리하고 
   assert.ok(!alive(pid), 'app-server 가 남지 않는다');
   const pre = await codexCli.rateLimits({ file: path.join(os.tmpdir(), 'no-such-codex.exe'), prefixArgs: [] }, { signal: AbortSignal.abort() });
   assert.deepEqual(pre, { error: '중단됨' });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Codex 로그인 상태 (codex login status + app-server account/read)
+
+test('parseLoginStatus: 종료 0 + 「Logged in using」 줄일 때만 로그인, API 키 꼬리는 버린다', () => {
+  assert.deepEqual(codexCli.parseLoginStatus(0, 'Logged in using ChatGPT\n'), { loggedIn: true, method: 'ChatGPT' });
+  assert.deepEqual(codexCli.parseLoginStatus(0, 'Logged in using an API key - sk-proj-***ABCD'), { loggedIn: true, method: 'an API key' });
+  assert.deepEqual(codexCli.parseLoginStatus(0, 'Logged in using ChatGPT\r\n'), { loggedIn: true, method: 'ChatGPT' }, 'CRLF');
+  assert.deepEqual(codexCli.parseLoginStatus(0, '\nLogged in using ChatGPT'), { loggedIn: true, method: 'ChatGPT' }, 'stderr 쪽 문구가 뒤에 붙은 합친 출력');
+  assert.deepEqual(codexCli.parseLoginStatus(1, 'Not logged in'), { loggedIn: false });
+  assert.equal(codexCli.parseLoginStatus(1, 'Logged in using ChatGPT').loggedIn, false, '종료 코드가 0 이 아니면 로그인이 아니다');
+  const odd = codexCli.parseLoginStatus(0, '\n  \n뭔가 이상한 출력\n두 번째 줄');
+  assert.deepEqual([odd.loggedIn, odd.error], [false, '뭔가 이상한 출력']);
+  assert.deepEqual(codexCli.parseLoginStatus(0, ''), { loggedIn: false, error: '로그인 상태를 읽지 못했습니다' });
+  assert.equal(codexCli.parseLoginStatus(2, undefined).loggedIn, false);
+});
+
+test('methodLabel: 로그인 방식 이름을 한글 표시로 바꾼다', () => {
+  const m = codexCli.methodLabel;
+  assert.deepEqual([m('ChatGPT'), m('an API key'), m('a API key'), m('personal access token'), m('an access token'), m('Amazon Bedrock')],
+    ['ChatGPT', 'API 키', 'API 키', '개인 액세스 토큰', '액세스 토큰', 'Amazon Bedrock']);
+  assert.equal(m('something else'), 'something else');
+  assert.equal(m('x'.repeat(100)).length, 60);
+});
+
+test('appServerRequest: params 가 있으면 싣고 result 를 돌려주며, 없으면 params 키를 생략한다', async () => {
+  const got = await codexCli.appServerRequest(fakeCodex(`
+    if (m.method === 'initialize') out({ id: 1, result: {} });
+    if (m.method === 'x/echo') out({ id: 2, result: { has: 'params' in m, params: m.params ?? null } });
+  `), 'x/echo', { a: 1 });
+  assert.deepEqual(got, { result: { has: true, params: { a: 1 } } });
+  const bare = await codexCli.appServerRequest(fakeCodex(`
+    if (m.method === 'initialize') out({ id: 1, result: {} });
+    if (m.method === 'x/echo') out({ id: 2, result: { has: 'params' in m } });
+  `), 'x/echo', undefined);
+  assert.deepEqual(bare, { result: { has: false } });
+  const err = await codexCli.appServerRequest(fakeCodex(`
+    if (m.method === 'initialize') out({ id: 1, result: {} });
+    if (m.method === 'x/echo') out({ id: 2, error: { message: '거절' } });
+  `), 'x/echo');
+  assert.deepEqual(err, { error: '거절' });
+});
+
+// 'login status' 면 출력하고 끝나고, 그 밖(app-server)이면 줄 단위로 처리하는 가짜 codex. account/read 가 불리면 표식 파일을 남긴다.
+function fakeAuthCodex({ code = 0, out: loginOut = '', err: loginErr = '', body = '' }) {
+  const dir = tmp('fakeauth');
+  const file = path.join(dir, 'codex.cjs');
+  const mark = path.join(dir, 'account-read.txt');
+  fs.writeFileSync(file, `
+    if (process.argv[2] === 'login') {
+      process.stdout.write(${JSON.stringify(loginOut)}); process.stderr.write(${JSON.stringify(loginErr)}); process.exit(${code});
+    }
+    const rl = require('node:readline').createInterface({ input: process.stdin });
+    const out = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+    rl.on('line', (line) => {
+      const m = JSON.parse(line);
+      if (m.method === 'initialize') out({ id: 1, result: {} });
+      if (m.method === 'account/read') { require('node:fs').writeFileSync(${JSON.stringify(mark)}, JSON.stringify(m.params)); ${body} }
+    });
+  `);
+  return { loc: { file: process.execPath, prefixArgs: [file] }, mark };
+}
+
+test('authStatus: 로그인되어 있으면 account/read 로 이메일·플랜을 덧붙인다 (refreshToken: false)', async () => {
+  const { loc, mark } = fakeAuthCodex({ out: 'Logged in using ChatGPT\n',
+    body: `out({ id: 2, result: { account: { type: 'chatgpt', email: 'me@example.com', planType: 'plus' }, requiresOpenaiAuth: true } });` });
+  const r = await codexCli.authStatus(loc, { appVersion: '1.2.3' });
+  assert.deepEqual(r, { loggedIn: true, method: 'ChatGPT', methodLabel: 'ChatGPT', email: 'me@example.com', plan: 'plus' });
+  assert.deepEqual(JSON.parse(fs.readFileSync(mark, 'utf8')), { refreshToken: false });
+});
+
+test('authStatus: stderr 쪽 문구도 보고, account/read 가 응답이 없으면 판정은 유지하고 이메일·플랜만 비운다', async () => {
+  const { loc } = fakeAuthCodex({ err: 'Logged in using an API key - sk-proj-***ABCD\n' }); // account/read 에 응답하지 않는다
+  const r = await codexCli.authStatus(loc, { timeoutMs: 200 });
+  assert.deepEqual(r, { loggedIn: true, method: 'an API key', methodLabel: 'API 키', email: null, plan: null });
+});
+
+test('authStatus: 로그인되어 있지 않으면 account/read 를 부르지 않는다', async () => {
+  const { loc, mark } = fakeAuthCodex({ code: 1, err: 'Not logged in\n' });
+  assert.deepEqual(await codexCli.authStatus(loc), { loggedIn: false });
+  assert.ok(!fs.existsSync(mark), 'app-server 를 띄우지 않는다');
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -230,7 +230,7 @@ export function createArt() {
         c.fillStyle = env.night ? '#f5e0cd' : '#405d60'; c.fillText(text, p.x, p.y + 1);
       }
       for (const a of agents) {
-        const p = project(a.x, a.y); c.textAlign = 'center'; c.font = '9px "Malgun Gothic"'; c.fillStyle = '#fff8e9'; c.fillRect(p.x - 26, p.y + 5, 52, 14); c.fillStyle = '#4e686b'; c.fillText(a.isPlayer ? '나' : a.label.slice(0, 10), p.x, p.y + 15);
+        const p = project(a.x, a.y); c.textAlign = 'center'; c.font = '9px "Malgun Gothic"'; c.fillStyle = a.isAmbient ? '#d2ecf8' : '#fff8e9'; c.fillRect(p.x - 26, p.y + 5, 52, 14); c.fillStyle = a.isAmbient ? '#3f6276' : '#4e686b'; c.fillText(a.isPlayer ? '나' : a.label.slice(0, 10), p.x, p.y + 15);
         if (a.bubble) { const words = a.bubble.text.split('\n').slice(0, 2).map(v => v.slice(0, 22)); const w = Math.max(...words.map(v => c.measureText(v).width)) + 16; const lift = a.cli === 'codex' && ['sit', 'type', 'read', 'run'].includes(a.pose) ? 24 : 0; c.fillStyle = a.bubble.attention ? attentionFill('#fff9e9', a.bubble.kind === 'done' ? '#c9d8b4' : '#e8b7a3', t) + 'f5' : '#fff9e9f5'; c.beginPath(); c.roundRect(p.x - w / 2, p.y - 62 - words.length * 12 - lift, w, words.length * 12 + 12, 6); c.fill(); c.fillStyle = '#53696b'; words.forEach((s, n) => c.fillText(s, p.x, p.y - 49 - (words.length - n) * 12 - lift)); }
       }
       if (editor?.editing) {

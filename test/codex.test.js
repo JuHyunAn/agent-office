@@ -276,7 +276,7 @@ test('협업 Claude: 첫 응답 전에 끝난 세션은 같은 ID 를 다시 쓰
 
 test('협업 Codex: 중단한 실행의 늦은 출력·종료는 새 턴을 끝내지 않고, 새 턴 시작이 「중단됨」을 보내지 않는다', () => {
   const { spawn, calls } = fakeSpawn(); const events = [];
-  const agent = new collab.CodexChat({ loc: { file: 'codex.exe', prefixArgs: [] }, cwd: 'C:\\w', systemPrompt: '', hooks: [], env: {}, spawn, kill: () => {}, onEvent: (e) => events.push(e) });
+  const agent = new collab.CodexChat({ loc: { file: 'codex.exe', prefixArgs: [] }, cwd: 'C:\\w', systemPrompt: '', hooks: [], env: {}, spawn, kill: (p) => p.emit('exit', 1), onEvent: (e) => events.push(e) });
   agent.send('1', { model: 'gpt-6.1-sol', effort: 'high' });
   calls[0].p.out({ type: 'thread.started', thread_id: 'th1' });
   agent.stop();
@@ -319,4 +319,412 @@ test('협업 Codex: 턴마다 실행하고, 첫 턴에만 규칙을 붙이며 �
   assert.equal(calls[1].p.written[0], '다음');
   calls[1].p.emit('exit', 1);
   assert.deepEqual(events.at(-1), { type: 'done', ok: false, error: 'Codex 가 응답 없이 종료되었습니다 (코드 1)' });
+});
+
+// 협업 Codex 의 진행 중 메시지(steer): 안전 지점에서 끊고, 옛 프로세스가 끝난 뒤 같은 세션으로 이어 답한다.
+const CXCFG = { model: 'gpt-6.1-sol', effort: 'high' };
+const cxSleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function codexAgent(extra = {}) {
+  const { spawn, calls } = fakeSpawn(); const events = []; const killed = [];
+  const agent = new collab.CodexChat({ loc: { file: 'codex.exe', prefixArgs: [] }, cwd: 'C:\\w', systemPrompt: '', hooks: [], env: {}, spawn, kill: (p) => killed.push(p.pid), onEvent: (e) => events.push(e), ...extra });
+  return { agent, calls, events, killed };
+}
+const cmdItem = (type, id = 'i1') => ({ type, item: { id, type: 'command_execution', command: 'ls' } });
+const countOf = (events, type) => events.filter((e) => e.type === type).length;
+const WARN = { type: 'item.completed', item: { id: 'w0', type: 'error', message: 'Under-development features enabled' } };
+// 첫 실행을 띄우고 세션을 만든 뒤 명령 하나를 시작한 상태 (0.165 실측 순서: thread.started → 시작 경고 → turn.started → item…)
+function runningCodex(extra) {
+  const t = codexAgent(extra);
+  t.agent.send('질문', CXCFG, 3);
+  t.calls[0].p.out({ type: 'thread.started', thread_id: 'th1' });
+  t.calls[0].p.out(WARN);
+  t.calls[0].p.out({ type: 'turn.started' });
+  t.calls[0].p.out(cmdItem('item.started'));
+  return t;
+}
+
+test('협업 Codex steer: 명령이 끝난 지점에서 끊고, 옛 프로세스 종료 뒤 같은 세션으로 안내+메시지를 보낸다', () => {
+  const { agent, calls, events, killed } = runningCodex();
+  assert.equal(agent.steer('추가', 3), true);
+  assert.deepEqual(killed, [], '명령이 열려 있는 동안은 끊지 않는다');
+  calls[0].p.out(cmdItem('item.completed'));
+  assert.deepEqual(killed, [calls[0].p.pid]);
+  assert.equal(calls.length, 1, '옛 프로세스가 끝나기 전에는 띄우지 않는다');
+  calls[0].p.emit('exit', 1);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args.slice(0, 3), ['exec', 'resume', 'th1']);
+  assert.ok(calls[1].p.written[0].startsWith('[진행 중 추가 메시지]') && calls[1].p.written[0].endsWith('\n\n추가'));
+  assert.equal(countOf(events, 'steered'), 0, '새 실행이 시작하기 전에는 받았다고 알리지 않는다');
+  calls[1].p.out({ type: 'turn.started' });
+  assert.deepEqual(events.filter((e) => e.type === 'steered'), [{ type: 'steered', turn: 3 }]);
+  // 옛 실행의 늦은 출력·종료는 무시
+  calls[0].p.out({ type: 'turn.completed' }); calls[0].p.emit('exit', 0);
+  assert.equal(countOf(events, 'done'), 0);
+  calls[1].p.out({ type: 'turn.completed' });
+  assert.equal(countOf(events, 'done'), 1); assert.deepEqual(events.at(-1), { type: 'done', ok: true, turn: 3 });
+  assert.equal(agent.busy, false);
+});
+
+test('협업 Codex steer: kill 이 바로 exit 를 내면 곧바로 이어 실행하고, 턴 시작 전의 시작 경고로는 받았다고 알리지 않는다', () => {
+  const { agent, calls, events } = runningCodex({ kill: (p) => p.emit('exit', 1) });
+  agent.steer('추가', 3);
+  calls[0].p.out(cmdItem('item.completed'));
+  assert.equal(calls.length, 2);
+  calls[1].p.out({ type: 'thread.started', thread_id: 'th1' }); calls[1].p.out(WARN);
+  assert.equal(countOf(events, 'steered'), 0, '시작 경고는 턴 시작 전에 온다');
+  calls[1].p.out({ type: 'turn.started' });
+  assert.equal(countOf(events, 'steered'), 1);
+  calls[1].p.out({ type: 'turn.started' });
+  assert.equal(countOf(events, 'steered'), 1, '한 번만 알린다');
+});
+
+test('협업 Codex steer: 턴 시작 전(시작 경고 직후)·생각 정리(reasoning)가 끝난 지점에서는 끊지 않는다', () => {
+  const { agent, calls, killed } = codexAgent();
+  agent.send('질문', CXCFG, 3);
+  calls[0].p.out({ type: 'thread.started', thread_id: 'th1' });
+  agent.steer('추가', 3);
+  calls[0].p.out(WARN);
+  calls[0].p.out({ type: 'item.completed', item: { id: 'm0', type: 'agent_message', text: '이른 글' } });
+  assert.deepEqual(killed, [], '턴 시작 전에는 끊을 수 있는 종류가 끝나도 끊지 않는다 (원래 프롬프트를 처리하기 전)');
+  calls[0].p.out({ type: 'turn.started' });
+  calls[0].p.out({ type: 'item.started', item: { id: 'r', type: 'reasoning' } });
+  calls[0].p.out({ type: 'item.completed', item: { id: 'r', type: 'reasoning' } });
+  assert.deepEqual(killed, [], 'reasoning 직후');
+  calls[0].p.out({ type: 'item.completed', item: { id: 'm', type: 'agent_message', text: '먼저 확인합니다' } });
+  assert.deepEqual(killed, [calls[0].p.pid], '답변 글이 끝난 지점에서는 끊는다');
+});
+
+test('협업 Codex: 미뤄 띄울 때 실행 준비가 실패하면 던지지 않고 그 턴을 오류로 끝낸다', () => {
+  const { agent, calls, events } = codexAgent();
+  agent.send('1', CXCFG, 3);
+  calls[0].p.out({ type: 'thread.started', thread_id: 'th1' });
+  agent.stop();
+  agent.send('2', { model: 'bad model;x', effort: 'high' }, 4); // 옛 프로세스가 남아 미뤄짐 → exit 때 execArgs 가 던진다
+  assert.doesNotThrow(() => calls[0].p.emit('exit', 1));
+  assert.deepEqual(events.at(-1), { type: 'done', ok: false, error: 'Codex 를 실행하지 못했습니다: 잘못된 모델', turn: 4 });
+  assert.equal(agent.busy, false);
+});
+
+test('협업 Codex steer: 안전 지점 없이 턴이 끝나면 done 을 내지 않고 끊지 않은 채 이어 실행한다', () => {
+  const { agent, calls, events, killed } = codexAgent();
+  agent.send('질문', CXCFG, 3);
+  calls[0].p.out({ type: 'thread.started', thread_id: 'th1' });
+  agent.steer('추가', 3);
+  calls[0].p.out({ type: 'turn.completed' });
+  assert.equal(countOf(events, 'done'), 0); assert.deepEqual(killed, []);
+  assert.equal(agent.busy, true);
+  assert.equal(calls.length, 1);
+  calls[0].p.emit('exit', 0);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args.slice(0, 3), ['exec', 'resume', 'th1']);
+  calls[1].p.out({ type: 'turn.started' });
+  calls[1].p.out({ type: 'turn.completed' });
+  assert.equal(countOf(events, 'done'), 1); assert.equal(countOf(events, 'steered'), 1);
+});
+
+test('협업 Codex steer: 두 번 넣으면 한 번에 이어 보내고 steered 도 두 번 알린다', () => {
+  const { agent, calls, events } = runningCodex();
+  agent.steer('가', 3); agent.steer('나', 3);
+  calls[0].p.out(cmdItem('item.completed'));
+  calls[0].p.emit('exit', 1);
+  assert.equal(calls.length, 2);
+  assert.ok(calls[1].p.written[0].endsWith('\n\n가\n\n나'));
+  calls[1].p.out({ type: 'turn.started' });
+  assert.equal(countOf(events, 'steered'), 2);
+});
+
+test('협업 Codex steer: 하위 에이전트(collab_tool_call)를 쓴 실행은 중간에 끊지 않고 턴 끝에서 이어 답한다', () => {
+  const { agent, calls, events, killed } = codexAgent();
+  agent.send('질문', CXCFG, 3);
+  calls[0].p.out({ type: 'thread.started', thread_id: 'th1' });
+  calls[0].p.out({ type: 'item.started', item: { id: 'c1', type: 'collab_tool_call' } });
+  agent.steer('추가', 3);
+  calls[0].p.out({ type: 'item.completed', item: { id: 'c1', type: 'collab_tool_call' } });
+  calls[0].p.out(cmdItem('item.started')); calls[0].p.out(cmdItem('item.completed'));
+  assert.deepEqual(killed, []);
+  calls[0].p.out({ type: 'turn.completed' });
+  assert.equal(countOf(events, 'done'), 0);
+  calls[0].p.emit('exit', 0);
+  assert.equal(calls.length, 2);
+});
+
+test('협업 Codex steer: 열린 todo_list 는 열린 작업으로 보지 않는다', () => {
+  const { agent, calls, killed } = codexAgent();
+  agent.send('질문', CXCFG, 3);
+  calls[0].p.out({ type: 'turn.started' });
+  calls[0].p.out({ type: 'item.started', item: { id: 't1', type: 'todo_list' } });
+  calls[0].p.out(cmdItem('item.started'));
+  agent.steer('추가', 3);
+  calls[0].p.out(cmdItem('item.completed'));
+  assert.deepEqual(killed, [calls[0].p.pid]);
+});
+
+test('협업 Codex steer: 실패로 끝나면 남은 메시지를 버리고 이어 실행하지 않는다', () => {
+  const { agent, calls, events, killed } = codexAgent();
+  agent.send('질문', CXCFG, 3);
+  agent.steer('추가', 3);
+  calls[0].p.out({ type: 'turn.failed', error: { message: '실패' } });
+  assert.equal(countOf(events, 'done'), 1); assert.equal(events.at(-1).ok, false);
+  assert.equal(countOf(events, 'steered'), 0); assert.deepEqual(killed, []);
+  calls[0].p.emit('exit', 1);
+  assert.equal(calls.length, 1); assert.equal(countOf(events, 'done'), 1);
+});
+
+test('협업 Codex steer: 이어 실행을 기다리는 중에 넣은 메시지는 보낼 글에 합치고 steered 를 합산한다', () => {
+  const { agent, calls, events } = runningCodex();
+  agent.steer('가', 3);
+  calls[0].p.out(cmdItem('item.completed'));
+  assert.equal(calls.length, 1);
+  assert.equal(agent.steer('나', 3), true);
+  calls[0].p.emit('exit', 1);
+  assert.ok(calls[1].p.written[0].endsWith('\n\n가\n\n나'));
+  calls[1].p.out({ type: 'turn.started' });
+  assert.equal(countOf(events, 'steered'), 2);
+});
+
+test('협업 Codex steer: 이어 실행을 기다리는 중 중단하면 띄우지 않고 중단됨 한 번으로 끝낸다', () => {
+  const { agent, calls, events } = runningCodex();
+  agent.steer('가', 3);
+  calls[0].p.out(cmdItem('item.completed'));
+  agent.stop();
+  assert.deepEqual(events.at(-1), { type: 'done', ok: false, stopped: true, turn: 3 });
+  calls[0].p.emit('exit', 1);
+  assert.equal(calls.length, 1);
+  assert.equal(events.filter((e) => e.stopped).length, 1);
+  assert.equal(agent.busy, false);
+});
+
+test('협업 Codex steer: 옛 프로세스가 끝나지 않아도 상한 시간 뒤에는 띄우고, 그 프로세스는 한 번 더 끝낸 뒤 다음 턴부터 기다리지 않으며 닫을 때 정리한다', async () => {
+  const { agent, calls, killed } = runningCodex({ exitWaitMs: 30 });
+  const old = calls[0].p.pid;
+  agent.steer('가', 3);
+  calls[0].p.out(cmdItem('item.completed'));
+  assert.equal(calls.length, 1);
+  await cxSleep(100);
+  assert.equal(calls.length, 2);
+  assert.equal(killed.filter((pid) => pid === old).length, 2, '상한에서 한 번 더 끝낸다');
+  calls[1].p.out({ type: 'turn.started' }); calls[1].p.out({ type: 'turn.completed' }); calls[1].p.emit('exit', 0);
+  agent.send('다음', CXCFG, 4);
+  assert.equal(calls.length, 3, '안 끝난 옛 프로세스 때문에 다음 턴이 또 기다리지 않는다');
+  agent.close();
+  assert.equal(killed.filter((pid) => pid === old).length, 3, '닫을 때 그 프로세스도 정리한다');
+});
+
+test('협업 Codex: 중단 직후 다시 보내면 옛 프로세스 종료를 기다렸다가 띄운다', () => {
+  const { agent, calls } = codexAgent();
+  agent.send('1', CXCFG, 3);
+  calls[0].p.out({ type: 'thread.started', thread_id: 'th1' });
+  agent.stop();
+  agent.send('2', CXCFG, 4);
+  assert.equal(calls.length, 1); assert.equal(agent.busy, true);
+  assert.equal(agent.steer('덧붙임', 4), true, '아직 띄우기 전이면 보낼 글에 합친다');
+  calls[0].p.emit('exit', 1);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1].args.slice(0, 3), ['exec', 'resume', 'th1']);
+  assert.equal(calls[1].p.written[0], '2\n\n덧붙임');
+});
+
+test('협업 Codex steer: 다른 턴·빈 글·끝난 뒤에는 거절한다', () => {
+  const { agent, calls } = codexAgent();
+  assert.equal(agent.steer('x', 1), false, '실행 없음');
+  agent.send('질문', CXCFG, 5);
+  assert.equal(agent.steer('x', 6), false);
+  assert.equal(agent.steer('  ', 5), false);
+  calls[0].p.out({ type: 'turn.completed' });
+  calls[0].p.emit('exit', 0);
+  assert.equal(agent.busy, false);
+  assert.equal(agent.steer('x', 5), false);
+});
+
+// 협업 Claude 의 진행 중 메시지(steer): 되돌림(--replay-user-messages)으로 받았는지 확인한다.
+const CFG = { model: 'opus', effort: 'high' };
+const replay = (text) => ({ type: 'user', isReplay: true, uuid: 'u', message: { role: 'user', content: [{ type: 'text', text }] } });
+const RESULT_OK = { type: 'result', subtype: 'success', result: '' };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function steerAgent(extra = {}) {
+  const { spawn, calls } = fakeSpawn(); const events = []; const killed = [];
+  const agent = new collab.ClaudeChat({ loc: { file: 'claude.exe', prefixArgs: [] }, cwd: 'C:\\w', settingsPath: 's', systemPrompt: '', env: {}, spawn, kill: (p) => killed.push(p.pid), onEvent: (e) => events.push(e), ...extra });
+  return { agent, calls, events, killed };
+}
+
+test('협업 Claude: 되돌림 옵션과 되돌림 글 해석', () => {
+  const args = collab.claudeChatArgs({ settingsPath: 's', sessionId: 'id', model: 'opus', effort: 'high' });
+  assert.ok(args.includes('--replay-user-messages'));
+  assert.equal(args.indexOf('--replay-user-messages'), args.indexOf('--include-partial-messages') + 1);
+  assert.equal(collab.replayText({ type: 'user', isReplay: true, message: { content: '문자열' } }), '문자열');
+  assert.equal(collab.replayText({ type: 'user', isReplay: true, message: { content: [{ type: 'text', text: 'a' }, { type: 'tool_result' }, { type: 'text', text: 'b' }] } }), 'ab');
+  assert.equal(collab.replayText({ type: 'user', message: { content: '문자열' } }), null, 'isReplay 없으면 되돌림이 아니다');
+  assert.equal(collab.replayText({ type: 'assistant', isReplay: true, message: { content: 'x' } }), null);
+});
+
+test('협업 Claude: 넣은 메시지는 되돌림을 받아야 확인되고, 확인 전 result 로는 턴이 끝나지 않는다', () => {
+  const { agent, calls, events } = steerAgent();
+  agent.send('질문', CFG, 7);
+  const p = calls[0].p;
+  p.out(replay('질문')); // 턴 프롬프트의 되돌림은 무시
+  assert.deepEqual(events, []);
+  assert.equal(agent.steer('x', 7), true);
+  assert.equal(p.written.length, 2); assert.equal(JSON.parse(p.written[1]).message.content[0].text, 'x');
+  p.out(RESULT_OK);
+  assert.deepEqual(events, [], '넣은 메시지가 남아 있으면 같은 턴이 이어진다');
+  p.out(replay('x'));
+  assert.deepEqual(events, [{ type: 'steered', turn: 7 }]);
+  p.out(RESULT_OK);
+  assert.deepEqual(events.map((e) => e.type), ['steered', 'done']); assert.equal(agent.busy, false);
+  assert.equal(agent.hold, null, '끝나면 감시 타이머 해제');
+});
+
+test('협업 Claude: 되돌림이 result 보다 먼저 와도 done 은 한 번', () => {
+  const { agent, calls, events } = steerAgent();
+  agent.send('질문', CFG, 1);
+  const p = calls[0].p;
+  p.out(replay('질문'));
+  agent.steer('x', 1);
+  p.out(replay('x')); p.out(RESULT_OK);
+  assert.deepEqual(events.map((e) => e.type), ['steered', 'done']);
+});
+
+test('협업 Claude: 넣은 글과 정확히 같은 되돌림만 확인으로 보고, 하위 에이전트 쪽 되돌림은 무시한다', () => {
+  const { agent, calls, events } = steerAgent();
+  agent.send('질문', CFG, 1);
+  const p = calls[0].p;
+  p.out(replay('질문'));
+  agent.steer('a', 1); agent.steer('b', 1);
+  p.out(replay('다르게 되돌아온 글'));
+  p.out({ ...replay('a'), parent_tool_use_id: 'toolu_1' });
+  assert.deepEqual(events, []); assert.deepEqual(agent.steered, ['a', 'b']);
+  p.out(replay('b')); p.out(replay('a')); p.out(RESULT_OK);
+  assert.deepEqual(events.map((e) => e.type), ['steered', 'steered', 'done']);
+});
+
+test('협업 Claude: 프롬프트 되돌림 글이 어긋나도 넣은 글이 되돌아오면 확인하고, 그것도 없으면 대기 시간 뒤 끝내고 다시 띄운다', async () => {
+  const a = steerAgent();
+  a.agent.send('질문', CFG, 1);
+  a.agent.steer('x', 1);
+  a.calls[0].p.out(replay('조금 다른 프롬프트')); a.calls[0].p.out(replay('x')); a.calls[0].p.out(RESULT_OK);
+  assert.deepEqual(a.events.map((e) => e.type), ['steered', 'done']);
+  const b = steerAgent({ steerWaitMs: 30 });
+  b.agent.send('질문', CFG, 1);
+  b.agent.steer('x', 1);
+  b.calls[0].p.out(replay('조금 다른 프롬프트')); b.calls[0].p.out(RESULT_OK);
+  await sleep(150);
+  assert.deepEqual(b.events, [{ type: 'done', ok: true, unconfirmed: 1, turn: 1 }]); assert.deepEqual(b.killed, [b.calls[0].p.pid]);
+});
+
+test('협업 Claude: 두 메시지 중 하나만 받아도 감시 타이머를 끄고, 다음 ok result 에서 남은 것을 다시 기다린다', async () => {
+  const { agent, calls, events } = steerAgent({ steerWaitMs: 30 });
+  agent.send('질문', CFG, 1);
+  const p = calls[0].p;
+  p.out(replay('질문'));
+  agent.steer('a', 1); agent.steer('b', 1);
+  p.out(RESULT_OK); p.out(replay('a'));
+  assert.equal(agent.hold, null);
+  await sleep(150);
+  assert.deepEqual(events.map((e) => e.type), ['steered'], 'a 에 대한 긴 도구 실행 중에도 끝나지 않는다');
+  p.out(RESULT_OK);
+  assert.ok(agent.hold, 'b 를 다시 기다린다');
+  p.out(replay('b')); p.out(RESULT_OK);
+  assert.deepEqual(events.map((e) => e.type), ['steered', 'steered', 'done']);
+});
+
+test('협업 Claude: 되돌림 없이 result 뒤 출력이 없으면 대기 시간 뒤 확인 못 한 채로 끝내고, 출력이 오면 타이머를 다시 시작한다', async () => {
+  const a = steerAgent({ steerWaitMs: 20 });
+  a.agent.send('질문', CFG, 1);
+  a.calls[0].p.out(replay('질문'));
+  a.agent.steer('x', 1); a.calls[0].p.out(RESULT_OK);
+  assert.deepEqual(a.events, []);
+  await sleep(80);
+  assert.deepEqual(a.events, [{ type: 'done', ok: true, unconfirmed: 1, turn: 1 }]); assert.equal(a.agent.busy, false);
+  const b = steerAgent({ steerWaitMs: 400 });
+  b.agent.send('질문', CFG, 1);
+  b.calls[0].p.out(replay('질문'));
+  b.agent.steer('x', 1); b.calls[0].p.out(RESULT_OK);
+  await sleep(250); b.calls[0].p.out({ type: 'system', subtype: 'status' }); // 출력이 오면 다시 시작
+  await sleep(250);
+  assert.deepEqual(b.events, [], '처음 시작 기준으로는 지났지만 다시 시작했으니 아직');
+  await sleep(450);
+  assert.deepEqual(b.events.map((e) => e.type), ['done']); assert.equal(b.events[0].unconfirmed, 1);
+});
+
+test('협업 Claude: 실패 result 에 넣은 메시지가 남았으면 done 실패를 한 번 보내고 프로세스를 다시 띄우도록 끝낸다', () => {
+  const { agent, calls, events, killed } = steerAgent();
+  agent.send('질문', CFG, 1);
+  const p = calls[0].p;
+  p.out(replay('질문'));
+  agent.steer('x', 1);
+  p.out({ type: 'result', subtype: 'error_during_execution', is_error: true, result: '오류' });
+  assert.equal(events.filter((e) => e.type === 'done').length, 1); assert.equal(events.at(-1).ok, false);
+  assert.deepEqual(killed, [p.pid]); assert.deepEqual(agent.steered, []); assert.equal(agent.proc, null); assert.equal(agent.hold, null);
+});
+
+test('협업 Claude: 답변 중이 아니거나 턴 번호가 다르거나 빈 글이면 넣지 않고, 중단하면 대기 상태를 비운다', () => {
+  const { agent, calls, events } = steerAgent({ steerWaitMs: 5000 });
+  assert.equal(agent.steer('x', 1), false, '아직 시작 전');
+  agent.send('질문', CFG, 1);
+  const p = calls[0].p;
+  assert.equal(agent.steer('x', 2), false, '다른 턴');
+  assert.equal(agent.steer('  \r\n ', 1), false, '빈 글');
+  assert.equal(p.written.length, 1);
+  assert.equal(agent.steer('x'), true, '턴 번호를 안 주면 현재 턴');
+  p.out(RESULT_OK); // 타이머가 걸린다
+  assert.ok(agent.hold);
+  agent.stop();
+  assert.deepEqual(agent.steered, []); assert.equal(agent.hold, null);
+  assert.deepEqual(events.at(-1), { type: 'done', ok: false, stopped: true, turn: 1 });
+  assert.equal(agent.steer('x', 1), false, '끝난 뒤');
+});
+
+test('협업 Claude: 넣은 메시지를 다 받은 뒤에는 감시 타이머가 꺼져, 이어지는 턴의 긴 무출력(도구)에도 끝나지 않는다', async () => {
+  const { agent, calls, events } = steerAgent({ steerWaitMs: 20 });
+  agent.send('질문', CFG, 1);
+  const p = calls[0].p;
+  p.out(replay('질문'));
+  agent.steer('x', 1);
+  p.out(RESULT_OK); // 글만 쓰던 턴이 먼저 끝남 → 타이머
+  p.out(replay('x')); // 받음 → 타이머 해제
+  assert.equal(agent.hold, null);
+  await sleep(80);
+  assert.deepEqual(events.map((e) => e.type), ['steered'], '긴 도구 실행 중에도 끝나지 않는다');
+  p.out(RESULT_OK);
+  assert.deepEqual(events.map((e) => e.type), ['steered', 'done']);
+});
+
+test('협업 Claude: 대기 시간 초과로 끝내면 프로세스를 다시 띄우도록 끝내, 남은 메시지의 늦은 답이 다음 턴에 섞이지 않는다', async () => {
+  const { agent, calls, events, killed } = steerAgent({ steerWaitMs: 20 });
+  agent.send('질문', CFG, 1);
+  const p = calls[0].p;
+  p.out(replay('질문'));
+  agent.steer('x', 1); p.out(RESULT_OK);
+  await sleep(80);
+  assert.deepEqual(killed, [p.pid]); assert.equal(agent.proc, null);
+  agent.send('다음', CFG, 2);
+  assert.equal(calls.length, 2, '새 프로세스(--resume)');
+  p.out(replay('x')); p.out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '늦은 답' } } }); p.out(RESULT_OK);
+  assert.ok(!events.some((e) => e.turn === 2), '옛 프로세스 출력은 새 턴에 안 섞임');
+});
+
+test('협업 Claude: 프롬프트 되돌림 전에 온 다른 글(지난 기록 등)·글 없는 되돌림은 확인으로 보지 않는다', () => {
+  const { agent, calls, events } = steerAgent();
+  agent.send('질문', CFG, 1);
+  const p = calls[0].p;
+  agent.steer('x', 1);
+  p.out(replay('지난 기록'));
+  p.out({ type: 'user', isReplay: true, message: { content: [{ type: 'tool_result', content: 'r' }] } });
+  assert.equal(collab.replayText({ type: 'user', isReplay: true, message: { content: [{ type: 'tool_result' }] } }), null);
+  assert.deepEqual(events, []); assert.deepEqual(agent.steered, ['x']);
+  p.out(replay('질문')); p.out(replay('x'));
+  assert.deepEqual(events.map((e) => e.type), ['steered']);
+});
+
+test('협업 Claude: 답변 중이 아닐 때 나온 글·도구는 내보내지 않고 세션 알림만 낸다', () => {
+  const { agent, calls, events } = steerAgent();
+  agent.send('질문', CFG, 1);
+  const p = calls[0].p;
+  p.out(RESULT_OK);
+  const before = events.length;
+  p.out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: '늦은 글' } } });
+  p.out({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'ls' } }] } });
+  assert.equal(events.length, before);
+  p.out({ type: 'system', subtype: 'init', session_id: agent.sessionId });
+  assert.equal(events.at(-1).type, 'session'); assert.equal(agent.hasHistory, true);
 });

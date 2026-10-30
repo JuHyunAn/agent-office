@@ -500,13 +500,14 @@ function cacheObjects(items) {
 }
 function label(ctx, a, p) {
   const name = a.label.length > 13 ? a.label.slice(0, 12) + '…' : a.label;
-  const value = a.isPlayer ? 'Me' : a.isAmbient ? `${name} · 상주` : name;
+  const value = a.isPlayer ? 'Me' : name;
   ctx.font = '11px "Malgun Gothic", monospace';
   const w = Math.ceil(ctx.measureText(value).width) + 14;
   const x = Math.round(p.x - w / 2), y = p.y + 9;
-  ctx.fillStyle = a.isPlayer ? '#5d8d8a' : a.isLead ? '#e1c58c' : '#c8c2af'; ctx.fillRect(x, y, w, 17);
-  ctx.fillStyle = a.isPlayer ? '#719f9a' : a.isLead ? '#fcf0cc' : '#f7f2e5'; ctx.fillRect(x, y, w, 15);
-  text(ctx, value, x + 7, y + 11, a.isPlayer ? '#fff9e8' : '#645e52', '11px "Malgun Gothic", monospace');
+  // 상주 캐릭터는 하늘색 이름표로 실제 에이전트와 구분한다.
+  ctx.fillStyle = a.isPlayer ? '#5d8d8a' : a.isAmbient ? '#8fbcd6' : a.isLead ? '#e1c58c' : '#c8c2af'; ctx.fillRect(x, y, w, 17);
+  ctx.fillStyle = a.isPlayer ? '#719f9a' : a.isAmbient ? '#d2ecf8' : a.isLead ? '#fcf0cc' : '#f7f2e5'; ctx.fillRect(x, y, w, 15);
+  text(ctx, value, x + 7, y + 11, a.isPlayer ? '#fff9e8' : a.isAmbient ? '#3f6276' : '#645e52', '11px "Malgun Gothic", monospace');
 }
 
 function bubble(ctx, a, p, t, occupied) {

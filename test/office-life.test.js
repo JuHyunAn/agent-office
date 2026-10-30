@@ -104,6 +104,97 @@ test('상주 캐릭터는 자율적으로 이동하고 스킬 작업 중에는 �
   assert.equal(engine.agents.size, 1);
 });
 
+test('기본 상주 캐릭터는 넷이고 그중 하나는 Codex 모습이다', () => {
+  const life = new OfficeLife(layout, new OfficeEngine(layout), () => 0.2), nav = new Navigation(layout);
+  assert.equal(life.residents.length, 4);
+  const codex = life.residents.filter(a => a.cli === 'codex');
+  assert.equal(codex.length, 1);
+  assert.ok(nav.isWalkable(codex[0]));
+  assert.ok(codex[0].isAmbient && !codex[0].isPlayer);
+  assert.equal(new Set(life.residents.map(a => a.id)).size, 4);
+});
+
+test('스킬 작업 중 협업 공간에 모인 상주 캐릭터는 같은 자리에 겹치지 않는다', () => {
+  const engine = new OfficeEngine(layout), life = new OfficeLife(layout, engine, () => 0.2);
+  engine.handleEvent(ev('PreToolUse', { tool_name: 'Skill', tool_input: { skill: 'documents:documents' } }), { label: 'tab' });
+  run(life, 120000);
+  const gathered = life.residents.filter(a => a.action === 'collaborate' && !a.path.length);
+  assert.ok(gathered.some(a => a.cli === 'codex'));
+  // 화면에서는 가로 간격이 약 0.36배로 줄고 캐릭터는 1.5배로 그려지므로 넉넉히 띄운다.
+  for (const a of gathered) for (const b of gathered) if (a !== b) assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 100, `${a.label}·${b.label}`);
+});
+
+// 같은 씨앗이면 같은 수열을 내는 의사 난수 (mulberry32).
+const seeded = s => () => { s = s + 0x6D2B79F5 | 0; let t = Math.imul(s ^ s >>> 15, 1 | s); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+
+test('상주 캐릭터는 복도 전체와 화장실 별채까지 넓게 다니고 같은 곳에 함께 멈춰 서지 않는다', () => {
+  for (const seed of [1, 2, 3]) {
+    const life = new OfficeLife(layout, new OfficeEngine(layout), seeded(seed));
+    const cells = new Set();
+    let stillTogether = 0, minX = Infinity, maxY = 0;
+    for (let ms = 0; ms < 600000; ms += 50) {
+      life.update(50);
+      if (ms % 1000) continue;
+      const r = life.residents;
+      for (const a of r) { minX = Math.min(minX, a.x); maxY = Math.max(maxY, a.y); cells.add(`${Math.floor(a.x / 100)},${Math.floor(a.y / 100)}`); }
+      // 지나치며 잠깐 가까워지는 것은 괜찮고, 둘 다 멈춘 채 붙어 있는 것만 센다.
+      for (let i = 0; i < r.length; i++) for (let j = i + 1; j < r.length; j++)
+        if (!r[i].path.length && !r[j].path.length && Math.hypot(r[i].x - r[j].x, r[i].y - r[j].y) < 80) stillTogether++;
+    }
+    assert.ok(minX < 600, `씨앗 ${seed}: 복도 왼쪽까지 가지 않음 (${Math.round(minX)})`);
+    assert.ok(maxY > 1400, `씨앗 ${seed}: 화장실 별채에 가지 않음 (${Math.round(maxY)})`);
+    assert.ok(cells.size >= 80, `씨앗 ${seed}: 다닌 칸 ${cells.size}개`);
+    assert.equal(stillTogether, 0, `씨앗 ${seed}: 함께 멈춰 선 시간 ${stillTogether}초`);
+  }
+});
+
+test('상주 캐릭터는 업무 방(에이전트 자리)에 들어가지 않고 엘리베이터 문도 열지 않는다', () => {
+  const life = new OfficeLife(layout, new OfficeEngine(layout), seeded(7));
+  const work = ['analysis', 'planning', 'lead', 'dev', 'review', 'skills', 'ceo'].map(k => layout.rooms[k]);
+  const inside = p => work.some(r => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h);
+  const elevator = life.doors.find(d => d.id === 'elevator');
+  life.player.x = 1390; life.player.y = 896;
+  for (let ms = 0; ms < 600000; ms += 50) {
+    life.update(50);
+    for (const a of life.residents) {
+      const end = a.path.length ? a.path[a.path.length - 1] : a;
+      assert.ok(!inside(a) && !inside(end), `${a.label} @${Math.round(a.x)},${Math.round(a.y)} → ${Math.round(end.x)},${Math.round(end.y)}`);
+    }
+    assert.equal(elevator.amount, 0, `${ms}ms 에 엘리베이터가 열림`);
+  }
+});
+
+test('상주 캐릭터는 도착하면 잠시 머물고 산책 말풍선은 가끔만 띄운다', () => {
+  const life = new OfficeLife(layout, new OfficeEngine(layout), seeded(3));
+  const stops = [], arrived = new Map();
+  let bubbles = 0;
+  const walking = new Map(life.residents.map(a => [a, false]));
+  for (let ms = 0; ms < 600000; ms += 50) {
+    const before = new Map(life.residents.map(a => [a, a.bubble]));
+    life.update(50);
+    for (const a of life.residents) {
+      if (a.bubble && a.bubble !== before.get(a) && /산책|아이디어/.test(a.bubble.text)) bubbles++;
+      const now = a.path.length > 0;
+      if (walking.get(a) && !now) arrived.set(a, ms);
+      if (!walking.get(a) && now && arrived.has(a)) stops.push(ms - arrived.get(a));
+      walking.set(a, now);
+    }
+  }
+  assert.ok(Math.min(...stops) >= 2000, `가장 짧게 머문 시간 ${Math.min(...stops)}ms`);
+  assert.ok(bubbles < 70, `산책 말풍선 ${bubbles}번`);
+});
+
+test('상주 캐릭터는 내 캐릭터 바로 옆에 멈춰 서지 않는다', () => {
+  const life = new OfficeLife(layout, new OfficeEngine(layout), seeded(5));
+  let near = 0;
+  for (let ms = 0; ms < 600000; ms += 50) {
+    life.update(50);
+    if (ms % 1000) continue;
+    for (const a of life.residents) if (!a.path.length && !a.action && Math.hypot(a.x - life.player.x, a.y - life.player.y) < 80) near++;
+  }
+  assert.equal(near, 0);
+});
+
 test('실제 스킬명을 유지하고 작업 완료·새 요청에서 스킬 작업실을 정리한다', () => {
   const engine = new OfficeEngine(layout);
   engine.handleEvent(ev('PreToolUse', { tool_name: 'Skill', tool_input: { skill: 'spreadsheets:Spreadsheets' } }), { label: 'tab' });

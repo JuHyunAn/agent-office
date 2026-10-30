@@ -13,9 +13,14 @@ class PtyManager {
     this.kill(tabId);
     const p = pty.spawn(file, args, { name: 'xterm-256color', cols, rows, cwd, env });
     this.map.set(tabId, p);
-    p.onData((d) => this.onData(tabId, d));
+    // 교체·종료한 이전 프로세스의 늦은 출력·종료는 같은 tabId 의 새 프로세스로 보내지 않는다.
+    p.onData((d) => {
+      if (this.map.get(tabId) !== p) return;
+      this.onData(tabId, d);
+    });
     p.onExit(({ exitCode }) => {
-      if (this.map.get(tabId) === p) this.map.delete(tabId);
+      if (this.map.get(tabId) !== p) return;
+      this.map.delete(tabId);
       this.onExit(tabId, exitCode);
     });
     return p.pid;

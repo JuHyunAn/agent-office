@@ -54,9 +54,14 @@ const COLLAB_RULES = [
   '당신은 Agent Office 의 협업 대화에 참여하고 있습니다. 참여자는 사용자, Claude(Claude Code), Codex(OpenAI Codex) 셋이며 같은 작업 폴더를 함께 씁니다.',
   '상대 AI 와 사용자의 발언은 [Claude] [Codex] [사용자] 표시와 함께 전달되고, 당신의 답변은 상대 AI 와 사용자 모두에게 보입니다.',
   '메시지 첫 줄의 구현 담당 지시를 따릅니다. 구현 담당이 아니면 파일을 수정하지 말고 설계·검토·의견만 냅니다.',
-  '방향·범위·되돌리기 어려운 변경처럼 중요한 선택이 필요하면 진행을 멈추고, 답변 끝에 [질문] 으로 시작하는 줄을 두어 질문과 선택지를 적습니다. 사용자가 답할 때까지 대화가 멈춥니다.',
-  '더 논의할 것이 없고 사용자 확인만 남았으면 마지막 줄에 [완료] 만 적습니다.',
-  '상대의 말을 되풀이하지 말고 새 정보·반론·결정만 한국어로 간결하게 답합니다.',
+  '방향·범위·되돌리기 어려운 변경처럼 중요한 선택이 필요하면 진행을 멈추고, 답변 끝에 [질문] 으로 시작하는 줄에 질문을 적습니다. 선택지가 있으면 그 아래 줄마다 [선택] 이름 — 설명 형식으로 2~8개를 적습니다. 사용자는 버튼으로 고르며 답은 선택: 이름 으로 옵니다. 상대 AI 가 한 번 더 말할 수 있지만 사용자가 답하기 전에는 그 선택을 대신 정하지 않습니다.',
+  '대화의 목표는 사용자 요청에 대해 Claude 와 Codex 둘 다 만족하는 최종 답변을 내는 것입니다. 상대의 답을 바탕으로 토론·검토·분석하며 결론으로 수렴합니다.',
+  '코드 작업이면 추측하지 말고 실제 파일을 읽어 확인하고 근거가 필요하면 읽기 위주 명령으로 실측해 요청 의도를 확정한 뒤, 핵심 문제 위주의 가벼운 계획을 함께 다듬습니다. 테스트 실행은 구현 담당이 맡고 같은 확인을 되풀이하지 않습니다.',
+  '구현 전 계획 단계에서는 [완료] 를 쓰지 않습니다. 계획에 둘 다 동의하면 구현 담당이 [질문] 줄로 이 계획대로 구현할지 묻고 [선택] 줄로 승인 선택지를 주며(구현 담당이 정해지지 않았으면 누가 구현할지도 같은 질문으로 묻습니다), 사용자가 승인한 뒤에만 구현하고, 구현은 아래 검증 고리를 따릅니다. 코드 작업이 아닌 질문은 일반 Claude·ChatGPT 처럼 바로 답하고, 상대는 틀린 점이나 보탤 점이 있을 때만 의견을 내며 없으면 짧은 동의와 [완료] 만 적습니다.',
+  '결론에 만족하면 마지막 줄에는 [완료] 만 둡니다. 먼저 [완료] 를 쓰는 쪽은 그 답변에 최종 답변 전체(코드 작업이면 바꾼 것과 검증 결과)를 적고, 상대는 동의하면 짧은 동의와 함께 [완료] 를 적습니다. 반론이나 보탤 내용이 있으면 [완료] 대신 그 내용을 적습니다. 두 AI 가 이어서 [완료] 를 써야 대화가 끝납니다.',
+  '상대의 말을 되풀이하지 말고 새 정보·반론·결정만 한국어로 간결하게 답합니다. 단 [완료] 와 함께 내는 최종 답변은 빠짐없이 적습니다.',
+  '작업 원칙: 코딩 전에 가정과 모호한 점을 드러내고, 요청을 푸는 가장 단순한 방법을 고르며, 요청과 관계없는 코드는 고치지 않고, 작업마다 확인할 수 있는 완료 기준을 먼저 정해 그것으로 검증합니다.',
+  '승인된 구현은 고리로 진행합니다. 구현 담당이 구현하고 테스트로 검증해 결과를 알리면 상대가 변경 내용을 검토하고, 결함이 나오면 구현 담당이 고쳐 다시 검증합니다. 이 고리는 최대 3회이며, 3회를 다 쓰고도 결함이 남거나 같은 원인으로 두 번 실패하면 멈추고 [질문] 으로 사용자에게 방향을 묻습니다. 오타처럼 작은 수정은 검토를 한 번으로 끝냅니다.',
 ];
 const CLAUDE_RULES = [...COLLAB_RULES,
   '하위 에이전트를 적극 활용합니다. 어려운 추론·설계 검토는 model fable, 설계가 끝난 단순 코딩·주석·문법 수정은 model sonnet 에게 맡기고, 노력 단계는 high 또는 xhigh 만 씁니다.'].join(' ');
@@ -136,17 +141,29 @@ async function writeSessionSettings() {
 }
 
 async function status() {
-  claude = await claudeCli.locate();
-  const version = claude ? await claudeCli.version(claude) : null;
-  const auth = claude ? await claudeCli.authStatus(claude) : { loggedIn: false };
-  codex = await codexCli.locate();
-  const codexVersion = codex ? await codexCli.version(codex) : null;
+  // Claude·Codex 를 병렬로 확인한다 — Codex 쪽 실패가 전체를 막지 않는다.
+  const [cl, cx] = await Promise.all([
+    (async () => {
+      claude = await claudeCli.locate();
+      const version = claude ? await claudeCli.version(claude) : null;
+      const auth = claude ? await claudeCli.authStatus(claude) : { loggedIn: false };
+      return { version, auth };
+    })(),
+    (async () => {
+      codex = await codexCli.locate();
+      if (!codex) return {};
+      const [version, auth] = await Promise.all([codexCli.version(codex), codexCli.authStatus(codex, { appVersion: app.getVersion() })]);
+      return { version, auth };
+    })().catch((e) => ({ auth: { loggedIn: false, error: `Codex 상태를 확인하지 못했습니다: ${String(e?.message || e).slice(0, 120)}` } })),
+  ]);
+  const { version, auth } = cl;
   if (auth.loggedIn || codex) collabModels(); // 협업 탭을 열기 전에 미리 받아 둔다 (Claude 쪽은 5초 안팎 걸림)
   pet?.refresh(); // Codex 를 찾았는지에 따라 Codex 펫 표시가 달라진다
   return {
     claude: claude ? { path: claude.display, version } : null,
-    codex: codex ? { path: codex.display, version: codexVersion } : null,
+    codex: codex ? { path: codex.display, version: cx.version } : null,
     auth,
+    codexAuth: codex ? (cx.auth || null) : null,
     hook: { port: hook.port, global: hookSettings.readGlobalStatus(hook.port, config.token) },
     pet: { mode: pet ? pet.mode() : 'always' },
   };
@@ -170,6 +187,14 @@ async function createCodexPty({ tabId, cwd, cols, rows }) {
   const args = codexCli.tabArgs({ hooks: codexCli.hookArgs({ port: hook.port, token: config.token, tab: tabId }) });
   const cmd = claudeCli.commandFor(codex, args);
   ptys.create({ tabId, cwd, cols, rows, file: cmd.file, args: cmd.args, env: cleanEnv() });
+  return { sessionId: null };
+}
+
+// Codex 로그인: 공식 codex login (브라우저 ChatGPT 로그인) — 세션이 아니므로 hook 없이 홈 폴더에서 띄운다.
+async function createCodexLoginPty({ tabId, cols, rows }) {
+  await needCodex();
+  const cmd = claudeCli.commandFor(codex, ['login']);
+  ptys.create({ tabId, cwd: os.homedir(), cols, rows, file: cmd.file, args: cmd.args, env: cleanEnv() });
   return { sessionId: null };
 }
 
@@ -232,6 +257,13 @@ function collabStop({ roomId, agent }) {
   for (const a of agent ? [agent] : ['claude', 'codex']) room[a]?.stop();
 }
 
+// 답변 중인 Claude·Codex 에 메시지를 넣는다 (Codex 는 안전 지점에서 끊고 이어 답함). 잘못된 입력은 throw 하지 않고 false — 화면이 다음 차례 전달로 대체한다.
+function collabSteer({ roomId, agent, text, turn }) {
+  if (!TAB_RE.test(String(roomId)) || (agent !== 'claude' && agent !== 'codex')) return false;
+  const c = rooms.get(roomId)?.[agent];
+  return !!c && c.steer(String(text || ''), Number.isInteger(turn) ? turn : null);
+}
+
 function collabClose({ roomId }) {
   const room = rooms.get(roomId);
   if (!room) return;
@@ -251,13 +283,13 @@ function dropSessions() {
 
 function collabRunning() {
   let n = 0;
-  for (const room of rooms.values()) n += (room.claude?.busy ? 1 : 0) + (room.codex?.proc ? 1 : 0);
+  for (const room of rooms.values()) n += (room.claude?.busy ? 1 : 0) + (room.codex?.busy ? 1 : 0);
   return n;
 }
 
 async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli }) {
   if (!TAB_RE.test(String(tabId))) throw new Error('잘못된 탭 ID');
-  if (cli === 'codex') return createCodexPty({ tabId, cwd, cols, rows });
+  if (cli === 'codex') return mode === 'login' ? createCodexLoginPty({ tabId, cols, rows }) : createCodexPty({ tabId, cwd, cols, rows });
   if (!claude) claude = await claudeCli.locate();
   if (!claude) throw new Error('Claude Code 를 찾지 못했습니다');
   if (mode === 'login' && !cwd) cwd = os.homedir();
@@ -461,18 +493,18 @@ async function smokeCollab() {
   await js(`(()=>{const p=document.querySelector('.pane:not([hidden]) .collab');
     p.querySelector('input[type=checkbox]').click();const sels=p.querySelectorAll('.collab-agent select');
     const pick=(s,v)=>{s.value=v;s.dispatchEvent(new Event('change'));};pick(sels[0],'sonnet');pick(sels[1],'low');pick(sels[3],'low');
-    const t=p.querySelector('textarea');t.value='연결 점검입니다. 도구를 쓰지 말고 「확인」 한 단어로만 답하세요.';p.querySelector('.collab-compose .btn').click();})()`);
+    const t=p.querySelector('textarea');t.value='연결 점검입니다. 도구를 쓰지 말고 「확인」 한 단어로만 답하세요.';t.dispatchEvent(new Event('input',{bubbles:true}));p.querySelector('.collab-compose .collab-send').click();})()`);
   out.finished = await wait(`(()=>{const p=document.querySelector('.pane:not([hidden]) .collab');return p.querySelectorAll('.msg.from-claude:not(.streaming),.msg.from-codex:not(.streaming)').length>=2&&!p.querySelector('.msg.streaming');})()`, 240000);
   out.messages = await js(`[...document.querySelectorAll('.pane:not([hidden]) .collab .msg')].map(m=>m.querySelector('.msg-head').innerText.replace(/\\s+/g,' ')+' | '+m.querySelector('.msg-body').innerText.slice(0,80))`);
   out.status = await js(`document.querySelector('.pane:not([hidden]) .collab-status').textContent`);
   await new Promise((r) => setTimeout(r, 1500));
   // 답변 도중 중단 → 다시 보내기: 끝낸 프로세스의 늦은 출력이 새 턴에 섞이지 않고 같은 세션으로 이어 가는지.
   const say = (text, to) => js(`(()=>{const p=document.querySelector('.pane:not([hidden]) .collab');const s=p.querySelector('.collab-compose select');s.value='${to}';
-    p.querySelector('textarea').value=${JSON.stringify(text)};p.querySelector('.collab-compose .btn').click();})()`);
+    const t=p.querySelector('textarea');t.value=${JSON.stringify(text)};t.dispatchEvent(new Event('input',{bubbles:true}));p.querySelector('.collab-compose .collab-send').click();})()`);
   const claudeCount = `document.querySelectorAll('.pane:not([hidden]) .collab .msg.from-claude').length`;
   await say('도구 없이 「한국의 사계절」을 주제로 아주 긴 수필(2000단어 이상)을 써 주세요.', 'claude');
   out.streamingBeforeStop = await wait(`!!document.querySelector('.pane:not([hidden]) .collab .msg.from-claude.streaming .msg-body')?.innerText.length`, 60000);
-  await js(`document.querySelector('.pane:not([hidden]) .collab-stop').click()`);
+  await js(`(()=>{const p=document.querySelector('.pane:not([hidden]) .collab');const t=p.querySelector('textarea');t.value='';t.dispatchEvent(new Event('input',{bubbles:true}));p.querySelector('.collab-compose .collab-send').click();})()`); // 진행 중·빈 입력 = 중단 버튼
   await wait(`document.querySelector('.pane:not([hidden]) .collab-status').classList.contains('stopped')`, 5000); // 화면 갱신은 프레임 단위
   out.stoppedStatus = await js(`document.querySelector('.pane:not([hidden]) .collab-status').textContent`);
   const before = await js(claudeCount);
@@ -549,6 +581,7 @@ if (!app.requestSingleInstanceLock()) {
     handleMain('hooks:global:set', ({ enabled }) => setGlobalHooks(!!enabled));
     handleMain('collab:send', (opts) => collabSend(opts || {}));
     handleMain('collab:stop', (opts) => collabStop(opts || {}));
+    handleMain('collab:steer', (opts) => collabSteer(opts || {}));
     handleMain('collab:close', (opts) => collabClose(opts || {}));
     handleMain('collab:models', () => collabModels());
     handleMain('shell:open', (url) => { if (/^https?:\/\//.test(String(url))) shell.openExternal(url); });
@@ -562,16 +595,9 @@ if (!app.requestSingleInstanceLock()) {
       const r = pet?.readPetByKey(key);
       return r ? { type: r.type, bytes: r.bytes } : null;
     });
-    handleMain('pets:import', async (kind) => {
-      if (!pet || (kind !== 'zip' && kind !== 'folder')) return { error: petImport.ERR.generic };
-      if (petImporting) return { error: '이미 가져오는 중입니다' };
-      petImporting = true;
+    // zip·폴더 하나를 검사해 설치한다 — 실패해도 던지지 않고 이유를 돌려준다 (여러 개를 고르면 나머지는 계속).
+    const importOnePet = async (kind, src) => {
       try {
-        const r = await dialog.showOpenDialog(win, kind === 'zip'
-          ? { title: '펫 zip 선택', properties: ['openFile'], filters: [{ name: '펫 zip', extensions: ['zip'] }] }
-          : { title: '펫 폴더 선택', properties: ['openDirectory'] });
-        if (r.canceled || !r.filePaths[0]) return { cancelled: true };
-        const src = r.filePaths[0];
         let prepared;
         if (kind === 'zip') {
           if (fs.statSync(src).size > petImport.MAX_ZIP_BYTES) return { error: petImport.ERR.zipBig };
@@ -580,16 +606,35 @@ if (!app.requestSingleInstanceLock()) {
           prepared = petImport.importFolder(src);
         }
         if (prepared.error) {
-          if (prepared.detail) console.error('[pets] 가져오기 검사 실패', prepared.detail);
+          if (prepared.detail) console.error('[pets] 가져오기 검사 실패', src, prepared.detail);
           return { error: prepared.error };
         }
         const done = await petImport.installPet(prepared, userPetsDir());
         if (done.error) {
-          if (done.detail) console.error('[pets] 설치 실패', done.detail);
+          if (done.detail) console.error('[pets] 설치 실패', src, done.detail);
           return { error: done.error };
         }
-        pet.refreshUserPets();
         return { ok: true, key: `user:${done.id}`, displayName: prepared.displayName };
+      } catch (e) {
+        console.error('[pets] 가져오기 실패', src, e);
+        return { error: petImport.ERR.generic };
+      }
+    };
+    const PET_IMPORT_MAX = 50; // 한 번에 고를 수 있는 개수 (지나치게 많이 골라 오래 멈추지 않게)
+    handleMain('pets:import', async (kind) => {
+      if (!pet || (kind !== 'zip' && kind !== 'folder')) return { error: petImport.ERR.generic };
+      if (petImporting) return { error: '이미 가져오는 중입니다' };
+      petImporting = true;
+      try {
+        const r = await dialog.showOpenDialog(win, kind === 'zip'
+          ? { title: '펫 zip 선택 (여러 개 가능)', properties: ['openFile', 'multiSelections'], filters: [{ name: '펫 zip', extensions: ['zip'] }] }
+          : { title: '펫 폴더 선택 (여러 개 가능)', properties: ['openDirectory', 'multiSelections'] });
+        if (r.canceled || !r.filePaths.length) return { cancelled: true };
+        if (r.filePaths.length > PET_IMPORT_MAX) return { error: `한 번에 ${PET_IMPORT_MAX}개까지 가져올 수 있습니다` };
+        const results = [];
+        for (const src of r.filePaths) results.push({ name: path.basename(src), ...(await importOnePet(kind, src)) }); // 차례로 — 같은 이름 -2 판정이 겹치지 않게
+        if (results.some((x) => x.ok)) pet.refreshUserPets();
+        return { results };
       } catch (e) {
         console.error('[pets] 가져오기 실패', e);
         return { error: petImport.ERR.generic };
