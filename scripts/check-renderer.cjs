@@ -462,12 +462,48 @@ if (!process.versions.electron) {
         render(false,condition,360);const nextOutside=c.getImageData(0,0,400,250).data,nextInside=c.getImageData(p.x-5,p.y-5,10,10).data;
         weather.push({condition,moving:outside.some((value,i)=>value!==nextOutside[i]),indoorStable:inside.every((value,i)=>value===nextInside[i])});
       }
+      const {createExterior}=await import('./themes/pixel-office/exterior.js');
+      const {NEON_FLICKERS,NEON_SIGNS,neonPlacement}=await import('./themes/pixel-office/city-neon.js');
+      const {CITY_BLOCKS}=await import('./themes/pixel-office/cityscape.js');
+      const exterior=createExterior({width:1600,height:1000,project:theme.project});
+      const env={night:true,neon:true,cityStyle:'citypop',condition:'clear'};
+      const frame=exterior.drawBackground(c,0,env,false),fc=frame.getContext('2d');
+      const read=()=>new Uint32Array(fc.getImageData(0,0,frame.width,frame.height).data.buffer);
+      const on=read(),flickers=[];
+      for(const f of NEON_FLICKERS){
+        exterior.drawBackground(c,f.start+1,env,false);const off=read();
+        const block=CITY_BLOCKS.find(b=>b.seed===f.seed),sign=NEON_SIGNS[f.seed].find(s=>s.kind===f.kind),bounds=neonPlacement(block,sign);
+        let changed=0,outside=0;
+        for(let i=0;i<on.length;i++)if(on[i]!==off[i]){
+          changed++;const x=i%frame.width/2,y=Math.floor(i/frame.width)/2;
+          if(x<bounds.left||x>=bounds.left+bounds.width||y<bounds.top||y>=bounds.top+bounds.height)outside++;
+        }
+        exterior.drawBackground(c,f.start+f.duration,env,false);
+        const restored=read().every((v,i)=>v===on[i]);flickers.push({kind:f.kind,changed,outside,restored});
+      }
+      // 예열 이후 간판 전환은 캔버스를 만들거나 블러 필터를 계산하지 않아야 한다.
+      const create=document.createElement,descriptor=Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype,'filter');
+      let allocations=0,filters=0;
+      document.createElement=function(tag,...args){if(tag==='canvas')allocations++;return create.call(this,tag,...args);};
+      Object.defineProperty(CanvasRenderingContext2D.prototype,'filter',{...descriptor,set(value){filters++;descriptor.set.call(this,value);}});
+      let timings;
+      try{
+        // 픽셀 읽기로 지연된 그리기를 끝낸 뒤 시간을 잰다.
+        const sample=t=>{const start=performance.now();for(let i=0;i<20;i++){exterior.drawBackground(c,t,env,false);fc.getImageData(25,1500,1,1);}return (performance.now()-start)/20;};
+        const normal=[],blink=[];
+        for(let i=0;i<5;i++){if(i%2){blink.push(sample(7001));normal.push(sample(0));}else{normal.push(sample(0));blink.push(sample(7001));}}
+        const median=a=>a.sort((x,y)=>x-y)[Math.floor(a.length/2)];
+        timings={normalMs:median(normal),blinkMs:median(blink)};
+      }finally{document.createElement=create;Object.defineProperty(CanvasRenderingContext2D.prototype,'filter',descriptor);exterior.release();}
+      const neon={flickers,allocations,filters,timings,released:frame.width===0&&frame.height===0};
       window.__view.fit();window.__view.draw(performance.now());
-      return {order,fixedDawn,changed,weather};
+      return {order,fixedDawn,changed,weather,neon};
     })()`);
     assert.equal(citypopCheck.order[2],'pixel-office-citypop');
     assert.ok(citypopCheck.fixedDawn&&citypopCheck.changed>500000,JSON.stringify(citypopCheck));
     assert.ok(citypopCheck.weather.every(w=>w.moving&&w.indoorStable),JSON.stringify(citypopCheck));
+    assert.ok(citypopCheck.neon.flickers.every(f=>f.changed>100&&f.outside===0&&f.restored),JSON.stringify(citypopCheck.neon));
+    assert.equal(citypopCheck.neon.allocations,0);assert.equal(citypopCheck.neon.filters,0);assert.ok(citypopCheck.neon.released);
     await pause(100);fs.writeFileSync(path.join(OUT,'office-citypop.png'),(await win.webContents.capturePage()).toPNG());
     fs.writeFileSync(path.join(OUT,'citypop-background.png'),Buffer.from(await win.webContents.executeJavaScript('window.__citypopBackground'),'base64'));
     await selectTheme('pixel-office');

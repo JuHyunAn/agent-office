@@ -1,5 +1,6 @@
 import { drawPixelBuilding } from './building.js';
 import { drawCityscape } from './cityscape.js';
+import { createCityNeon, neonIsOff } from './city-neon.js';
 import { PIXEL_DETAIL } from './raster.js';
 
 // 최초 시안의 도시와 유리 외벽을 실제 바닥 외곽선에 맞춰 합성한다.
@@ -48,6 +49,7 @@ export function createExterior({ width, height, project }) {
   // 지금 시간대·날씨의 배경 하나만 둔다 — 조합마다 쌓아 두면 오래 켜 둘수록 GPU 메모리가 차오른다.
   let cached = null;
   let frame;
+  const neon = createCityNeon();
   const layer = (detail = 1) => {
     const canvas = document.createElement('canvas'); canvas.width = width * detail; canvas.height = height * detail; return canvas;
   };
@@ -66,28 +68,40 @@ export function createExterior({ width, height, project }) {
     const overcast = ['rain', 'snow', 'fog', 'cloudy'].includes(env.condition);
     const key = `${variant}:${overcast}`;
     if (cached?.key !== key) {
+      for (const old of [cached?.canvas, ...(cached?.patches || []).map(p => p.canvas)]) if (old) old.width = old.height = 0;
       const detail = variant === 'citypop' ? PIXEL_DETAIL : 1;
-      const canvas = layer(detail), c = canvas.getContext('2d'), image = images.get(variant);
-      c.scale(detail, detail);
+      const paint = (canvas, unlit = false) => {
+        const c = canvas.getContext('2d'), image = images.get(variant);
+        c.scale(detail, detail);
+        if (variant === 'citypop') {
+          drawCityscape(c, { width, height }, (ctx, block) => neon.draw(ctx, block, unlit));
+          drawPixelBuilding(c, { faces: TOWER_FACES, project, width, height });
+        } else {
+          if (!image) throw new Error('도시 배경 준비가 완료되지 않았습니다');
+          c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
+          c.drawImage(image, 0, 0, width, height);
+          drawAligned(c, image, PLATES[variant].anchors, target);
+        }
+        // 배경의 대비를 낮춰 실제 사무실과 캐릭터가 먼저 보이도록 한다.
+        c.fillStyle = variant === 'citypop' ? '#2c124c35' : env.night ? variant === 'neon' ? '#11152c38' : '#14223830' : env.sunset ? '#e9bd9610' : '#e1e9e51a';
+        c.fillRect(0, 0, width, height);
+        if (overcast) { c.fillStyle = env.night ? '#0d1b2a20' : '#40566a38'; c.fillRect(0, 0, width, height); }
+        // 아래층 외벽은 화면 끝 아래로 이어지고, 멀어질수록 어둡게 물러난다.
+        c.save(); facadePath(c); c.clip();
+        const depth = c.createLinearGradient(0, height * 0.5, 0, height);
+        depth.addColorStop(0, '#101d3000'); depth.addColorStop(1, env.night ? '#101b3566' : '#35445626');
+        c.fillStyle = depth; c.fillRect(0, 0, width, height); c.restore();
+      };
+      const canvas = layer(detail); paint(canvas);
+      let patches = [];
       if (variant === 'citypop') {
-        drawCityscape(c, { width, height });
-        drawPixelBuilding(c, { faces: TOWER_FACES, project, width, height });
-      } else {
-        if (!image) throw new Error('도시 배경 준비가 완료되지 않았습니다');
-        c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
-        c.drawImage(image, 0, 0, width, height);
-        drawAligned(c, image, PLATES[variant].anchors, target);
+        // 전체 소등 장면은 한 번만 만들고 작은 패치로 잘라 즉시 해제한다.
+        // 따라서 점멸할 때 도시 재생성·필터 계산 없이 가림 순서도 그대로 유지된다.
+        const unlit = layer(detail); paint(unlit, true);
+        patches = neon.patches(unlit, width, height);
+        unlit.width = unlit.height = 0;
       }
-      // 배경의 대비를 낮춰 실제 사무실과 캐릭터가 먼저 보이도록 한다.
-      c.fillStyle = variant === 'citypop' ? '#2c124c35' : env.night ? variant === 'neon' ? '#11152c38' : '#14223830' : env.sunset ? '#e9bd9610' : '#e1e9e51a';
-      c.fillRect(0, 0, width, height);
-      if (overcast) { c.fillStyle = env.night ? '#0d1b2a20' : '#40566a38'; c.fillRect(0, 0, width, height); }
-      // 아래층 외벽은 화면 끝 아래로 이어지고, 멀어질수록 어둡게 물러난다.
-      c.save(); facadePath(c); c.clip();
-      const depth = c.createLinearGradient(0, height * 0.5, 0, height);
-      depth.addColorStop(0, '#101d3000'); depth.addColorStop(1, env.night ? '#101b3566' : '#35445626');
-      c.fillStyle = depth; c.fillRect(0, 0, width, height); c.restore();
-      cached = { key, canvas };
+      cached = { key, canvas, patches };
     }
     return cached.canvas;
   }
@@ -95,9 +109,15 @@ export function createExterior({ width, height, project }) {
   return {
     drawBackground(ctx, t, env, visible = true) {
       const detail = env.cityStyle === 'citypop' ? PIXEL_DETAIL : 1;
-      if (!frame || frame.width !== width * detail) frame = layer(detail);
+      if (!frame || frame.width !== width * detail) {
+        if (frame) frame.width = frame.height = 0;
+        frame = layer(detail);
+      }
       const c = frame.getContext('2d'); c.setTransform(detail, 0, 0, detail, 0, 0);
       c.imageSmoothingEnabled = false; c.drawImage(city(env), 0, 0, width, height);
+      for (const patch of cached.patches) if (patch.w && patch.h && neonIsOff(t, patch.flicker)) {
+        c.drawImage(patch.canvas, patch.x, patch.y, patch.w, patch.h);
+      }
       // 도시 위에 실제 날씨 입자를 합성하고 실내는 이후 바닥 레이어로 가린다.
       if (env.condition === 'rain') {
         c.strokeStyle = env.night ? '#b8cddd60' : '#eef9fa92'; c.lineWidth = 1; c.beginPath();
@@ -117,7 +137,8 @@ export function createExterior({ width, height, project }) {
       return frame;
     },
     release() {
-      for (const c of [cached?.canvas, frame]) if (c) c.width = c.height = 0;
+      for (const c of [cached?.canvas, frame, ...(cached?.patches || []).map(p => p.canvas)]) if (c) c.width = c.height = 0;
+      neon.release();
       cached = frame = null;
     },
   };

@@ -180,7 +180,7 @@ function distantCity(ctx, width) {
   }
 }
 
-function tower(ctx, block) {
+function tower(ctx, block, drawSigns) {
   const { x, y, a, b, h, slope, seed, style } = block;
   const far = slope < 0.5;
   const palette = style === 'glass'
@@ -271,6 +271,7 @@ function tower(ctx, block) {
     rect(ctx, q.x + 1, q.y + 2, 3, 34, '#b985b2');
     for (let i = 0; i < 5; i++) rect(ctx, q.x + 1, q.y + 6 + i * 6, 2, 2, '#ebc1d3');
   }
+  drawSigns?.(ctx, block);
   // 먼 건물일수록 대기 색을 겹쳐 가까운 사무실보다 흐리게 보이게 한다.
   if (far) {
     polygon(ctx, [p(0, b), p(a, b), p(a, 0), p(a, 0, -h), p(a, b, -h), p(0, b, -h)], '#9484af24');
@@ -304,7 +305,7 @@ function riverbank(ctx, width, height) {
   }
 }
 
-export function drawCityscape(ctx, { width, height }) {
+export function drawCityscape(ctx, { width, height }, drawSigns) {
   sky(ctx, width, height);
   distantCity(ctx, width);
   riverbank(ctx, width, height);
@@ -323,5 +324,5 @@ export function drawCityscape(ctx, { width, height }) {
       { x: block.x + 18, y: base + 7 }], '#28213975');
     tower(ctx, block);
   }
-  for (const block of [...CITY_BLOCKS].sort((a, b) => a.y + (a.a + a.b) * a.slope - b.y - (b.a + b.b) * b.slope)) tower(ctx, block);
+  for (const block of [...CITY_BLOCKS].sort((a, b) => a.y + (a.a + a.b) * a.slope - b.y - (b.a + b.b) * b.slope)) tower(ctx, block, drawSigns);
 }
