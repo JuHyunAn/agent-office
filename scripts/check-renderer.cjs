@@ -40,6 +40,7 @@ if (!process.versions.electron) {
     ipcMain.handle('weather:current', () => ({ available: true, stale: false, location: '서울',
       observedAt: Date.parse('2026-10-26T12:00:00+09:00'), temperature: 16, cloudCover: 10, condition: 'clear' }));
     ipcMain.handle('dialog:pickFolder', () => ROOT);
+    ipcMain.handle('code:allow', () => true);
     ipcMain.handle('pty:create', (_e, options) => { tabId = options.tabId; return { sessionId: options.cli === 'codex' ? null : 'preview-main' }; });
     ipcMain.handle('pet:mode:set', (_e, { mode } = {}) => ({ mode }));
     ipcMain.on('pet:state', (_e, payload) => { lastPetState = payload; }); // 펫에 보낸 마지막 상태 (권한 카드 점검용)

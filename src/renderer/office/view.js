@@ -27,6 +27,7 @@ export class OfficeView {
     this.lastDraw = 0;
     this.lastInputAt = 0;
     this.redraw = true;
+    this.hidden = false; // 코드 화면 등이 사무실을 덮는 동안: 계산은 계속하고 그리기만 쉰다
     this.resize = this.resize.bind(this);
     this.frame = this.frame.bind(this);
     new ResizeObserver(this.resize).observe(canvas.parentElement);
@@ -129,6 +130,16 @@ export class OfficeView {
   fit() { this.camera.fit(); this.syncCamera(); }
   chooseDrink(id) { const chosen = this.life?.chooseDrink(id); this.notify(); return chosen; }
   closeInteractionMenu() { this.life?.closeMenu(); this.notify(); }
+  // 사무실을 다른 화면이 덮는 동안 그리기만 쉰다 (display:none 으로 감추면 확대 상태 카메라가 NaN 이 된다).
+  // 계산(engine·life)은 계속 돌아 복귀했을 때 캐릭터가 이미 제자리에 있고, 마우스 상태는 덮을 때 비운다.
+  setHidden(hidden) {
+    this.hidden = !!hidden;
+    if (this.hidden) {
+      this.hoverAt = null; this.pointer = null;
+      if (this.tooltip) this.tooltip.hidden = true;
+      this.closeInteractionMenu();
+    } else this.redraw = true;
+  }
   environmentSnapshot() { const actual = this.environment?.snapshot(); return this.theme.resolveEnvironment?.(actual) || actual; }
   focusPlayer() {
     if (!this.life || !this.theme.project) return;
@@ -166,13 +177,19 @@ export class OfficeView {
     try {
       this.engine.update(dt);
       this.life?.update(dt);
-      // 움직임이 끝난 프레임도 한 번 더 그려 마지막 위치·자세가 바로 보이게 한다.
-      const animating = this.animating(now), finishing = this.wasAnimating;
-      this.wasAnimating = animating;
-      // 60Hz 에서 4프레임 간격(66.6~66.7ms)이 기준을 아슬하게 못 넘어 5프레임으로 밀리지 않게 여유를 둔다.
-      if (this.redraw || animating || finishing || now - this.lastDraw >= IDLE_FRAME_MS - 4) {
-        this.redraw = false; this.lastDraw = now;
-        this.draw(now);
+      if (this.hidden) {
+        // 가려진 동안은 그리지 않고, 상단 「에이전트 n명」 같은 상태 알림만 같은 주기로 유지한다.
+        this.wasAnimating = false;
+        if (now - this.lastDraw >= IDLE_FRAME_MS - 4) { this.lastDraw = now; this.notify(); }
+      } else {
+        // 움직임이 끝난 프레임도 한 번 더 그려 마지막 위치·자세가 바로 보이게 한다.
+        const animating = this.animating(now), finishing = this.wasAnimating;
+        this.wasAnimating = animating;
+        // 60Hz 에서 4프레임 간격(66.6~66.7ms)이 기준을 아슬하게 못 넘어 5프레임으로 밀리지 않게 여유를 둔다.
+        if (this.redraw || animating || finishing || now - this.lastDraw >= IDLE_FRAME_MS - 4) {
+          this.redraw = false; this.lastDraw = now;
+          this.draw(now);
+        }
       }
     } catch (e) {
       // 테마 그리기 오류 하나로 사무실이 멈추지 않게 한다 (같은 오류는 한 번만 기록).

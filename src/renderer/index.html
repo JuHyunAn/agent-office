@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy"
-        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'">
+        content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self' blob:">
   <title>Agent Office</title>
   <link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css">
   <link rel="stylesheet" href="styles.css">
@@ -39,12 +39,20 @@
   <main class="layout">
     <section class="office-pane">
       <div class="office-toolbar">
-        <div class="office-title"><h2>오늘도 기분 좋은 설렘으로!</h2><div class="environment-line"><span id="environment-state">서울 · 날씨 연결 중</span><a id="weather-credit" href="https://open-meteo.com/" title="서울 날씨 제공: Open-Meteo"></a></div></div>
+        <div class="office-title">
+          <!-- <h2>오늘도 기분 좋은 설렘으로!</h2> -->
+          <div class="environment-line"><span id="environment-state">서울 · 날씨 연결 중</span>
+            <a id="weather-credit" href="https://open-meteo.com/" title="서울 날씨 제공: Open-Meteo"></a></div></div>
+        <div class="mode-switch" role="group" aria-label="왼쪽 화면 전환">
+          <button id="mode-office" type="button" aria-pressed="true">사무실</button>
+          <button id="mode-code" type="button" aria-pressed="false">코드</button>
+        </div>
         <div class="office-controls"><button id="zoom-out" title="축소" aria-label="축소">−</button><span id="zoom-level">100%</span><button id="zoom-in" title="확대" aria-label="확대">＋</button><button id="zoom-fit">전체 보기</button><button id="focus-player">내 캐릭터</button></div>
       </div>
       <div class="office-stage"><canvas id="office" tabindex="0" aria-label="사무실. 바닥을 클릭해 이동하고 가구를 클릭해 이용하세요."></canvas><section id="interaction-menu" class="interaction-menu" role="dialog" aria-labelledby="interaction-title" hidden></section></div>
       <div class="life-bar"><span class="player-chip">나</span><span id="player-state">바닥을 클릭해 이동하세요</span><span id="held-item" class="held-item" hidden></span><span class="camera-hint">확대 후 드래그 &nbsp; 휠 · 확대 &nbsp; 가구 클릭 · 이용</span></div>
       <div class="feed-panel"><div class="feed-heading"><span class="eyebrow">OFFICE LOG</span><span>활동 기록</span></div><ul id="feed" class="feed"></ul></div>
+      <section id="code-pane" class="code-pane" aria-label="코드 화면" hidden></section>
     </section>
 
     <section class="cli-pane">

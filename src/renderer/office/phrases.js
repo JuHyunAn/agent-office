@@ -10,7 +10,7 @@ export function baseName(p) {
 }
 
 // Codex 의 apply_patch 는 파일 경로 대신 패치 본문(*** Update File: 경로)을 넘긴다.
-function patchFile(input) {
+export function patchFile(input) {
   return input.file_path || String(input.command || '').match(/\*\*\* (?:Update|Add|Delete) File: (.+)/)?.[1]?.trim() || '';
 }
 

@@ -22,6 +22,7 @@ const { PET_KINDS, PET_ID_RE } = require('./petRules.cjs');
 const petImport = require('./petImport.cjs');
 const { createMainGuard } = require('./ipcGuard.cjs');
 const { createUsageService } = require('./usage.cjs');
+const { createCodeRoots, createCodeService, registerCodeIpc } = require('./codeRepo.cjs');
 const getWeather = createWeatherService();
 // 점검 실행은 사용자 데이터(최근 폴더·설정)를 건드리지 않도록 별도 폴더를 쓸 수 있다.
 if (process.env.AGENT_OFFICE_USER_DATA) app.setPath('userData', process.env.AGENT_OFFICE_USER_DATA);
@@ -172,6 +173,15 @@ async function status() {
 function checkFolder(cwd) {
   if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error(`폴더가 없습니다: ${cwd}`);
 }
+
+// 작업 폴더 선택 대화상자 — 탭 열기(dialog:pickFolder)와 코드 화면(code:pick)이 함께 쓴다. 취소하면 null.
+async function pickFolder() {
+  const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '작업 폴더 선택' });
+  return r.canceled ? null : r.filePaths[0];
+}
+
+// 코드 화면이 볼 수 있는 폴더 (렌더러가 탭을 열 때 code:allow, 「폴더 열기…」로 고르면 code:pick 이 등록)
+const codeRoots = createCodeRoots();
 
 async function needCodex() {
   // Codex 앱이 업데이트되면 CLI 폴더가 바뀐다 — 기억한 경로가 사라졌으면 다시 찾는다.
@@ -570,10 +580,8 @@ if (!app.requestSingleInstanceLock()) {
       });
     });
     handleMain('weather:current', () => getWeather());
-    handleMain('dialog:pickFolder', async () => {
-      const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '작업 폴더 선택' });
-      return r.canceled ? null : r.filePaths[0];
-    });
+    handleMain('dialog:pickFolder', () => pickFolder());
+    registerCodeIpc(handleMain, { roots: codeRoots, service: createCodeService({ roots: codeRoots }), pickFolder, checkFolder });
     handleMain('pty:create', (opts) => createTabPty(opts || {}));
     onMain('pty:write', ({ tabId, data }) => ptys.write(tabId, data));
     onMain('pty:resize', ({ tabId, cols, rows }) => ptys.resize(tabId, cols, rows));

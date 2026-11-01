@@ -6,6 +6,7 @@ import { THEMES, getTheme } from './themes/index.js';
 import { createCollabPanel } from './collab/panel.js';
 import { setupCliResizer } from './layout.js';
 import { cardPreview } from './pet/model.js';
+import { createCodePanel } from './code/panel.js';
 
 const api = window.office;
 const $ = (sel) => document.querySelector(sel);
@@ -94,6 +95,37 @@ $('#zoom-out').addEventListener('click', () => view.zoomBy(0.8));
 $('#zoom-fit').addEventListener('click', () => view.fit());
 $('#focus-player').addEventListener('click', () => view.focusPlayer());
 setupCliResizer($('.layout'), $('#cli-resizer'));
+
+// ───────────────────────── 왼쪽 화면 전환 (사무실 ↔ 코드) ─────────────────────────
+// 코드 화면은 사무실 영역을 덮는다. 사무실은 그리기만 쉬고 계산은 계속한다 (view.setHidden). 상태는 저장하지 않아 앱을 켜면 사무실이다.
+
+const codePanel = createCodePanel({ api, host: $('#code-pane') }); // 화면(DOM)만 만든다 — 모나코는 첫 파일을 열 때 불러온다
+let codeMode = false;
+
+// 열린 탭(Codex 로그인 탭 제외)의 작업 폴더를 코드 패널의 폴더 목록으로 알린다.
+function syncCodeFolders() {
+  codePanel.setFolders([...state.tabs.values()].filter((t) => !t.login).map((t) => t.cwd));
+}
+
+function setCodeMode(on) {
+  on = !!on;
+  if (on === codeMode) return;
+  if (on && view.theme.editor?.editing) { addFeed({ text: '사무실 편집을 마친 뒤 코드 화면을 열 수 있습니다' }); return; }
+  codeMode = on;
+  $('#mode-office').setAttribute('aria-pressed', String(!on));
+  $('#mode-code').setAttribute('aria-pressed', String(on));
+  document.body.classList.toggle('code-mode', on);
+  for (const e of document.querySelectorAll('.office-stage, .life-bar, .feed-panel')) e.toggleAttribute('inert', on); // 덮여 보이지 않는 사무실 쪽이 키보드 초점을 받지 않게
+  view.setHidden(on);
+  $('#code-pane').hidden = !on;
+  if (on) { const tab = state.tabs.get(state.active); codePanel.show(tab && !tab.login ? tab.cwd : null); } else codePanel.hide(); // 처음 열 때 지금 보는 탭의 폴더를 기본으로
+}
+
+$('#mode-office').addEventListener('click', () => setCodeMode(false));
+$('#mode-code').addEventListener('click', () => setCodeMode(true));
+// 코드 화면이 도구줄 아래부터 덮도록 도구줄 높이를 CSS 변수로 알린다 (날씨 줄이 줄바꿈되면 높이가 바뀐다).
+const officeToolbar = $('.office-toolbar');
+new ResizeObserver(() => document.documentElement.style.setProperty('--office-toolbar-h', `${officeToolbar.offsetHeight}px`)).observe(officeToolbar);
 
 const TERM_OPTS = {
   fontFamily: '"Cascadia Mono", Consolas, "D2Coding", "Malgun Gothic", monospace',
@@ -366,6 +398,7 @@ function renderThemes() {
       if (!(await view.setTheme(next))) return; // 그 사이 다른 테마를 골랐다
       theme = next;
       store.set('ao.theme', theme.id); // 불러오기에 성공한 테마만 기억한다
+      if (codeMode && view.theme.editor?.editing) setCodeMode(false); // 편집 중인 테마(제작 화면)는 코드 화면 아래에 둘 수 없다
     } catch (e) {
       sel.value = theme.id;
       addFeed({ text: `테마 「${next.name}」 불러오기 실패: ${e.message}` });
@@ -415,6 +448,8 @@ async function openTab({ cwd, mode = 'new', resumeId = null, kind = 'claude', lo
   const tab = { id, kind, label, cwd, mode, login, sessionId: null, sessions: new Set(), term: null, fit: null, panel: null, pane, btn, dot, status: 'idle', exited: false,
     collabSpeaker: null, collabLast: null, collabPrev: null, collabTurn: 0, collabAt: 0 };
   state.tabs.set(id, tab);
+  // 코드 화면의 허용 폴더 등록 (협업 탭도 첫 메시지 전에 등록) — 등록이 끝난 뒤 폴더 목록을 알린다. 실패해도 조용히 넘어간다 (고르면 화면에 오류가 보인다).
+  if (!login) api.codeAllow(cwd).catch(() => {}).then(syncCodeFolders);
   // 탭 영역(터미널·대화창)을 클릭하거나 포커스가 들어오면 「확인 필요」를 끈다.
   pane.addEventListener('focusin', () => lookedAt(id));
   pane.addEventListener('pointerdown', () => lookedAt(id));
@@ -491,6 +526,7 @@ async function closeTab(id) {
   const what = tab.login ? 'Codex 로그인' : tab.kind === 'collab' ? '협업 대화(Claude·Codex)' : `${KIND_NAME[tab.kind]} 세션`;
   if (!tab.exited && !window.confirm(`「${tab.label}」 탭을 닫으면 그 ${what}도 종료됩니다. 닫을까요?`)) return;
   state.tabs.delete(id);
+  syncCodeFolders();
   state.closedTabs.add(id);
   if (state.closedTabs.size > 200) state.closedTabs.delete(state.closedTabs.values().next().value); // 오래 켜 둬도 끝없이 늘지 않게
   if (tab.panel) await api.collabClose(id);
@@ -702,6 +738,7 @@ function onHookEvent(ev) {
   engine.handleEvent(ev, { label });
   noteAttention(tab, ev);
   updateHeadcount();
+  codePanel.onHookEvent(ev); // 코드 화면의 「건드린 파일」 — 화면이 숨겨져 있어도 모은다
 }
 
 api.onHookEvent(onHookEvent);

@@ -11,6 +11,7 @@
     "test:renderer": "node scripts/check-renderer.cjs",
     "test:pet": "node scripts/check-pet.cjs",
     "test:custom": "node scripts/check-custom-office.cjs",
+    "test:code": "node scripts/check-code-view.cjs",
     "dist": "electron-builder --win"
   },
   "build": {
@@ -20,7 +21,7 @@
     "npmRebuild": false,
     "electronFuses": { "runAsNode": false },
     "directories": { "output": "dist" },
-    "files": ["src/**/*", "icon/app.ico", "package.json"],
+    "files": ["src/**/*", "icon/app.ico", "package.json", "!node_modules/monaco-editor/{esm,dev}{,/**/*}"],
     "asarUnpack": ["node_modules/node-pty/**"],
     "win": {
       "icon": "icon/app.ico",
@@ -43,6 +44,7 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "monaco-editor": "0.57.0",
     "node-pty": "^1.1.0"
   },
   "devDependencies": {
