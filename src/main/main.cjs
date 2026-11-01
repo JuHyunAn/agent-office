@@ -13,7 +13,7 @@ const { startHookServer } = require('./hookServer.cjs');
 const hookSettings = require('./hookSettings.cjs');
 const claudeCli = require('./claudeCli.cjs');
 const codexCli = require('./codexCli.cjs');
-const { ClaudeChat, CodexChat, claudeModels } = require('./collabAgents.cjs');
+const { ClaudeChat, CodexChat, claudeModels, killTree } = require('./collabAgents.cjs');
 const { PtyManager } = require('./ptyManager.cjs');
 const { cleanEnv } = require('./env.cjs');
 const { createWeatherService } = require('./weather.cjs');
@@ -23,6 +23,7 @@ const petImport = require('./petImport.cjs');
 const { createMainGuard } = require('./ipcGuard.cjs');
 const { createUsageService } = require('./usage.cjs');
 const { createCodeRoots, createCodeService, registerCodeIpc } = require('./codeRepo.cjs');
+const { createCodeAnalyzer, registerAnalysisIpc, DENY_SETTINGS: ANALYSIS_SETTINGS } = require('./codeAnalysis.cjs');
 const getWeather = createWeatherService();
 // 점검 실행은 사용자 데이터(최근 폴더·설정)를 건드리지 않도록 별도 폴더를 쓸 수 있다.
 if (process.env.AGENT_OFFICE_USER_DATA) app.setPath('userData', process.env.AGENT_OFFICE_USER_DATA);
@@ -48,6 +49,7 @@ let config = null;
 let claude = null;
 let codex = null;
 let sessionSettingsPath = null;
+let codeAnalyzer = null; // 코드 분석 실행기 (whenReady 에서 만든다)
 const rooms = new Map(); // 협업 대화 탭 → { cwd, claude: ClaudeChat, codex: CodexChat }
 
 // 협업 대화 규칙. cmd.exe 경유 실행에서도 깨지지 않도록 따옴표·% 기호·줄바꿈을 쓰지 않는다.
@@ -285,6 +287,7 @@ function collabClose({ roomId }) {
 // 화면을 새로 고치거나 화면 프로세스가 죽으면 탭과의 연결이 끊긴다 — 남은 세션을 모두 정리한다.
 function dropSessions() {
   ptys.killAll();
+  codeAnalyzer?.stopAll(); // 진행 중인 코드 분석(숨긴 claude)도 끝낸다
   for (const roomId of [...rooms.keys()]) collabClose({ roomId });
   hook?.releaseAll(); // 붙잡아 둔 권한 요청은 원래 터미널 승인으로 넘긴다
   pet?.clearState(); // 연결이 끊긴 탭의 「확인 필요」가 펫에 유령으로 남지 않게
@@ -582,6 +585,18 @@ if (!app.requestSingleInstanceLock()) {
     handleMain('weather:current', () => getWeather());
     handleMain('dialog:pickFolder', () => pickFolder());
     registerCodeIpc(handleMain, { roots: codeRoots, service: createCodeService({ roots: codeRoots }), pickFolder, checkFolder });
+    // 코드 분석: 분석 대상 폴더의 설정이 아니라 이 설정 파일(hook 끄기·비밀 파일 읽기 거부)만 쓴다
+    const analysisSettingsPath = path.join(app.getPath('userData'), 'analysis-settings.json');
+    fs.writeFileSync(analysisSettingsPath, JSON.stringify(ANALYSIS_SETTINGS, null, 2));
+    codeAnalyzer = createCodeAnalyzer({
+      roots: codeRoots,
+      locate: async () => (claude ||= await claudeCli.locate()),
+      settingsPath: analysisSettingsPath,
+      env: cleanEnv({ CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1', DISABLE_AUTOUPDATER: '1' }),
+      spawn: require('node:child_process').spawn,
+      kill: killTree,
+    });
+    registerAnalysisIpc(handleMain, { analyzer: codeAnalyzer });
     handleMain('pty:create', (opts) => createTabPty(opts || {}));
     onMain('pty:write', ({ tabId, data }) => ptys.write(tabId, data));
     onMain('pty:resize', ({ tabId, cols, rows }) => ptys.resize(tabId, cols, rows));

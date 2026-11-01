@@ -18,6 +18,7 @@ const require = createRequire(import.meta.url);
 const {
   resolveInside, toGitPath, createCodeRoots, repoInfo, listFiles, statusOf,
   readText, statMtime, headText, createCodeService, registerCodeIpc, git: gitRun,
+  rootKey, diffText, diffStat, searchText, hasHead,
 } = require('../src/main/codeRepo.cjs');
 
 after(() => fs.rmSync(base, { recursive: true, force: true, maxRetries: 3 }));
@@ -284,7 +285,7 @@ test('createCodeService: 나중에 git init 한 폴더는 트리를 다시 받�
   assert.equal((await service.read(late, 'a.txt')).kind, 'text');
 });
 
-test('registerCodeIpc: 6개 채널, 잘못된 요청 거부, 폴더 등록·선택', { skip }, async () => {
+test('registerCodeIpc: 7개 채널, 잘못된 요청 거부, 폴더 등록·선택', { skip }, async () => {
   const handlers = new Map();
   const handleMain = (ch, fn) => handlers.set(ch, fn);
   const roots = createCodeRoots();
@@ -296,7 +297,7 @@ test('registerCodeIpc: 6개 채널, 잘못된 요청 거부, 폴더 등록·선�
   registerCodeIpc(handleMain, { roots, service, pickFolder: async () => picked, checkFolder });
   const call = (ch, payload) => handlers.get(ch)(payload);
 
-  assert.deepEqual([...handlers.keys()].sort(), ['code:allow', 'code:base', 'code:pick', 'code:poll', 'code:read', 'code:tree']);
+  assert.deepEqual([...handlers.keys()].sort(), ['code:allow', 'code:base', 'code:pick', 'code:poll', 'code:read', 'code:search', 'code:tree']);
 
   await assert.rejects(call('code:tree', { root: fx.sub }), { message: '허용되지 않는 폴더입니다' }, '등록 전');
   assert.equal(await call('code:allow', { cwd: fx.sub }), true);
@@ -306,11 +307,14 @@ test('registerCodeIpc: 6개 채널, 잘못된 요청 거부, 폴더 등록·선�
   assert.equal((await call('code:read', { root: fx.sub, rel: '한글 파일.js' })).kind, 'text');
   assert.deepEqual(await call('code:base', { root: fx.sub, rel: '한글 파일.js' }), { text: 'export const a = 1;\n' });
   await assert.rejects(call('code:read', { root: fx.sub, rel: '.git/config' }), DENIED);
+  const found = await call('code:search', { root: fx.sub, term: 'const a' });
+  assert.deepEqual(found, { matches: [{ path: '한글 파일.js', line: 1, text: 'export const a = 2;' }], truncated: false });
+  await assert.rejects(call('code:search', { root: fx.sub, term: '' }), { message: '잘못된 검색어입니다' });
 
   await assert.rejects(call('code:allow', { cwd: path.join(base, 'nope') }), { message: /^폴더가 없습니다/ });
   assert.equal(roots.has(path.join(base, 'nope')), false, '검사에 실패하면 등록하지 않는다');
 
-  for (const ch of ['code:tree', 'code:poll', 'code:read', 'code:base']) {
+  for (const ch of ['code:tree', 'code:poll', 'code:read', 'code:base', 'code:search']) {
     for (const bad of ['문자열', null, undefined, 5, {}, { root: 5 }, []]) {
       await assert.rejects(call(ch, bad), { message: '잘못된 요청입니다' }, `${ch} ${JSON.stringify(bad)}`);
     }
@@ -355,4 +359,181 @@ test('git: 시간 초과면 timeout 오류로 거부하고 git 프로세스도 �
 test('git: 출력이 상한을 넘으면 fail 오류로 거부한다', { skip }, async () => {
   await assert.rejects(gitRun(fx.sub, ['ls-files', '-z'], { buffer: true, maxBuffer: 1 }),
     (e) => e.kind === 'fail' && /너무 큽니다/.test(e.message));
+});
+
+test('rootKey: 끝 구분자·표기 차이를 없앤 비교용 키', () => {
+  assert.equal(rootKey('C:\\Repo\\'), rootKey('C:\\Repo'));
+  assert.notEqual(rootKey('C:\\Repo'), rootKey('C:\\Repo2'));
+  if (process.platform === 'win32') assert.equal(rootKey('C:\\REPO'), rootKey('c:\\repo'));
+});
+
+test('git: 실패 오류에 종료 코드(숫자)가 붙는다', { skip }, async () => {
+  await assert.rejects(gitRun(fx.sub, ['rev-parse', '--verify', '-q', 'no-such-ref']), (e) => e.kind === 'fail' && e.exitCode === 1);
+  await assert.rejects(gitRun(fx.sub, ['no-such-subcommand']), (e) => e.kind === 'fail' && typeof e.exitCode === 'number' && e.exitCode !== 0);
+});
+
+test('diffText: 작업 폴더 안 변경만, 머리글 경로는 폴더 접두어 없이', { skip }, async () => {
+  const d = await diffText(fx.sub);
+  assert.ok(d.includes('+export const a = 2;'), '수정 내용 포함');
+  assert.ok(d.includes('-export const a = 1;'));
+  assert.ok(d.includes('diff --git a/한글 파일.js b/한글 파일.js'), '접두어 sub/ 없는 머리글');
+  assert.ok(!d.includes('a/sub/'), '접두어가 붙지 않는다');
+  assert.ok(d.includes('inner/y.js'), '이름 변경도 포함');
+  assert.ok(!d.includes('top = 2') && !d.includes('top.js') && !d.includes('outside'), '폴더 밖 변경은 없다');
+  assert.ok(!d.includes('new.txt'), '미추적 파일은 diff 에 나오지 않는다');
+});
+
+test('diffText: 파일을 지정하면 그 파일만, 위험 경로는 거부', { skip }, async () => {
+  const d = await diffText(fx.sub, '한글 파일.js');
+  assert.ok(d.includes('+export const a = 2;'));
+  assert.ok(!d.includes('inner/y.js'));
+  assert.equal((d.match(/^diff --git /gm) || []).length, 1);
+  assert.equal(await diffText(fx.sub, 'inner\\y.js').then((t) => t.includes('inner/y.js')), true, '역슬래시 경로도 허용');
+  for (const bad of ['.git/config', '../top.js', 'C:x']) await assert.rejects(diffText(fx.sub, bad), DENIED, bad);
+});
+
+test('diffText: 커밋이 없는 저장소·미추적 파일뿐이면 빈 문자열', { skip }, async () => {
+  const fresh = initRepo('nocommit');
+  put(fresh, 'a.js', 'a\n');
+  assert.equal(await diffText(fresh), '');
+  assert.equal(await diffStat(fresh), '');
+  git(fresh, 'add', '-A');
+  git(fresh, 'commit', '-q', '-m', 'init');
+  put(fresh, 'untracked.js', 'u\n');
+  assert.equal(await diffText(fresh), '');
+  assert.equal(await diffStat(fresh), '');
+});
+
+test('diffText: textconv·외부 diff 명령을 실행하지 않는다', { skip }, async () => {
+  const repo = initRepo('attr');
+  const marker = path.join(repo, 'ran.txt');
+  put(repo, '.gitattributes', '*.dat diff=evil\n');
+  put(repo, 'a.dat', 'one\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'init');
+  put(repo, 'a.dat', 'two\n');
+  const cmd = `node -e "require('fs').writeFileSync('ran.txt','x')"`;
+  git(repo, 'config', 'diff.evil.textconv', cmd);
+  git(repo, 'config', 'diff.external', cmd);
+  const d = await diffText(repo);
+  assert.ok(d.includes('+two'));
+  assert.equal(fs.existsSync(marker), false, '변환 명령이 실행되었다');
+});
+
+test('diffStat: 파일명과 변경 요약', { skip }, async () => {
+  const s = await diffStat(fx.sub);
+  assert.ok(s.includes('한글 파일.js'));
+  assert.ok(/changed/.test(s));
+  assert.ok(!s.includes('top.js'), '폴더 밖 파일은 없다');
+});
+
+function searchFixture() {
+  const repo = initRepo('search');
+  put(repo, '.gitignore', '*.log\n');
+  put(repo, 'sub/한글 파일.js', '// 안녕하세요 세계\r\nconst keyword = 1;\n');
+  put(repo, 'sub/bin.dat', Buffer.from('keyword\0binary'));
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'init');
+  put(repo, 'sub/untracked.txt', 'keyword in untracked\n-x marker\n--untracked marker\n');
+  put(repo, 'sub/ignored.log', 'keyword ignored\n');
+  put(repo, 'sub/binary-new.dat', Buffer.from('keyword\0binary2'));
+  put(repo, 'outside.txt', 'keyword outside\n');
+  return path.join(repo, 'sub');
+}
+
+test('searchText: 한글 내용·경로, 미추적 포함, 무시·바이너리·폴더 밖 제외', { skip }, async () => {
+  const sub = searchFixture();
+  const r = await searchText(sub, 'keyword');
+  assert.equal(r.truncated, false);
+  assert.deepEqual(sorted(r.matches), sorted([
+    { path: '한글 파일.js', line: 2, text: 'const keyword = 1;' },
+    { path: 'untracked.txt', line: 1, text: 'keyword in untracked' },
+  ]));
+  const kr = await searchText(sub, '안녕하세요');
+  assert.deepEqual(kr.matches, [{ path: '한글 파일.js', line: 1, text: '// 안녕하세요 세계' }], '줄 끝 CR 은 제거된다');
+  assert.deepEqual(await searchText(sub, '없는 말 zzz'), { matches: [], truncated: false });
+});
+
+test('searchText: 검색어는 고정 문자열이고 옵션으로 해석되지 않는다', { skip }, async () => {
+  const sub = searchFixture();
+  assert.deepEqual((await searchText(sub, '-x')).matches.map((m) => m.text), ['-x marker']);
+  assert.deepEqual((await searchText(sub, '--untracked')).matches.map((m) => m.text), ['--untracked marker']);
+  assert.deepEqual((await searchText(sub, '.*')).matches, [], '정규식이 아니다');
+});
+
+test('searchText: limit 을 넘으면 잘림 표시', { skip }, async () => {
+  const sub = searchFixture();
+  const one = await searchText(sub, 'keyword', 1);
+  assert.equal(one.matches.length, 1);
+  assert.equal(one.truncated, true);
+  const two = await searchText(sub, 'keyword', 2);
+  assert.equal(two.matches.length, 2);
+  assert.equal(two.truncated, false, '딱 맞으면 잘린 것이 아니다');
+});
+
+test('searchText: 빈·긴 검색어, 줄바꿈·NUL, 문자열이 아닌 값은 거부', { skip }, async () => {
+  const sub = searchFixture();
+  for (const bad of ['', 'a\nb', 'a\rb', 'a\0b', 'x'.repeat(201), null, undefined, 5, {}]) {
+    await assert.rejects(searchText(sub, bad), { message: '잘못된 검색어입니다' }, JSON.stringify(bad));
+  }
+  assert.equal((await searchText(sub, 'x'.repeat(200))).matches.length, 0, '200자는 허용');
+});
+
+test('diffText·diffStat: diff.noprefix·mnemonicPrefix 설정이 있어도 머리글은 a/ b/ 로 고정', { skip }, async () => {
+  const repo = initRepo('prefix');
+  put(repo, 'x.js', 'one\n');
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'init');
+  put(repo, 'x.js', 'two\n');
+  for (const [k, v] of [['diff.noprefix', 'true'], ['diff.mnemonicPrefix', 'true']]) {
+    git(repo, 'config', k, v);
+    const d = await diffText(repo);
+    assert.ok(d.includes('diff --git a/x.js b/x.js'), `${k}: ${d.split('\n')[0]}`);
+    assert.ok(d.includes('--- a/x.js') && d.includes('+++ b/x.js'));
+    assert.ok((await diffText(repo, 'x.js')).includes('diff --git a/x.js b/x.js'), `${k} 파일 지정`);
+    assert.ok((await diffStat(repo)).includes('x.js'));
+    git(repo, 'config', '--unset', k);
+  }
+});
+
+test('hasHead: 커밋이 있으면 true, 없으면 false', { skip }, async () => {
+  const fresh = initRepo('headless');
+  assert.equal(await hasHead(fresh), false);
+  put(fresh, 'a.js', 'a\n');
+  git(fresh, 'add', '-A');
+  git(fresh, 'commit', '-q', '-m', 'init');
+  assert.equal(await hasHead(fresh), true);
+});
+
+test('searchText: grep.column·grep.fullName 설정이 있어도 하위 폴더에서 정상', { skip }, async () => {
+  const sub = searchFixture();
+  const repo = path.dirname(sub);
+  git(repo, 'config', 'grep.column', 'true');
+  git(repo, 'config', 'grep.fullName', 'true');
+  const r = await searchText(sub, 'keyword');
+  assert.deepEqual(sorted(r.matches), sorted([
+    { path: '한글 파일.js', line: 2, text: 'const keyword = 1;' },
+    { path: 'untracked.txt', line: 1, text: 'keyword in untracked' },
+  ]));
+});
+
+test('searchText: 정션 너머(폴더 밖) 파일은 결과에서 뺀다', { skip }, async () => {
+  const sub = searchFixture();
+  const outside = mkdir('outside');
+  put(outside, 'leak.txt', 'keyword leaked\n');
+  try { fs.symlinkSync(outside, path.join(sub, 'link'), 'junction'); } catch { return; } // 연결을 만들 수 없는 환경
+  const r = await searchText(sub, 'keyword');
+  assert.ok(r.matches.length >= 2);
+  assert.ok(!r.matches.some((m) => m.path.startsWith('link')), JSON.stringify(r.matches));
+  assert.ok(!r.matches.some((m) => /leak/.test(m.text + m.path)));
+});
+
+test('createCodeService.search: 미등록 폴더·깃 아닌 폴더 거부, 등록 폴더는 검색', { skip }, async () => {
+  const roots = createCodeRoots();
+  const service = createCodeService({ roots });
+  await assert.rejects(service.search(fx.sub, 'const'), { message: '허용되지 않는 폴더입니다' });
+  roots.add(plain);
+  await assert.rejects(service.search(plain, 'const'), { message: '깃 저장소가 아닙니다' });
+  roots.add(fx.sub);
+  assert.equal((await service.search(fx.sub, 'const a')).matches.length, 1);
 });

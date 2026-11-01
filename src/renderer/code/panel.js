@@ -2,6 +2,9 @@
 // 읽기 전용이다 (파일을 바꾸는 기능이 없다). 화면(DOM)은 시작 때 만들고, 모나코는 첫 파일을 열 때 불러온다.
 import { touchedFrom, TouchedList, buildTree, createRefresher } from './model.js';
 import { loadMonaco } from './monaco.js';
+import { jumpLine, splitLines, notesForFile } from './analysis.js';
+import { createNotesLayer } from './notes.js';
+import { createAnalysisPanel } from './analysisPanel.js';
 
 function node(tag, props = {}, ...children) {
   const n = document.createElement(tag);
@@ -40,6 +43,12 @@ const FILE_NOTE = {
   missing: () => '파일이 없습니다 (삭제되었거나 이름이 바뀜)',
 };
 const EDITOR_FONT = '"Cascadia Mono", Consolas, "D2Coding", "Malgun Gothic", monospace';
+const MODEL_TITLE = { opus: 'Opus 는 Sonnet 보다 사용량이 더 듭니다', fable: 'Fable 은 Sonnet 보다 사용량이 훨씬 더 듭니다' };
+const RESULTS_MAX = 30; // 폴더당 보관하는 분석 결과 수 (넘으면 가장 오래된 것부터 지운다)
+const mmss = (ms) => {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+};
 
 export function createCodePanel({ api, host }) {
   const folders = []; // setFolders 로 받은 탭 폴더 — 더하기만 한다 (탭을 닫아도 앱을 끌 때까지 목록에서 고를 수 있다)
@@ -71,6 +80,15 @@ export function createCodePanel({ api, host }) {
   let models = [];
   let view = 'message'; // 'editor' | 'diff' | 'message' | 'idle'
   let revealFirst = false;
+  let notesLayer = null; // 줄 사이 주석 (모나코를 불러온 뒤 만든다)
+  let shownDoc = null; // 편집기에 실제로 보이는 { rel, text } — 주석은 이 글을 기준으로 붙인다
+  let notesHidden = 0; // 코드가 바뀌어 숨긴 주석 수 (패널에 알린다)
+
+  // 코드 분석: 폴더별 상태 (메모리에만). 실행·결과는 시작한 폴더 항목에 넣고, 화면은 지금 폴더일 때만 갱신한다.
+  const analysisByRoot = new Map(); // keyOf(폴더) → { active, results: Map(scopeKey → {...}), run, error, stopped, confirm, closed, notesOn, collapsed, jumpNote }
+  let pendingJump = null; // { g, item } — 파일이 열린 뒤 옮길 자리 (g 가 지금 gen 과 같을 때만 적용)
+  let diffReveal = null; // 비교 보기에서 삭제 줄 영역이 끼어든 뒤 다시 맞출 줄 (한 번 쓰고 비운다)
+  let reopenTimer = null; // 닫힌 패널의 「분석 중 m:ss」 단추 글자를 1초마다 갱신
 
   // ───────── DOM ─────────
   const folderSel = node('select', { class: 'code-folder', 'aria-label': '작업 폴더', onchange: () => selectFolder(folderSel.value) });
@@ -88,6 +106,28 @@ export function createCodePanel({ api, host }) {
   // 파일을 고르기 전 빈 화면: 안내 글 대신 회색 로고만 둔다.
   const idleEl = node('div', { class: 'code-idle', hidden: true }, node('span', { class: 'brand-mark', 'aria-hidden': 'true' }));
 
+  // 분석 시작 단추 (깃 폴더일 때만 보인다)
+  const analyzeChangesBtn = node('button', { class: 'code-act code-analyze-changes', type: 'button', onclick: () => startFromButton('changes') }, '이번 변경 분석');
+  const analyzeFileBtn = node('button', { class: 'code-act code-analyze-file', type: 'button', onclick: () => startFromButton('file') }, '이 파일 분석');
+  const modelSel = node('select', { class: 'code-analyze-model', 'aria-label': '분석 모델', onchange: updateModelTitle },
+    node('option', { value: 'sonnet' }, 'Sonnet (기본)'),
+    node('option', { value: 'opus', title: MODEL_TITLE.opus }, 'Opus (사용량 많음)'),
+    node('option', { value: 'fable', title: MODEL_TITLE.fable }, 'Fable (사용량 가장 많음)'));
+  // 패널을 닫은 뒤 돌아오는 단추: 그 폴더에 분석 상태가 있을 때만 보인다 (실행 중이면 경과 시간)
+  const reopenBtn = node('button', { class: 'code-act code-analysis-reopen', type: 'button', hidden: true, title: '닫은 분석 패널을 다시 엽니다', onclick: reopenAnalysis }, '분석 결과');
+  const analyzeBox = node('div', { class: 'code-analyze', hidden: true }, analyzeChangesBtn, analyzeFileBtn, modelSel, reopenBtn);
+  const analysis = createAnalysisPanel({
+    onJump: (item) => { openFile(item.file, item); },
+    onSearch: searchIn,
+    onStop: stopAnalysis,
+    onClose: () => { const s = curAnalysis(); if (s) { s.closed = true; renderAnalysis(); } },
+    onToggleNotes: (on) => { const s = curAnalysis(); if (s) { s.notesOn = on; applyNotes(); renderAnalysis(); } },
+    onRerun: rerunAnalysis,
+    onConfirm: confirmAnalysis,
+    onCancel: cancelConfirm,
+    onScope: (key) => { const s = curAnalysis(); if (s && s.results.has(key)) { s.active = key; renderAnalysis(); } },
+  });
+
   host.replaceChildren(
     node('div', { class: 'code-head' }, folderSel, pickBtn, refreshBtn, statusEl),
     node('div', { class: 'code-body' },
@@ -95,8 +135,9 @@ export function createCodePanel({ api, host }) {
         node('h3', { class: 'code-section' }, '이번 작업에서 건드린 파일'), touchedEl,
         node('h3', { class: 'code-section' }, '전체 파일'), noteEl, treeEl),
       node('div', { class: 'code-main' },
-        node('div', { class: 'code-file-head' }, pathEl, toggleBtn),
-        node('div', { class: 'code-view' }, editorEl, diffEl, messageEl, idleEl))));
+        node('div', { class: 'code-file-head' }, pathEl, toggleBtn, analyzeBox),
+        node('div', { class: 'code-view' }, editorEl, diffEl, messageEl, idleEl),
+        analysis.el)));
 
   // 트리에 대소문자만 다른 같은 경로가 있으면 트리 표기로 맞춘다 (정확히 같은 표기가 먼저, 없으면 원래 표기 그대로).
   function canon(rel) {
@@ -120,6 +161,7 @@ export function createCodePanel({ api, host }) {
   function setMessage(text) {
     messageEl.textContent = text;
     showView('message');
+    applyNotes();
   }
 
   function showView(kind) {
@@ -138,6 +180,233 @@ export function createCodePanel({ api, host }) {
     const can = !!open && typeof open.base === 'string' && open.kind === 'text';
     toggleBtn.disabled = !can;
     toggleBtn.setAttribute('aria-pressed', String(can && diffPref));
+    updateAnalyzeControls();
+  }
+
+  // ───────── 코드 분석 ─────────
+  function updateModelTitle() {
+    modelSel.title = MODEL_TITLE[modelSel.value] || '';
+  }
+
+  const curAnalysis = () => (current ? analysisByRoot.get(keyOf(current)) : undefined);
+  function analysisOf(root) {
+    const k = keyOf(root);
+    let s = analysisByRoot.get(k);
+    if (!s) {
+      s = { active: 'changes', results: new Map(), run: null, error: '', stopped: false, confirm: null, closed: false, notesOn: true, collapsed: new Set(), jumpNote: '' };
+      analysisByRoot.set(k, s);
+    }
+    return s;
+  }
+  const scopeLabelOf = (scopeKey) => (scopeKey.startsWith('file:') ? baseOf(scopeKey.slice(5)) : '이번 변경');
+
+  // 분석을 시작할 수 있는 폴더 상태: 깃 폴더이고 트리를 받는 중이 아니며 이 폴더에서 분석 중이 아님.
+  // 단추뿐 아니라 「다시 분석」·「그래도 분석」도 같은 조건이다.
+  const canStart = () => !!current && !!treeInfo?.git && !treeBusy && !curAnalysis()?.run && typeof api.codeAnalyze === 'function';
+
+  // 분석 시작·열린 파일·트리 상태에 따라 단추를 켜고 끈다.
+  function updateAnalyzeControls() {
+    const can = !!current && !!treeInfo?.git && typeof api.codeAnalyze === 'function';
+    analyzeBox.hidden = !can;
+    const common = canStart();
+    analyzeChangesBtn.disabled = !common;
+    analyzeFileBtn.disabled = !(common && open?.kind === 'text' && !open.loading);
+    updateReopen(can);
+  }
+
+  // 패널이 닫혀 있고 그 폴더에 분석 상태(결과·실행 중·확인·오류)가 있으면 머리줄에 돌아오는 단추를 보인다.
+  function updateReopen(can = true) {
+    const s = curAnalysis();
+    const has = !!s && (s.run || s.results.size || s.confirm || s.error || s.stopped);
+    const show = can && !!s && s.closed && !!has;
+    reopenBtn.hidden = !show;
+    if (show) reopenBtn.textContent = s.run ? `분석 중 ${mmss(Date.now() - s.run.startedAt)}` : '분석 결과';
+    const need = show && !!s.run && visible;
+    if (!need) { if (reopenTimer) { clearInterval(reopenTimer); reopenTimer = null; } }
+    else if (!reopenTimer) reopenTimer = setInterval(() => updateReopen(), 1000);
+  }
+
+  function reopenAnalysis() {
+    const s = curAnalysis();
+    if (!s) return;
+    s.closed = false;
+    renderAnalysis();
+  }
+
+  // 변경 상태의 지문: 분석 뒤 코드가 바뀌었는지 비교한다. 파일 범위는 그 파일의 상태 코드만 본다.
+  function statusSig(scopeKey) {
+    if (scopeKey.startsWith('file:')) return status.get(scopeKey.slice(5)) ?? '';
+    return [...status].map(([k, v]) => `${k}\t${v}`).sort().join('\n');
+  }
+
+  function isStale(scopeKey, res) {
+    if (treeBusy || !treeInfo?.git) return false;
+    if (res.statusAt !== statusSig(scopeKey)) return true;
+    const sameFile = !scopeKey.startsWith('file:') || (!!open && open.rel.toLowerCase() === scopeKey.slice(5).toLowerCase());
+    return sameFile && !!open && open.kind === 'text' && typeof open.mtimeMs === 'number' && open.mtimeMs > res.doneAt;
+  }
+
+  // 범위 선택용 목록: 결과가 있는 범위(와 지금 고른 범위). 둘 이상일 때만 패널이 고르기 UI 를 보인다.
+  function scopeChoices(s) {
+    const keys = [...s.results.keys()];
+    if (!keys.includes(s.active)) keys.push(s.active);
+    return keys.map((key) => ({ key, label: scopeLabelOf(key), title: key.startsWith('file:') ? key.slice(5) : '이번 변경' }));
+  }
+
+  function analysisView() {
+    const s = curAnalysis();
+    if (!s || s.closed) return null;
+    const res = s.results.get(s.active) || null;
+    const st = s.run ? 'running' : s.confirm ? 'confirm' : s.stopped ? 'stopped' : s.error ? 'error' : res ? 'done' : null;
+    if (!st) return null;
+    return {
+      status: st, scopeLabel: scopeLabelOf(s.active), scopes: scopeChoices(s), active: s.active, canStart: canStart(), result: res ? res.result : null, cached: !!res?.cached, model: res?.model ?? '', ms: res?.ms ?? 0,
+      costUsd: res?.costUsd ?? null, error: s.error, confirm: s.confirm ? { files: s.confirm.files, chars: s.confirm.chars } : null,
+      startedAt: s.run ? s.run.startedAt : 0, notesOn: s.notesOn, hiddenNotes: notesHidden, stale: st === 'done' && !!res && isStale(s.active, res), jumpNote: s.jumpNote,
+    };
+  }
+
+  function renderAnalysis() {
+    analysis.render(analysisView());
+    updateAnalyzeControls();
+  }
+
+  function startFromButton(kind) {
+    if (kind === 'file') {
+      if (open?.kind === 'text' && !open.loading) startAnalysis(`file:${open.rel}`, open.rel, { force: false, confirm: false });
+    } else startAnalysis('changes', null, { force: false, confirm: false });
+  }
+
+  // 분석을 시작한 폴더(root)를 잡아 두고, 끝나면 그 폴더 항목에 넣는다. 지금 폴더일 때만 화면을 바꾼다.
+  async function startAnalysis(scopeKey, rel, { force, confirm, model = modelSel.value }) {
+    const root = current;
+    if (!root || !canStart()) return; // 트리를 받는 중이면 변경 상태가 정해지지 않았으니 시작하지 않는다
+    const s = analysisOf(root);
+    if (s.run) return;
+    s.run = { scopeKey, startedAt: Date.now(), statusAtStart: statusSig(scopeKey) };
+    s.active = scopeKey; s.error = ''; s.stopped = false; s.confirm = null; s.closed = false; s.jumpNote = '';
+    renderAnalysis();
+    let r;
+    try {
+      r = await api.codeAnalyze({ root, scope: rel == null ? 'changes' : 'file', rel: rel ?? undefined, model, force, confirm });
+    } catch (e) {
+      r = { ok: false, error: errText(e) };
+    }
+    const run = s.run;
+    s.run = null;
+    s.closed = false; // 실행 중 닫았어도 끝나면 다시 보인다
+    const here = !!current && keyOf(current) === keyOf(root);
+    if (r && r.ok) {
+      // 성공 때만 결과를 바꾼다 (실패·중단은 문구만 — 이전 결과 유지)
+      // 시작 시점의 상태·시각을 적는다: 분석 중에 바뀐 코드는 끝난 뒤 「분석 후 코드가 바뀜」으로 드러난다
+      s.results.set(scopeKey, {
+        result: r.result, cached: !!r.cached, model: r.model, ms: r.ms, costUsd: r.costUsd,
+        statusAt: run.statusAtStart, doneAt: run.startedAt,
+      });
+      trimResults(s, here);
+      s.error = ''; s.stopped = false; s.confirm = null;
+    } else if (r && r.needConfirm) {
+      s.confirm = { scopeKey, rel, model, force, files: r.needConfirm.files, chars: r.needConfirm.chars };
+    } else if (r && r.stopped) {
+      s.stopped = true; s.error = r.error || '중단했습니다';
+    } else {
+      s.error = (r && r.error) || '분석에 실패했습니다';
+    }
+    if (here) {
+      if (r && r.ok) applyNotes();
+      renderAnalysis();
+    }
+  }
+
+  // 폴더당 결과 수 상한: 넘으면 가장 오래된 것부터 지우되 지금 고른 범위와 열린 파일의 결과는 남긴다.
+  // (지운 결과의 접힘 키는 문자열뿐이라 그대로 둔다)
+  function trimResults(s, here) {
+    const keep = new Set([s.active]);
+    if (here && open) keep.add(`file:${open.rel}`);
+    while (s.results.size > RESULTS_MAX) {
+      let oldest = null;
+      for (const [k, v] of s.results) if (!keep.has(k) && (oldest === null || v.doneAt < s.results.get(oldest).doneAt)) oldest = k;
+      if (oldest === null) return;
+      s.results.delete(oldest);
+    }
+  }
+
+  // 「다시 분석」은 캐시를 쓰지 않되 큰 변경이면 먼저 확인받는다 (확인 화면의 「그래도 분석」이 force 를 이어받는다)
+  function rerunAnalysis() {
+    const s = curAnalysis();
+    if (!s || s.run || !canStart()) return;
+    startAnalysis(s.active, s.active.startsWith('file:') ? s.active.slice(5) : null, { force: true, confirm: false });
+  }
+
+  function confirmAnalysis() {
+    const s = curAnalysis();
+    const c = s?.confirm;
+    if (!c || s.run || !canStart()) return;
+    startAnalysis(c.scopeKey, c.rel, { force: c.force, confirm: true, model: c.model });
+  }
+
+  // 확인 화면의 「취소」: 이전 결과(없으면 패널 없음)로 돌아간다
+  function cancelConfirm() {
+    const s = curAnalysis();
+    if (!s?.confirm) return;
+    s.confirm = null;
+    renderAnalysis();
+  }
+
+  function stopAnalysis() {
+    const root = current;
+    if (!root || !curAnalysis()?.run) return;
+    Promise.resolve(api.codeAnalyzeStop(root)).catch(() => {}); // 끝나면 codeAnalyze 응답이 「중단했습니다」로 온다
+  }
+
+  // 검색어 → 결과. 폴더가 바뀐 뒤 늦게 온 응답은 null 로 버린다.
+  async function searchIn(term) {
+    const root = current;
+    const fg = folderGen;
+    if (!root) return null;
+    try {
+      const r = await api.codeSearch(root, term);
+      return fg === folderGen ? r : null;
+    } catch (e) {
+      if (fg !== folderGen) return null;
+      throw new Error(errText(e));
+    }
+  }
+
+  // 주석 표시: 지금 편집기에 보이는 글자 파일의 결과(파일 분석 결과가 있으면 그것, 없으면 이번 변경 결과)를 줄 사이에 붙이거나, 붙일 것이 없으면 지운다.
+  // 패널 다시 그리기는 이 함수를 부르지 않으므로 서로 되풀이하지 않는다.
+  // keepScroll: 분석 완료·토글·폴더 복귀처럼 보던 자리에서 주석만 바뀌는 호출은 첫 보이는 줄과 그 오프셋을 지킨다
+  // (showText 는 자기 스크롤 복원이 있어 false).
+  function applyNotes(keepScroll = true) {
+    const s = curAnalysis();
+    const ed = view === 'diff' ? diff?.getModifiedEditor() : view === 'editor' ? editor : null;
+    const res = s && s.notesOn && shownDoc ? s.results.get(`file:${shownDoc.rel}`) || s.results.get('changes') : null;
+    const at = keepScroll && ed ? scrollAnchor(ed) : null;
+    let hidden = 0;
+    if (notesLayer && ed && res) {
+      const r = notesForFile(res.result, shownDoc.rel, shownDoc.text);
+      hidden = r.hidden;
+      notesLayer.show(ed, r.shown, s.collapsed); // false 면 편집기가 숨겨져 폭이 없는 것 — 있는 주석은 그대로, 보이게 되면 스스로 만든다
+    } else notesLayer?.clear();
+    if (at) restoreAnchor(ed, at);
+    if (hidden !== notesHidden) { notesHidden = hidden; renderAnalysis(); }
+  }
+
+  // 첫 보이는 줄과 그 줄 위쪽 끝에서의 오프셋 (영역이 늘고 줄어도 같은 줄이 같은 자리에 오게)
+  function scrollAnchor(ed) {
+    try {
+      const r = ed.getVisibleRanges()[0];
+      if (!r) return null;
+      const line = r.startLineNumber;
+      return { line, offset: ed.getScrollTop() - ed.getTopForLineNumber(line) };
+    } catch { return null; }
+  }
+
+  function restoreAnchor(ed, at) {
+    try {
+      const want = ed.getTopForLineNumber(at.line) + at.offset;
+      if (Math.abs(ed.getScrollTop() - want) >= 1) ed.setScrollTop(Math.max(0, want));
+    } catch { /* 편집기가 정리되는 중 */ }
   }
 
   // ───────── 폴더 ─────────
@@ -173,8 +442,10 @@ export function createCodePanel({ api, host }) {
     treeInfo = null; tree = null; fileSet = new Set(); fileByLower = new Map(); treeError = ''; status = new Map(); dirty = new Set(); lastMissing = '';
     expanded.clear();
     open = null;
+    pendingJump = null;
     release();
-    renderFolders(); renderTouched(); renderTree(); renderFileHead(); renderMain();
+    applyNotes();
+    renderFolders(); renderTouched(); renderTree(); renderFileHead(); renderMain(); renderAnalysis();
     loadTree();
   }
 
@@ -194,6 +465,7 @@ export function createCodePanel({ api, host }) {
     const fg = folderGen;
     const my = ++treeSeq;
     treeBusy = true;
+    updateAnalyzeControls();
     setStatus('불러오는 중…');
     try {
       const t = await api.codeTree(root);
@@ -213,7 +485,7 @@ export function createCodePanel({ api, host }) {
         if (!open && !treeInfo) renderMain(); // 「불러오는 중…」에 머물지 않고 오류를 안내한다
       }
     } finally {
-      if (my === treeSeq) treeBusy = false;
+      if (my === treeSeq) { treeBusy = false; renderAnalysis(); } // 변경 상태를 다 받았으니 「분석 후 바뀜」을 다시 판단
     }
   }
 
@@ -313,6 +585,9 @@ export function createCodePanel({ api, host }) {
 
   // 편집기에서 모델을 떼고 버린다. 비교 편집기에서 먼저 떼야 한다 (순서가 반대면 콘솔 오류).
   function release() {
+    notesLayer?.clear();
+    shownDoc = null;
+    diffReveal = null;
     diff?.setModel(null);
     editor?.setModel(null);
     for (const m of models) m.dispose();
@@ -323,10 +598,17 @@ export function createCodePanel({ api, host }) {
     if (editor) return;
     // unicodeHighlight: 모호한 글자(×·한글 따옴표 등) 강조는 끈다 — 읽기 전용 보기에 상자가 가득 차지 않게 (보이지 않는 글자 강조는 기본값 유지)
     const common = { readOnly: true, domReadOnly: true, theme: 'vs-dark', automaticLayout: true, minimap: { enabled: false }, scrollBeyondLastLine: false, fontSize: 13, fontFamily: EDITOR_FONT, unicodeHighlight: { ambiguousCharacters: false } };
+    // 모나코는 모델이 하나도 없으면 워커를 끈다 — 파일을 바꿀 때마다 워커를 새로 띄우지 않게 빈 모델 하나를 계속 둔다 (실측: 40번 전환 시 워커 40개 → 1개).
+    monaco.editor.createModel('', 'plaintext', monaco.Uri.from({ scheme: 'keep-worker', path: '/empty' }));
     editor = monaco.editor.create(editorEl, common);
+    notesLayer = createNotesLayer(monaco);
     diff = monaco.editor.createDiffEditor(diffEl, { ...common, renderSideBySide: false, originalEditable: false });
     // 새로 연 파일의 비교는 첫 변경 줄로 이동한다 (갱신 때는 보던 자리를 지킨다).
-    diff.onDidUpdateDiff(() => { if (revealFirst) { revealFirst = false; diff.revealFirstDiff?.(); } });
+    // 점프해 온 비교 보기는 삭제 줄 영역이 계산 뒤에 끼어들어 줄이 밀리므로 그 줄을 다시 맞춘다.
+    diff.onDidUpdateDiff(() => {
+      if (diffReveal) { const line = diffReveal; diffReveal = null; revealAt(diff.getModifiedEditor(), line); return; }
+      if (revealFirst) { revealFirst = false; diff.revealFirstDiff?.(); }
+    });
   }
 
   function makeModel(scheme, rel, text) {
@@ -356,7 +638,42 @@ export function createCodePanel({ api, host }) {
       models = [modified];
     }
     showView(useDiff ? 'diff' : 'editor');
+    shownDoc = { rel: open.rel, text: open.text };
+    applyNotes(false);
     if (top) (useDiff ? diff.getModifiedEditor() : editor).setScrollTop(top);
+    if (pendingJump && pendingJump.g === gen) {
+      const item = pendingJump.item;
+      pendingJump = null;
+      const line = applyJump(item);
+      revealFirst = false;
+      if (useDiff) diffReveal = line;
+    }
+  }
+
+  function revealAt(ed, line) {
+    ed.revealLineInCenter(line);
+    ed.setPosition({ lineNumber: line, column: 1 });
+  }
+
+  // 열린 글자 파일의 item.line 쪽으로 옮기고 옮긴 줄을 돌려준다. anchor 가 있으면(읽는 순서) 줄이 밀렸어도 찾아가고, 검색 결과는 줄 번호 그대로다.
+  function applyJump(item) {
+    const total = splitLines(open.text).length;
+    let at;
+    if (typeof item.anchor === 'string') at = jumpLine(item, open.text);
+    else at = { line: Math.min(Math.max(Number.isInteger(item.line) ? item.line : 1, 1), total), moved: false };
+    revealAt(view === 'diff' ? diff.getModifiedEditor() : editor, at.line);
+    const s = curAnalysis();
+    if (s) { s.jumpNote = at.moved ? `위치 추정: ${open.rel}:${at.line}` : ''; renderAnalysis(); }
+    return at.line;
+  }
+
+  // 이미 열린 파일로의 점프: 보이는 중이면 바로, 읽는 중이면 다 읽은 뒤(showText)에. 안내만 보이는 파일은 무시한다.
+  function jumpOpen(item) {
+    if (open.kind === 'text' && !open.loading && (view === 'editor' || view === 'diff')) {
+      const line = applyJump(item);
+      revealFirst = false; // 아직 계산 전인 비교 보기가 첫 변경 줄로 되돌리지 않게
+      if (view === 'diff') diffReveal = line; // 삭제 줄 영역이 계산 뒤에 끼어 줄이 밀리면 다시 맞춘다
+    } else if (open.loading) pendingJump = { g: gen, item };
   }
 
   async function fetchBase(root, rel) {
@@ -384,6 +701,7 @@ export function createCodePanel({ api, host }) {
     o.mtimeMs = r.kind === 'text' ? r.mtimeMs : r.kind === 'missing' ? null : undefined;
     if (r.kind !== 'text') {
       o.text = null; o.base = null;
+      pendingJump = null;
       release();
       setMessage(FILE_NOTE[r.kind]?.(r) ?? '표시할 수 없는 파일입니다');
       return;
@@ -392,11 +710,14 @@ export function createCodePanel({ api, host }) {
     await present(root, o, g, keep);
   }
 
-  async function openFile(rel) {
+  // jump: 분석 결과에서 온 이동 { file, line, anchor? } — 파일이 열린 뒤 그 줄로 옮긴다.
+  async function openFile(rel, jump = null) {
     rel = canon(rel);
-    if (!current || (open?.rel === rel && open.kind !== 'error')) return; // 열기에 실패한 파일은 다시 누르면 다시 연다
+    if (!current) return;
+    if (open?.rel === rel && open.kind !== 'error') { if (jump) jumpOpen(jump); return; } // 열기에 실패한 파일은 다시 누르면 다시 연다
     const root = current;
     const g = ++gen;
+    pendingJump = jump ? { g, item: jump } : null;
     const o = { rel, kind: null, text: null, base: null, mtimeMs: undefined, code: status.get(rel) ?? null, loading: true };
     open = o;
     renderFileHead();
@@ -408,11 +729,13 @@ export function createCodePanel({ api, host }) {
     } catch (e) {
       if (open === o) {
         o.kind = 'error'; o.text = null; o.base = null;
+        pendingJump = null;
         release();
         setMessage(`⚠ ${errText(e)}`);
       }
     } finally {
       o.loading = false;
+      updateAnalyzeControls();
     }
   }
 
@@ -445,6 +768,7 @@ export function createCodePanel({ api, host }) {
     applyStatus(r.changes);
     setStatus(`${clock()} 갱신`);
     if (o && o.kind !== 'error' && g === gen && open === o && !o.loading) await syncOpen(root, o, g, r.mtimeMs);
+    if (fg === folderGen) renderAnalysis(); // 변경 상태·열린 파일 시각이 달라졌으면 「분석 후 코드가 바뀜」을 반영
     await reloadTreeIfNew(r.changes, fg);
   }
 
@@ -461,6 +785,7 @@ export function createCodePanel({ api, host }) {
       else if (o.kind === 'text') await present(root, o, g, true);
     } finally {
       o.loading = false;
+      updateAnalyzeControls();
     }
   }
 
@@ -485,7 +810,7 @@ export function createCodePanel({ api, host }) {
   const refresher = createRefresher({ run: tick, onError: (e) => setStatus(`⚠ ${errText(e)}`, true) });
 
   // ───────── 바깥에 내놓는 것 ─────────
-  renderFolders(); renderTouched(); renderMain();
+  renderFolders(); renderTouched(); renderMain(); renderAnalysis();
 
   return {
     // 코드 화면이 보인다: 처음이면 폴더를 정하고(activeCwd 가 목록에 있으면 그 폴더) 10초 갱신을 켠다.
@@ -493,10 +818,15 @@ export function createCodePanel({ api, host }) {
       visible = true;
       if (!current) pickDefault(activeCwd);
       renderTouched(); // 숨겨진 동안 쌓인 것을 반영
+      applyNotes(); // 숨겨진 동안 끝난 분석 반영 (Task 5)
+      renderAnalysis();
+      analysis.refresh(); // 멈췄던 경과 시간을 지금 시각으로
       refresher.start();
     },
     hide() {
       visible = false;
+      if (reopenTimer) { clearInterval(reopenTimer); reopenTimer = null; }
+      analysis.stopTimer();
       refresher.stop();
     },
     // 열린 탭(login 제외)의 작업 폴더 목록. 받은 폴더를 기존 목록에 더하기만 한다 (대소문자 무시 중복 제거, 순서 유지, 제거 없음).

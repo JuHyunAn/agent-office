@@ -103,9 +103,10 @@ function findGit() {
   return gitPathPromise;
 }
 
-function gitError(kind, message) {
+function gitError(kind, message, exitCode) {
   const e = new Error(message);
   e.kind = kind;
+  if (typeof exitCode === 'number') e.exitCode = exitCode; // git 이 돌려준 종료 코드 (grep 의 「없음」=1 등을 가르는 데 쓴다)
   return e;
 }
 
@@ -122,7 +123,7 @@ function killTree(child) {
 const isAlive = (child) => child.exitCode === null && child.signalCode === null;
 
 // git(root, args, { buffer }) → stdout (buffer 면 Buffer, 아니면 문자열). 실패는 kind 가 붙은 Error:
-// 'no-git'(실행 파일 없음) · 'unsafe'(dubious ownership) · 'nodir'(폴더 없음) · 'timeout'(시간 초과) · 'fail'(그 밖의 실패).
+// 'no-git'(실행 파일 없음) · 'unsafe'(dubious ownership) · 'nodir'(폴더 없음) · 'timeout'(시간 초과) · 'fail'(그 밖의 실패, 종료 코드가 있으면 exitCode).
 // --no-optional-locks: 에이전트의 git add·commit 과 .git/index.lock 을 다투거나 인덱스를 다시 쓰지 않는다.
 // core.fsmonitor=false: 저장소 설정에 적힌 fsmonitor 명령이 조회 때마다 실행되는 것을 막는다.
 // 시간 초과는 execFile 의 timeout 옵션(최상위 프로세스만 끝낸다) 대신 직접 걸어 자식 트리를 정리한다.
@@ -152,7 +153,7 @@ async function git(root, args, { buffer = false, maxBuffer = GIT_MAX_BUFFER, tim
           if (isAlive(child)) killTree(child);
           return reject(gitError('fail', 'git 출력이 너무 큽니다'));
         }
-        return reject(gitError('fail', `git 실행 실패: ${text.slice(0, 200) || err.message}`));
+        return reject(gitError('fail', `git 실행 실패: ${text.slice(0, 200) || err.message}`, typeof err.code === 'number' ? err.code : undefined));
       });
     timer = setTimeout(() => {
       timedOut = true;
@@ -261,6 +262,70 @@ async function headText(root, rel, maxBytes = MAX_READ) {
   }
 }
 
+// ---------- 변경 내용·검색 ----------
+
+const SEARCH_TERM_MAX = 200;
+const SEARCH_TEXT_MAX = 300;
+const SEARCH_TIMEOUT_MS = 30000;
+const DIFF_TIMEOUT_MS = 30000;
+
+// HEAD 가 있는지. 커밋이 없는 저장소는 `diff HEAD` 가 128 로 실패하므로 먼저 거른다.
+// --verify -q 는 없을 때 조용히 종료 코드 1. 그 밖의 실패(시간 초과 등)는 그대로 던진다.
+async function hasHead(root) {
+  try {
+    await git(root, ['rev-parse', '--verify', '-q', 'HEAD']);
+    return true;
+  } catch (e) {
+    if (e.kind === 'fail' && e.exitCode === 1) return false;
+    throw e;
+  }
+}
+
+// 이 폴더 안의 커밋하지 않은 변경(HEAD 와 작업 트리 비교). 미추적 파일은 diff 에 나오지 않는다.
+// --literal-pathspecs 는 하위 명령 앞에, --no-ext-diff·--no-textconv 는 저장소 설정에 적힌 명령이 실행되지 않게,
+// --relative 는 머리글 경로에서 폴더 접두어를 떼려고 둔다. rel 을 주면 그 파일만.
+// --src-prefix·--dst-prefix 는 diff.noprefix·diff.mnemonicPrefix 설정이 머리글(`a/` `b/`)을 바꾸지 못하게 고정한다.
+async function diffText(root, rel = null) {
+  const target = rel == null ? '.' : toGitPath(path.relative(root, resolveInside(root, rel)));
+  if (!await hasHead(root)) return '';
+  return git(root, ['--literal-pathspecs', 'diff', '--no-ext-diff', '--no-textconv', '--no-color', '--relative', '--src-prefix=a/', '--dst-prefix=b/', 'HEAD', '--', target],
+    { timeoutMs: DIFF_TIMEOUT_MS });
+}
+
+async function diffStat(root) {
+  if (!await hasHead(root)) return '';
+  return git(root, ['--literal-pathspecs', 'diff', '--stat=120', '--no-ext-diff', '--no-textconv', '--no-color', '--relative', '--src-prefix=a/', '--dst-prefix=b/', 'HEAD', '--', '.'],
+    { timeoutMs: DIFF_TIMEOUT_MS });
+}
+
+const BAD_TERM = /[\r\n\0]/;
+// 한 줄 = `경로\0줄\0내용` (-z -n). 내용에는 줄바꿈이 없다.
+const GREP_ROW = /^([^\0]+)\0(\d+)\0([^\0]*)$/;
+
+// 코드 검색: 추적 파일 + 미추적(무시 제외) 텍스트 파일에서 고정 문자열을 찾는다.
+// 검색어는 -e 뒤에 두어 옵션으로 해석되지 않고, -F 라 정규식도 아니다. 종료 코드 1 은 일치 없음.
+async function searchText(root, term, limit = 200) {
+  if (typeof term !== 'string' || term.length < 1 || term.length > SEARCH_TERM_MAX || BAD_TERM.test(term)) throw new Error('잘못된 검색어입니다');
+  let out;
+  try {
+    out = await git(root, ['--literal-pathspecs', 'grep', '-n', '-z', '-I', '-F', '--untracked', '--no-color', '--no-column', '--no-full-name', '-e', term, '--', '.'],
+      { buffer: true, timeoutMs: SEARCH_TIMEOUT_MS });
+  } catch (e) {
+    if (e.kind === 'fail' && e.exitCode === 1) return { matches: [], truncated: false };
+    throw e;
+  }
+  const matches = [];
+  let truncated = false;
+  for (const row of out.toString('utf8').split('\n')) {
+    const m = GREP_ROW.exec(row);
+    if (!m) continue;
+    try { resolveInside(root, m[1]); } catch { continue; } // 정션 너머(폴더 밖)·위험 경로는 뺀다
+    if (matches.length >= limit) { truncated = true; break; }
+    matches.push({ path: m[1], line: Number(m[2]), text: m[3].replace(/\r/g, '').slice(0, SEARCH_TEXT_MAX) });
+  }
+  return { matches, truncated };
+}
+
 // ---------- 서비스·IPC ----------
 
 // 모든 메서드는 등록된 폴더인지 먼저 본다. 깃 여부는 폴더별로 기억하되, tree 는 매번 다시 확인한다
@@ -302,6 +367,10 @@ function createCodeService({ roots }) {
       await repo(root);
       return { text: await headText(root, rel) };
     },
+    async search(root, term) {
+      await repo(root);
+      return searchText(root, term);
+    },
   };
 }
 
@@ -328,9 +397,10 @@ function registerCodeIpc(handleMain, { roots, service, pickFolder, checkFolder }
   handleMain('code:poll', async (v) => service.poll(req(v).root, v.rel ?? null));
   handleMain('code:read', async (v) => service.read(req(v).root, v.rel));
   handleMain('code:base', async (v) => service.base(req(v).root, v.rel));
+  handleMain('code:search', async (v) => service.search(req(v).root, v.term));
 }
 
 module.exports = {
-  resolveInside, toGitPath, createCodeRoots, repoInfo, listFiles, statusOf,
-  readText, statMtime, headText, createCodeService, registerCodeIpc, git,
+  resolveInside, toGitPath, rootKey, createCodeRoots, repoInfo, listFiles, statusOf,
+  readText, statMtime, headText, hasHead, diffText, diffStat, searchText, createCodeService, registerCodeIpc, git,
 };

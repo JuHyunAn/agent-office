@@ -404,4 +404,4 @@ class CodexChat {
   }
 }
 
-module.exports = { claudeChatArgs, claudeUserLine, replayText, parseClaudeLine, parseClaudeModels, claudeModels, parseCodexLine, lineReader, killTree, ClaudeChat, CodexChat };
+module.exports = { claudeChatArgs, claudeUserLine, replayText, parseClaudeLine, parseClaudeModels, claudeModels, parseCodexLine, lineReader, killTree, spawnCli, ClaudeChat, CodexChat };
