@@ -12,7 +12,9 @@
     "test:pet": "node scripts/check-pet.cjs",
     "test:custom": "node scripts/check-custom-office.cjs",
     "test:code": "node scripts/check-code-view.cjs",
-    "dist": "electron-builder --win"
+    "predist": "node scripts/check-monaco.cjs pre",
+    "dist": "electron-builder --win",
+    "postdist": "node scripts/check-monaco.cjs post"
   },
   "build": {
     "appId": "local.agent-office",

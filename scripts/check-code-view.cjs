@@ -289,6 +289,7 @@ if (!process.versions.electron) {
       while (!cond()) { if (Date.now() > end) throw new Error('호출 시간 초과'); await pause(100); }
     };
     let narrowAnalysis = null;
+    let analysisResize = null;
     const firstLine = fs.readFileSync(path.join(FIX, 'README.md'), 'utf8').split(/\r?\n/).find(l => l.trim()).replace(/^#+\s*/, '').trim();
 
     try {
@@ -1063,6 +1064,38 @@ if (!process.versions.electron) {
       await js(`document.querySelector('.layout').style.removeProperty('--cli-width')`);
       win.setSize(1600, 1000); await pause(500);
 
+      // 분석 패널 높이 조절: 위쪽 경계를 끌어 높이고 낮추며, 편집기 최소 높이·패널 머리줄은 남기고, 두 번 클릭하면 기본 높이.
+      const caBox = () => js(`(() => { const h = s => Math.round(document.querySelector('#code-pane ' + s).getBoundingClientRect().height);
+        return { panel: h('.code-analysis'), view: h('.code-view'), head: h('.ca-head'), saved: localStorage.getItem('ao.analysisHeight') }; })()`);
+      const grip = await js(`(() => { const r = ${A('.ca-resizer')}.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+      const dragCa = async (dy) => {
+        const g = await js(`(() => { const r = ${A('.ca-resizer')}.getBoundingClientRect(); return Math.round(r.top + r.height / 2); })()`);
+        // 끄는 동안의 이동에는 단추 눌림 상태를 실어야 한다 — 없으면 Chromium 이 포인터 캡처를 바로 푼다.
+        const ev = (type, y) => win.webContents.sendInputEvent({ type, x: grip.x, y, button: 'left', clickCount: 1, ...(type === 'mouseMove' ? { modifiers: ['leftButtonDown'] } : {}) });
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: grip.x, y: g }); await pause(50);
+        ev('mouseDown', g); for (let i = 1; i <= 5; i++) { ev('mouseMove', g + Math.round(dy * i / 5)); await pause(30); } ev('mouseUp', g + dy);
+        await pause(300);
+      };
+      const ca0 = await caBox();
+      assert.equal(ca0.saved, null, '조절 전 저장값이 있음');
+      await dragCa(-150);
+      const caUp = await caBox();
+      assert.ok(Math.abs(caUp.panel - (ca0.panel + 150)) <= 2 && caUp.view < ca0.view, `위로 끌어도 패널이 높아지지 않음: ${JSON.stringify({ ca0, caUp })}`);
+      assert.equal(Number(caUp.saved), caUp.panel, '조절한 높이를 저장하지 않음');
+      await dragCa(2000);
+      const caLow = await caBox();
+      assert.equal(caLow.panel, caLow.head + 48, `가장 낮게 끌면 머리줄+48px(경계선 포함)이어야 함: ${JSON.stringify(caLow)}`);
+      assert.equal(Number(caLow.saved), caLow.panel, '범위 밖으로 끈 값 대신 실제 높이를 저장해야 함');
+      await dragCa(-2000);
+      const caHigh = await caBox();
+      assert.ok(caHigh.view >= 119 && caHigh.view <= 122, `가장 높게 끌어도 편집기 120px 는 남아야 함: ${JSON.stringify(caHigh)}`);
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: grip.x, y: (await js(`Math.round(${A('.ca-resizer')}.getBoundingClientRect().top + 4)`)), button: 'left', clickCount: 2 });
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: grip.x, y: (await js(`Math.round(${A('.ca-resizer')}.getBoundingClientRect().top + 4)`)), button: 'left', clickCount: 2 });
+      await pause(300);
+      const caReset = await caBox();
+      assert.ok(caReset.panel === ca0.panel && caReset.saved === null, `두 번 클릭해도 기본 높이로 돌아가지 않음: ${JSON.stringify({ ca0, caReset })}`);
+      analysisResize = { default: ca0.panel, up: caUp.panel, lowest: caLow.panel, highestView: caHigh.view, reset: caReset.panel };
+
       // 폴더당 분석 결과는 30개까지: 파일 분석을 31번 하면 가장 오래된 결과부터 사라지고, 지금 고른 범위(마지막 파일)는 남는다.
       for (let i = 1; i <= 31; i++) put(`cap/c${String(i).padStart(2, '0')}.js`, `export const c${i} = ${i};\n`);
       await js(`${A('.code-refresh')}.click()`);
@@ -1111,7 +1144,7 @@ if (!process.versions.electron) {
     assert.ok(editorWorkerLoads >= 1 && editorWorkerLoads <= 2, `모나코 워커가 파일을 열 때마다 새로 뜸: ${editorWorkerLoads}회`);
     assert.deepEqual(errors, []);
     console.log('코드 화면 점검 통과');
-    console.log(JSON.stringify({ hiddenSecond: { draw: after.draw - before.draw, update: after.update - before.update, notify: after.notify - before.notify }, walker, camera, geometry, fixture: ['README.md', 'src/a.js', 'docs/×표.md', 'merge.txt'], polls: calls.poll, narrowAnalysis: { viewH: Math.round(narrowAnalysis.viewH), heights: narrowAnalysis.heights }, analysisSpawns: fake.spawns.length, output: [path.join(OUT, 'code-analysis-panel.png'), path.join(OUT, 'code-analysis-jump-diff.png'), path.join(OUT, 'code-analysis-notes.png'), path.join(OUT, 'code-view-toggle.png'), path.join(OUT, 'code-view.png'), path.join(OUT, 'code-view-diff.png')] }, null, 2));
+    console.log(JSON.stringify({ hiddenSecond: { draw: after.draw - before.draw, update: after.update - before.update, notify: after.notify - before.notify }, walker, camera, geometry, fixture: ['README.md', 'src/a.js', 'docs/×표.md', 'merge.txt'], polls: calls.poll, narrowAnalysis: { viewH: Math.round(narrowAnalysis.viewH), heights: narrowAnalysis.heights }, analysisResize, analysisSpawns: fake.spawns.length, output: [path.join(OUT, 'code-analysis-panel.png'), path.join(OUT, 'code-analysis-jump-diff.png'), path.join(OUT, 'code-analysis-notes.png'), path.join(OUT, 'code-view-toggle.png'), path.join(OUT, 'code-view.png'), path.join(OUT, 'code-view-diff.png')] }, null, 2));
     clearTimeout(timeout); app.exit(0);
   }).catch(async e => {
     clearTimeout(timeout);

@@ -5,6 +5,7 @@ import { loadMonaco } from './monaco.js';
 import { jumpLine, splitLines, notesForFile } from './analysis.js';
 import { createNotesLayer } from './notes.js';
 import { createAnalysisPanel } from './analysisPanel.js';
+import { setupAnalysisResizer } from '../layout.js';
 
 function node(tag, props = {}, ...children) {
   const n = document.createElement(tag);
@@ -128,6 +129,7 @@ export function createCodePanel({ api, host }) {
     onScope: (key) => { const s = curAnalysis(); if (s && s.results.has(key)) { s.active = key; renderAnalysis(); } },
   });
 
+  const viewEl = node('div', { class: 'code-view' }, editorEl, diffEl, messageEl, idleEl);
   host.replaceChildren(
     node('div', { class: 'code-head' }, folderSel, pickBtn, refreshBtn, statusEl),
     node('div', { class: 'code-body' },
@@ -136,8 +138,9 @@ export function createCodePanel({ api, host }) {
         node('h3', { class: 'code-section' }, '전체 파일'), noteEl, treeEl),
       node('div', { class: 'code-main' },
         node('div', { class: 'code-file-head' }, pathEl, toggleBtn, analyzeBox),
-        node('div', { class: 'code-view' }, editorEl, diffEl, messageEl, idleEl),
+        viewEl,
         analysis.el)));
+  const resizeAnalysis = setupAnalysisResizer(analysis.el, analysis.head, viewEl, analysis.resizer);
 
   // 트리에 대소문자만 다른 같은 경로가 있으면 트리 표기로 맞춘다 (정확히 같은 표기가 먼저, 없으면 원래 표기 그대로).
   function canon(rel) {
@@ -268,6 +271,7 @@ export function createCodePanel({ api, host }) {
 
   function renderAnalysis() {
     analysis.render(analysisView());
+    resizeAnalysis.apply(); // 패널이 방금 보였으면 저장된 높이를 그리기 전에 맞춘다
     updateAnalyzeControls();
   }
 
@@ -686,7 +690,11 @@ export function createCodePanel({ api, host }) {
     o.base = o.code ? await fetchBase(root, o.rel) : null;
     if (g !== gen || open !== o) return;
     if (!monaco) {
-      try { monaco = await loadMonaco(); } catch { if (g === gen && open === o) { release(); setMessage('코드 편집기를 불러오지 못했습니다'); } return; }
+      try { monaco = await loadMonaco(); } catch (e) {
+        console.error('[code] 모나코 로드 실패', e);
+        if (g === gen && open === o) { release(); setMessage('코드 편집기를 불러오지 못했습니다'); }
+        return;
+      }
       if (g !== gen || open !== o) return;
     }
     showText(keep);

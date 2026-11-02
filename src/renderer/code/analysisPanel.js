@@ -78,8 +78,10 @@ export function createAnalysisPanel({ onJump, onSearch, onStop, onClose, onToggl
   const actBtn = node('button', { class: 'ca-act', type: 'button', onclick: () => (view?.status === 'running' ? onStop() : onRerun()) }, '다시 분석');
   const closeBtn = node('button', { class: 'ca-close', type: 'button', 'aria-label': '분석 패널 닫기', title: '닫기', onclick: () => onClose() }, '×');
   const bodyEl = node('div', { class: 'ca-body', role: 'tabpanel' });
-  const el = node('section', { class: 'code-analysis', 'aria-label': '코드 분석', hidden: true },
-    node('div', { class: 'ca-head' }, scopeEl, scopeSel, tabsEl, notesBtn, statusEl, actBtn, closeBtn), bodyEl);
+  // 위쪽 경계: 끌어서 패널 높이 조절 (layout.js setupAnalysisResizer)
+  const resizer = node('div', { class: 'ca-resizer', role: 'separator', 'aria-orientation': 'horizontal', 'aria-label': '분석 패널 높이 조절', title: '끌어서 높이 조절 · 두 번 클릭하면 기본 높이' });
+  const headEl = node('div', { class: 'ca-head' }, scopeEl, scopeSel, tabsEl, notesBtn, statusEl, actBtn, closeBtn);
+  const el = node('section', { class: 'code-analysis', 'aria-label': '코드 분석', hidden: true }, resizer, headEl, bodyEl);
 
   function setTab(id) {
     if (tab === id) return;
@@ -224,6 +226,8 @@ export function createAnalysisPanel({ onJump, onSearch, onStop, onClose, onToggl
 
   return {
     el,
+    head: headEl,
+    resizer,
     render(next) {
       if (next && next.result !== view?.result) { seq++; search = null; } // 다른 결과로 바뀌면 이전 검색은 버린다
       if (!next) { seq++; search = null; }

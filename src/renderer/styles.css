@@ -119,7 +119,14 @@ body.resizing-cli iframe, body.resizing-cli canvas, body.resizing-cli .xterm { p
 .code-act:disabled, .code-analyze select:disabled { opacity: 0.45; cursor: default; }
 .code-act:focus-visible, .code-analyze select:focus-visible { outline: 1px solid #007fd4; outline-offset: -1px; }
 /* 코드 분석: 하단 패널 (.code-view 아래) */
-.code-analysis { flex: 0 0 min(240px, 40%); min-height: 0; display: flex; flex-direction: column; background: #1e1e1e; border-top: 1px solid #3c3c3c; }
+.code-analysis { position: relative; flex: 0 0 var(--ca-height, min(240px, 40%)); min-height: 0; display: flex; flex-direction: column; background: #1e1e1e; border-top: 1px solid #3c3c3c; }
+/* 위쪽 경계를 끌어 높이 조절 (오른쪽 영역 너비 조절 .cli-resizer 와 같은 모양) */
+/* 편집기 쪽으로는 2px 만 걸쳐 모나코 가로 스크롤바를 가리지 않는다 */
+.ca-resizer { position: absolute; left: 0; right: 0; top: -2px; height: 7px; cursor: row-resize; z-index: 5; touch-action: none; }
+.ca-resizer::after { content: ""; position: absolute; left: 0; right: 0; top: 1px; height: 2px; background: transparent; transition: background .15s; }
+.ca-resizer:hover::after, .ca-resizer.dragging::after { background: #007fd4; }
+body.resizing-ca { cursor: row-resize; user-select: none; }
+body.resizing-ca iframe, body.resizing-ca canvas, body.resizing-ca .monaco-editor { pointer-events: none; }
 .ca-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; padding: 3px 10px; background: #252526; border-bottom: 1px solid #3c3c3c; min-width: 0; }
 .ca-scope { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cccccc; font: 12px Consolas, "Malgun Gothic", monospace; }
 .ca-scope-sel { background: #3a3d41; color: #cccccc; border: 1px solid #454545; border-radius: 3px; padding: 2px 6px; font: 12px Consolas, "Malgun Gothic", monospace; max-width: 100%; min-width: 0; text-overflow: ellipsis; }
