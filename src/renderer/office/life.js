@@ -34,9 +34,10 @@ export class OfficeLife {
     this.player = this.makeActor('player', '나', layout.playerStart, true, 5);
     this.residents = [
       this.makeActor('resident-mocha', '모카', { x: 1850, y: 842 }, false, 4),
-      this.makeActor('resident-loop', '루프', { x: 1150, y: 930 }, false, 1),
-      this.makeActor('resident-coco', '코코', { x: 1680, y: 1080 }, false, 2),
       this.makeActor('resident-dex', '덱스', { x: 1500, y: 1000 }, false, 3, 'codex'),
+      this.makeActor('resident-grok', '유니', { x: 1150, y: 930 }, false, 1, 'grok'),
+      this.makeActor('resident-muse', '루프', { x: 1870, y: 1070 }, false, 2, 'muse'),
+      this.makeActor('resident-gemini', '코코', { x: 1680, y: 1080 }, false, 6, 'antigravity'),
     ];
     // 걷는 속도를 조금씩 달리해 같은 길에서 나란히 붙어 다니지 않게 한다.
     this.residents.forEach((a, i) => { a.nextAt = 1800 + i * 2600; a.speed = [165, 150, 185, 200][i % 4]; });
@@ -189,7 +190,8 @@ export class OfficeLife {
     a.nextAt = this.time + 5000 + this.random() * 5000;
     if (activeSkills && a.id !== 'resident-mocha') {
       const room = this.layout.rooms.skills;
-      const target = { x: room.x + ({ 'resident-loop': 140, 'resident-dex': 250 }[a.id] ?? 360), y: room.y + 308 };
+      const index = this.residents.filter(r => r.id !== 'resident-mocha').indexOf(a);
+      const target = { x: room.x + 40 + index * 130, y: room.y + room.h - 20 };
       if (Math.hypot(a.x - target.x, a.y - target.y) > 15) this.moveTo(target, { label: '스킬 협업', action: 'collaborate' }, a);
       else { a.action = 'collaborate'; a.pose = 'talk'; a.status = 'working'; a.task = '스킬 스튜디오 · 협업 연출'; a.until = this.time + 7000; }
       return;

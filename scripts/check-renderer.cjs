@@ -35,8 +35,15 @@ if (!process.versions.electron) {
       if (!target.startsWith(ROOT + path.sep)) return new Response('forbidden', { status: 403 });
       return net.fetch(pathToFileURL(target).toString());
     });
-    ipcMain.handle('app:status', () => ({ claude: { version: '디자인 검증' }, codex: { version: '디자인 검증' }, auth: { loggedIn: true }, hook: { global: { installed: false } },
-      codexAuth: { loggedIn: true, method: 'ChatGPT', methodLabel: 'ChatGPT', email: 'preview@example.com', plan: 'plus' } }));
+    // 가짜 연결 상태 (옛 키 + agents). 뒤에서 갈아 끼운 뒤 화면의 「다시 확인」으로 읽게 한다.
+    const codexAuthOk = { loggedIn: true, method: 'ChatGPT', methodLabel: 'ChatGPT', email: 'preview@example.com', plan: 'plus' };
+    let fakeStatus = { claude: { version: '디자인 검증' }, codex: { version: '디자인 검증' }, auth: { loggedIn: true }, hook: { global: { installed: false } },
+      codexAuth: codexAuthOk,
+      agents: {
+        claude: { found: true, path: null, version: '디자인 검증', auth: { loggedIn: true } },
+        codex: { found: true, path: null, version: '디자인 검증', auth: codexAuthOk },
+      } };
+    ipcMain.handle('app:status', () => fakeStatus);
     ipcMain.handle('weather:current', () => ({ available: true, stale: false, location: '서울',
       observedAt: Date.parse('2026-10-26T12:00:00+09:00'), temperature: 16, cloudCover: 10, condition: 'clear' }));
     ipcMain.handle('dialog:pickFolder', () => ROOT);
@@ -77,9 +84,31 @@ if (!process.versions.electron) {
     win.webContents.on('did-fail-load', (_e, code, detail) => errors.push(`${code}: ${detail}`));
     await win.loadURL('app://office/src/renderer/index.html');
     await pause(200);
-    const codexAccount = await win.webContents.executeJavaScript(`({ hidden: document.querySelector('#codex-account').hidden, text: document.querySelector('#codex-account').textContent, gate: document.querySelector('.gate-codex')?.textContent || '' })`);
-    assert.deepEqual([codexAccount.hidden, codexAccount.text], [false, '● Codex · preview@example.com · plus']); // Codex 계정 칸 (상단)
-    assert.match(codexAccount.gate, /Codex · preview@example\.com · plus 플랜/); // 진입 화면의 Codex 줄 (입장하기 버튼 뒤)
+    // 진입 화면: 왼쪽 AI 목록 5개(가짜 상태는 claude·codex 만 연결 — 나머지 3종은 미설치) · 입장하기가 DOM 첫 버튼(다른 점검이 첫 버튼을 눌러 입장한다) · 상단 「연결 2/5」
+    const gateInfo = await win.webContents.executeJavaScript(`({
+      pill: document.querySelector('#agents-pill').textContent, pillClass: document.querySelector('#agents-pill').className,
+      count: document.querySelector('.gate-count')?.textContent,
+      rows: [...document.querySelectorAll('#gate-body .agent-row')].map(r => [r.dataset.agent, r.querySelector('.agent-sub').textContent, r.getAttribute('aria-selected'), r.tabIndex, r.querySelector('.agent-dot').className]),
+      enterDisabled: document.querySelector('#gate-enter')?.disabled, firstButton: document.querySelector('#gate-body button')?.id, firstPrimary: document.querySelector('#gate-body .btn.primary')?.id,
+      oldNodes: document.querySelectorAll('#account, #codex-account, .gate-codex, #kind-login').length })`);
+    assert.deepEqual([gateInfo.pill, gateInfo.count, gateInfo.oldNodes], ['연결 2/5', '연결 2/5', 0], JSON.stringify(gateInfo));
+    assert.doesNotMatch(gateInfo.pillClass, /\bwarn\b/); // 일부만 연결이면 「on」(모두 연결)도 경고도 아니다
+    assert.deepEqual(gateInfo.rows.map(r => [r[0], r[1], r[2], r[3]]), [['claude', '로그인됨', 'true', 0], ['codex', 'preview@example.com · plus', 'false', -1],
+      ['grok', '설치되어 있지 않음', 'false', -1], ['muse', '설치되어 있지 않음', 'false', -1], ['antigravity', '설치되어 있지 않음', 'false', -1]], JSON.stringify(gateInfo.rows)); // 로그인 필요인 AI 가 없고 나머지는 미설치뿐이면 연결된 첫 AI(claude)가 선택됨
+    assert.ok(gateInfo.rows.slice(0, 2).every(r => /state-connected/.test(r[4])) && gateInfo.rows.slice(2).every(r => /state-missing/.test(r[4])), JSON.stringify(gateInfo.rows));
+    assert.deepEqual([gateInfo.enterDisabled, gateInfo.firstButton, gateInfo.firstPrimary], [false, 'gate-enter', 'gate-enter']);
+    // 연결된 AI(claude) 상세는 계정 줄 + 「다시 확인」뿐 — 「이 AI 로 새 탭」(다음 단계에서 AI·폴더를 고른다)과 Grok 「사무실 표시」 버튼은 없다
+    const gateDetailActs = await win.webContents.executeJavaScript(`[...document.querySelectorAll('#gate-body .agent-detail button')].map(b => b.dataset.act)`);
+    assert.deepEqual(gateDetailActs, ['recheck'], JSON.stringify(gateDetailActs));
+    assert.equal(await win.webContents.executeJavaScript(`document.querySelectorAll('[data-act="newtab"], [data-act="hooks"]').length`), 0);
+    // 미설치 AI(grok)를 고르면 상세에 「설치」 기본 버튼이 보인다 (창은 Windows 에서 돈다). 눌러서 설치를 시작하지는 않는다.
+    const grokDetail = await win.webContents.executeJavaScript(`(() => {
+      document.querySelector('#gate-body .agent-row[data-agent="grok"]').click();
+      const b = document.querySelector('#gate-body .agent-detail button[data-act="install"]');
+      return { text: b?.textContent, primary: b?.classList.contains('primary'), first: document.querySelector('#gate-body .agent-detail .gate-row button')?.dataset.act,
+        title: document.querySelector('#gate-body .agent-title')?.textContent, code: document.querySelector('#gate-body .agent-detail code')?.textContent };
+    })()`);
+    assert.deepEqual(grokDetail, { text: 'Grok 설치', primary: true, first: 'install', title: 'Grok Build', code: 'irm https://x.ai/cli/install.ps1 | iex' }, JSON.stringify(grokDetail));
     await win.webContents.executeJavaScript(`document.querySelector('#gate-body button').click()`);
     await pause(200);
     await win.webContents.executeJavaScript(`document.querySelector('#pick-folder').click()`);
@@ -742,7 +771,46 @@ if (!process.versions.electron) {
     assert.equal(codexSprites.looks,7);assert.ok(codexSprites.changes.every(c=>c.changed),JSON.stringify(codexSprites.changes));
     assert.ok(codexSprites.minimumFacePixels>=20,JSON.stringify(codexSprites));assert.equal(codexSprites.walkingBack,0);
     fs.writeFileSync(path.join(OUT,'codex-character-applied.png'),Buffer.from(codexSprites.png,'base64'));delete codexSprites.png;
+    // 새 AI(0D 임시 그림): Codex 와 같은 포즈 목록이 프레임마다 변하고, 자기 몸 색 픽셀이 있고, Claude 주황은 없다
+    const agentSprites = await win.webContents.executeJavaScript(`(async()=>{
+      const {drawCharacter}=await import('./themes/pixel-office/sprites.js');
+      const {AGENT_LOOKS}=await import('./themes/pixel-office/agent-looks.js');
+      const frame=(a,t)=>{const c=document.createElement('canvas');c.width=c.height=96;drawCharacter(c.getContext('2d'),{pose:'stand',status:'working',facing:'down',colorIndex:1,...a},t,40,60);return c;};
+      const data=c=>Array.from(c.getContext('2d').getImageData(0,0,96,96).data);
+      const cases=[['walk','working'],['type','working'],['read','working'],['run','working'],['talk','working'],['alert','idle'],['stand','sharing'],['sit','resting']];
+      const hex=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
+      const out={};
+      for(const cli of ['grok','muse','antigravity']){
+        const [br,bg,bb]=hex(AGENT_LOOKS[cli].body);
+        const changes=cases.map(([pose,status])=>{const a={cli,pose,status},before=data(frame(a,0)),after=data(frame(a,130));return {pose,status,changed:before.some((v,j)=>v!==after[j])};});
+        const pixels=data(frame({cli},0));let body=0,orange=0;
+        for(let n=0;n<pixels.length;n+=4){if(!pixels[n+3])continue;if(pixels[n]===br&&pixels[n+1]===bg&&pixels[n+2]===bb)body++;if(pixels[n]===215&&pixels[n+1]===123&&pixels[n+2]===87)orange++;}
+        out[cli]={changes,body,orange};
+      }
+      return out;
+    })()`);
+    for(const [cli,r] of Object.entries(agentSprites)){
+      assert.ok(r.changes.every(c=>c.changed),cli+' '+JSON.stringify(r.changes));
+      assert.ok(r.body>0&&r.orange===0,cli+' '+JSON.stringify({body:r.body,orange:r.orange}));
+    }
     win.setSize(1600,1000);await pause(200);
+    // 새 탭 대화상자: 협업을 고르면 참여 AI 체크박스(연결된 2개)가 보이고 폴더 열기가 열려 있다
+    await win.webContents.executeJavaScript(`document.querySelector('#new-tab').click();document.querySelector('input[name="tab-kind"][value="collab"]').click();`);
+    const collabPick = await win.webContents.executeJavaScript(`({ checked: document.querySelectorAll('input[name=collab-agent]:checked').length, fieldsetHidden: document.querySelector('#collab-agents').hidden,
+      hint: document.querySelector('#collab-agents-hint').textContent, openDisabled: document.querySelector('#pick-folder').disabled, radios: [...document.querySelectorAll('input[name=tab-kind]')].map(r => r.value + (r.disabled ? ':off' : '')) })`);
+    assert.deepEqual(collabPick, { checked: 2, fieldsetHidden: false, hint: '', openDisabled: false, radios: ['claude', 'codex', 'grok:off', 'muse:off', 'antigravity:off', 'collab'] }, JSON.stringify(collabPick));
+    // 새 탭 창은 좌우 분할: 왼쪽 AI 선택(세로 목록) | 오른쪽 프로젝트 — 두 영역이 나란히 놓인다 (x 좌표 비교)
+    const split = await win.webContents.executeJavaScript(`(() => {
+      const box = s => { const r = document.querySelector(s).getBoundingClientRect(); return { x: r.x, y: r.y, right: r.right, w: r.width }; };
+      return { ai: box('#newtab .newtab-ai'), project: box('#newtab .newtab-project'), pick: box('#pick-folder'), radio: box('#newtab .kind-pick'),
+        rows: [...document.querySelectorAll('#newtab .kind-pick label')].map(l => l.getBoundingClientRect().y), details: document.querySelector('#newtab-external').open, external: document.querySelectorAll('#external li').length };
+    })()`);
+    assert.ok(split.ai.right <= split.project.x && Math.abs(split.ai.y - split.project.y) < 4, JSON.stringify(split));
+    assert.ok(split.pick.x >= split.ai.right && split.radio.right <= split.project.x, JSON.stringify(split));
+    assert.ok(split.rows.every((y, i) => i === 0 || y > split.rows[i - 1]), '라디오 행은 세로로 쌓인다: ' + split.rows);
+    assert.equal(split.details, split.external > 0, '외부 세션이 있을 때만 펼쳐 둔다: ' + JSON.stringify(split));
+    fs.writeFileSync(path.join(OUT, 'newtab-dialog.png'), (await win.webContents.capturePage()).toPNG());
+    await win.webContents.executeJavaScript(`document.querySelector('#newtab').close()`);
     await win.webContents.executeJavaScript(`document.querySelector('#new-tab').click();document.querySelector('input[name="tab-kind"][value="codex"]').click();document.querySelector('#pick-folder').click();`);
     await pause(200);
     event('SessionStart',{session_id:'preview-codex',_cli:'codex'});
@@ -793,8 +861,8 @@ if (!process.versions.electron) {
     assert.deepEqual(pick.codex.map(r => [r.value, r.checked]), [['', false], ['none', false], ['builtin:office-claude', false], ['user:mine', true]], '설정 원값대로 선택 표시');
     assert.deepEqual(pick.names, ['기본', '아이콘만', '기본 클로드', '<b>내 펫</b>'], '이름은 textContent 로만');
     assert.equal(pick.injected, 0, 'HTML 이 해석되지 않는다');
-    assert.deepEqual(pick.deletes, ['삭제', '삭제'], '가져온 펫(두 구역)에만 삭제 버튼');
-    assert.equal(pick.canvases, 4, '펫 카드마다 미리보기 캔버스 (두 구역 × 두 펫)');
+    assert.deepEqual(pick.deletes, ['삭제', '삭제', '삭제', '삭제', '삭제'], '가져온 펫(AI 5구역)에만 삭제 버튼');
+    assert.equal(pick.canvases, 10, '펫 카드마다 미리보기 캔버스 (다섯 구역 × 두 펫)');
     assert.ok(pick.painted.every(Boolean), `미리보기가 그려짐: ${pick.painted}`);
     assert.deepEqual(petCalls.preview.slice().sort(), ['builtin:office-claude', 'user:mine'], '미리보기는 펫마다 한 번씩만 받는다');
     // 라디오를 바꾸면 선택을 보낸다 (기본 = null)
@@ -831,6 +899,62 @@ if (!process.versions.electron) {
     await win.webContents.executeJavaScript(`document.querySelector('#petpick').close()`);
     await pause(100);
     assert.equal((await petpickRead()).open, false);
+
+    // 「연결 n/N」 칸 → AI 연결 대화상자: 상태가 바뀌어 「다시 확인」을 누르면 행·선택은 그대로 두고 점·요약·상세만 갱신된다.
+    // Codex 가 로그인 안 된 상태: 상단 「연결 1/5」(경고 아님) · 새 탭의 Codex·협업 라디오가 막힌다. 확인 뒤 원래 상태로 되돌린다.
+    const js = code => win.webContents.executeJavaScript(code);
+    const dlgRead = () => js(`({ open: document.querySelector('#agentsdlg').open, pill: document.querySelector('#agents-pill').textContent, pillClass: document.querySelector('#agents-pill').className,
+      rows: [...document.querySelectorAll('#agentsdlg .agent-row')].map(r => [r.dataset.agent, r.querySelector('.agent-sub').textContent, r.getAttribute('aria-selected'), r.tabIndex, r.querySelector('.agent-dot').className]),
+      detail: document.querySelector('#agentsdlg .agent-detail')?.textContent || '', same: [...document.querySelectorAll('#agentsdlg .agent-row')].every((r, i) => r === (window.__rows || [])[i]) })`);
+    const recheck = () => js(`[...document.querySelectorAll('#agentsdlg-body button')].find(b => b.textContent === '다시 확인').click()`);
+    await js(`document.querySelector('#agents-pill').click()`);
+    await pause(150);
+    await js(`window.__rows = [...document.querySelectorAll('#agentsdlg .agent-row')]`);
+    const okStatus = fakeStatus;
+    fakeStatus = { ...okStatus, codexAuth: { loggedIn: false }, agents: { ...okStatus.agents, codex: { ...okStatus.agents.codex, auth: { loggedIn: false } } } };
+    await recheck();
+    await pause(300);
+    const dlgLogin = await dlgRead();
+    assert.equal(dlgLogin.open, true);
+    assert.deepEqual([dlgLogin.pill, /warn/.test(dlgLogin.pillClass)], ['연결 1/5', false], JSON.stringify(dlgLogin));
+    assert.deepEqual(dlgLogin.rows.map(r => [r[0], r[1]]), [['claude', '로그인됨'], ['codex', '로그인 필요'], ['grok', '설치되어 있지 않음'], ['muse', '설치되어 있지 않음'], ['antigravity', '설치되어 있지 않음']]);
+    assert.match(dlgLogin.rows[1][4], /state-login/);
+    assert.equal(dlgLogin.same, true, '행은 다시 만들지 않고 제자리에서 갱신');
+    // 목록에서 Codex 를 고르면 상세가 로그인 안내로 바뀐다 · 위쪽 화살표로 Claude 로 돌아온다 (선택과 초점이 함께)
+    await js(`document.querySelector('#agentsdlg .agent-row[data-agent="codex"]').click()`);
+    const dlgPick = await dlgRead();
+    assert.deepEqual(dlgPick.rows.map(r => [r[2], r[3]]), [['false', -1], ['true', 0], ['false', -1], ['false', -1], ['false', -1]], JSON.stringify(dlgPick.rows));
+    assert.match(dlgPick.detail, /로그인되어 있지 않습니다/);
+    assert.match(dlgPick.detail, /Codex 로그인/);
+    await js(`document.querySelector('#agentsdlg .agent-row[data-agent="codex"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }))`);
+    const dlgKey = await dlgRead();
+    assert.deepEqual(dlgKey.rows.map(r => [r[2], r[3]]), [['true', 0], ['false', -1], ['false', -1], ['false', -1], ['false', -1]], JSON.stringify(dlgKey.rows));
+    assert.equal(await js(`document.activeElement?.dataset.agent`), 'claude', '화살표는 초점도 함께 옮긴다');
+    assert.equal(dlgKey.same, true);
+    await js(`document.querySelector('#agentsdlg-close').click()`);
+    await pause(100);
+    assert.equal((await dlgRead()).open, false);
+    await js(`document.querySelector('#new-tab').click()`);
+    const kindsOff = await js(`({ radios: [...document.querySelectorAll('input[name=tab-kind]')].map(r => r.value + (r.disabled ? ':off' : '') + (r.checked ? ':on' : '')),
+      boxes: [...document.querySelectorAll('input[name=collab-agent]')].map(r => r.value + (r.disabled ? ':off' : '') + (r.checked ? ':on' : '')),
+      label: document.querySelector('input[name=tab-kind][value=codex]').parentElement.textContent, hint: document.querySelector('#kind-hint').textContent, openDisabled: document.querySelector('#pick-folder').disabled })`);
+    assert.deepEqual(kindsOff.radios, ['claude:on', 'codex:off', 'grok:off', 'muse:off', 'antigravity:off', 'collab:off'], JSON.stringify(kindsOff));
+    assert.deepEqual(kindsOff.boxes, ['claude:on', 'codex:off', 'grok:off', 'muse:off', 'antigravity:off'], JSON.stringify(kindsOff));
+    assert.match(kindsOff.label, /Codex · 로그인 필요/);
+    assert.match(kindsOff.hint, /상단 「연결 1\/5」 에서 로그인할 수 있습니다/);
+    assert.equal(kindsOff.openDisabled, false);
+    await js(`document.querySelector('#newtab').close()`);
+    // 원래 상태로 되돌린다
+    fakeStatus = okStatus;
+    await js(`document.querySelector('#agents-pill').click()`);
+    await pause(150);
+    await recheck();
+    await pause(300);
+    const dlgBack = await dlgRead();
+    assert.deepEqual([dlgBack.pill, dlgBack.rows.map(r => r[1])], ['연결 2/5', ['로그인됨', 'preview@example.com · plus', '설치되어 있지 않음', '설치되어 있지 않음', '설치되어 있지 않음']], JSON.stringify(dlgBack));
+    await js(`document.querySelector('#agentsdlg-close').click()`);
+    await pause(100);
+    assert.equal((await dlgRead()).open, false);
 
     assert.deepEqual(errors, []);
     await permCardCheck();

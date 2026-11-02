@@ -158,6 +158,7 @@ function createUsageService({
     if (disposed || !ev || typeof ev.session_id !== 'string' || !ev.session_id) return;
     const sid = ev.session_id;
     if (ev.hook_event_name === 'SessionEnd') { drop(sid); emit(); return; }
+    if (ev._cli && ev._cli !== 'claude' && ev._cli !== 'codex') return; // Grok 등 사용량을 세지 않는 AI 의 활동은 Claude 사용량으로 잡지 않는다
     const cli = ev._cli === 'codex' ? 'codex' : 'claude';
     const s = touch(sid, cli, ev._tab);
     if (ev.hook_event_name === 'UserPromptSubmit') s.requests++;

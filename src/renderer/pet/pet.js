@@ -1,5 +1,8 @@
-// 바탕화면 펫 화면: 종류(Claude·Codex)마다 캔버스 하나. 상태는 메인이 보내 주고, 여기서는 그리기·드래그·클릭만 한다.
+// 바탕화면 펫 화면: 종류(등록된 AI)마다 캔버스 하나. 상태는 메인이 보내 주고, 여기서는 그리기·드래그·클릭만 한다.
 import { ROWS, CELL, SHEETS, SLEEP_SHEET, SLEEP_AFTER_MS, gazeCell, visiblePets, petState, bubbleOf, cardOf, usageRowText, updatedText, refreshButton, sessionText } from './model.js';
+import { AGENT_IDS, agentName } from '../../shared/agents.js';
+import { drawCharacter } from '../themes/pixel-office/sprites.js';
+import { loadResidentSprites } from '../themes/pixel-office/resident-sprite.js';
 
 const W = 96, H = 104; // 캔버스의 CSS 크기
 const CHAT_MS = 600; // 💬 가 날아가는 시간 (CSS transition)
@@ -13,7 +16,7 @@ const wrap = document.querySelector('#wrap'); // 창 크기를 재는 기준 (�
 const root = document.querySelector('#pets');
 const now = () => (typeof window.__petNow === 'function' ? window.__petNow() : Date.now()); // 점검에서 시간 경과를 흉내 낼 수 있게
 
-let state = { mode: 'always', codex: false, kinds: {}, collab: null, sprites: {} };
+let state = { mode: 'always', codex: false, inUse: null, kinds: {}, collab: null, sprites: {} };
 const sheets = new Map(); // 종류 → { key, sheet, sleepSheet, version, gen }: 그림 시트 캐시 (version = Codex 펫 형식 1·2). 펫이 사라졌다 다시 생겨도 재사용하고, 선택한 그림(key)이 바뀔 때만 다시 요청한다
 const failedSprites = new Map(); // 종류 → { key, at }: 그림 요청이 마지막으로 실패한 때 (SPRITE_RETRY_MS 안에는 같은 key 를 다시 요청하지 않는다)
 const SPRITE_RETRY_MS = 30 * 1000;
@@ -23,7 +26,8 @@ let lastCollabTab = null; // 그 차례를 보고한 협업 탭 (기준 탭이 �
 let layoutSig = null; // 직전 렌더의 카드 배치: 보이는 펫 종류 + 카드 permId 유무 + 각 카드의 오른쪽 끝 기준 위치
 const pets = new Map(); // 종류 → { el, canvas, ctx, bubble, card, badge, sheet, sleepSheet, fallback, anim, drag, idleSince, sleepTimer, once, ... }
 const flights = new Set(); // 날아가는 중인 💬 → { el, timer }
-let usage = null; // 마지막으로 받은 사용량 스냅샷 ({ expanded, claude, codex, session, refresh }) — 아직 못 받았으면 null (패널 숨김)
+let usage = null; // 마지막으로 받은 사용량 스냅샷 ({ expanded, <AI id별 칸>, session, refresh }) — 아직 못 받았으면 null (패널 숨김)
+let usageKinds = ''; // 사용량 칸을 마지막으로 맞춘 때 보이던 펫 종류
 let usageRows = []; // 지금 그려진 행 → { row, text, bar, fill } (1분마다 글·막대만 다시 맞춘다)
 let usageTimer = null; // 1분 타이머 (패널이 보이고 펼쳐져 있고 문서가 보일 때만, 하나)
 let usageHoverTimer = null;
@@ -34,11 +38,28 @@ const U = {
   updated: document.querySelector('#usage-updated'),
   refresh: document.querySelector('#usage-refresh'),
   toggle: document.querySelector('#usage-toggle'),
-  sec: Object.fromEntries(['claude', 'codex'].map((k) => {
-    const s = document.querySelector(`#usage-${k}`);
-    return [k, { root: s, rows: s.querySelector('.usage-rows'), err: s.querySelector('.usage-err') }];
-  })),
+  sec: {},
 };
+// AI 별 사용량 칸: Claude·Codex 는 정적 마크업을 쓰고, 그 밖의 AI 는 같은 모양으로 만들어 세션 줄 앞에 넣는다.
+for (const k of AGENT_IDS) {
+  let s = document.querySelector(`#usage-${k}`);
+  if (!s) {
+    s = document.createElement('div');
+    s.className = 'usage-sec';
+    s.id = `usage-${k}`;
+    s.hidden = true;
+    const title = document.createElement('div');
+    title.className = 'usage-title';
+    title.textContent = agentName(k);
+    const rows = document.createElement('div');
+    rows.className = 'usage-rows';
+    const err = document.createElement('div');
+    err.className = 'usage-err';
+    s.append(title, rows, err);
+    U.session.before(s);
+  }
+  U.sec[k] = { root: s, rows: s.querySelector('.usage-rows'), err: s.querySelector('.usage-err') };
+}
 
 // ───────────────────────── 그림 ─────────────────────────
 
@@ -48,7 +69,8 @@ function claudeFallback() {
   return img;
 }
 
-// 그림 시트가 없을 때의 기본 모양. Claude 는 앱 아이콘, Codex 는 캔버스에 직접 그린다.
+// 그림 시트가 없을 때의 기본 모양. Claude 는 앱 아이콘, Codex 는 캔버스에 직접 그리고, 그 밖의 AI 는 사무실 캐릭터를 크게 쓴다.
+let fallbackArt;
 function drawBase(ctx, p) {
   if (p.kind === 'claude') {
     if (p.fallback.complete && p.fallback.naturalWidth) {
@@ -57,6 +79,17 @@ function drawBase(ctx, p) {
       ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(p.fallback, -38, -76, 76, 76);
     }
+    return;
+  }
+  if (p.kind !== 'codex') {
+    if (!fallbackArt) fallbackArt = loadResidentSprites().then(() => {
+      for (const pet of pets.values()) if (!pet.sheet) redraw(pet);
+    }).catch(error => console.warn(error.message));
+    // 아이콘 선택도 승인된 사무실 외형을 쓴다. 기본 전용 시트는 기존 재생기로 그린다.
+    ctx.save();
+    ctx.scale(3, 3);
+    drawCharacter(ctx, { cli: p.kind, pose: 'stand', status: 'working', facing: 'down', colorIndex: 0, appearance: {} }, now(), 0, -2);
+    ctx.restore();
     return;
   }
   ctx.fillStyle = '#1f2a3a';
@@ -88,8 +121,12 @@ function wobble(name, frame, count) {
   }
 }
 
-// 협업 대화 중에는 두 캐릭터가 서로 마주 본다: 기본 그림만 3° 기울인다 (시트 그림은 좌우가 정해져 있어 그대로).
-const facing = (p) => (state.collab?.active ? (p.kind === 'claude' ? 3 : -3) : 0);
+// 협업 대화 중에는 캐릭터들이 서로 마주 본다: 기본 그림만 3° 기울인다 (시트 그림은 좌우가 정해져 있어 그대로). 맨 왼쪽은 +3, 맨 오른쪽은 -3, 가운데는 그대로.
+function facing(p) {
+  if (!state.collab?.active) return 0;
+  const list = state.collab.agents || ['claude', 'codex'], i = list.indexOf(p.kind);
+  return i === 0 ? 3 : i === list.length - 1 && i > 0 ? -3 : 0;
+}
 
 // 자는 모습의 「z」: 프레임마다 위로 떠오르며 옅어진다.
 function drawZ(ctx, frame) {
@@ -673,7 +710,7 @@ function updateUsageTexts() {
     if (known) r.bar.setAttribute('aria-valuenow', String(r.row.percent));
     else r.bar.removeAttribute('aria-valuenow');
   }
-  const stamps = [usage.claude.updatedAt, usage.codex.updatedAt].filter(Number.isFinite);
+  const stamps = AGENT_IDS.filter((k) => pets.has(k)).map((k) => usage[k].updatedAt).filter(Number.isFinite); // 보이는 칸만
   U.updated.textContent = updatedText(stamps.length ? Math.max(...stamps) : null, t);
   const btn = refreshButton(usage.refresh, t);
   U.refresh.disabled = btn.disabled;
@@ -698,6 +735,7 @@ function syncUsageHover() {
 
 // 패널을 받은 스냅샷대로 다시 그린다 (펫이 하나도 없으면 숨김). 창 크기 보고는 부르는 쪽이 한다.
 function renderUsage() {
+  usageKinds = [...pets.keys()].join();
   const show = !!usage && pets.size > 0;
   const wasHover = !U.root.hidden && U.root.matches(':hover');
   const wasOpen = U.root.dataset.open;
@@ -710,11 +748,12 @@ function renderUsage() {
     U.toggle.setAttribute('aria-expanded', String(open));
     usageRows = [];
     if (open) {
-      for (const kind of ['claude', 'codex']) {
+      for (const kind of AGENT_IDS) {
         const s = usage[kind], sec = U.sec[kind];
         sec.rows.replaceChildren(...s.rows.map(createUsageRow));
         sec.err.textContent = s.error || '';
-        sec.root.hidden = !s.rows.length && !s.error;
+        // 데이터가 없거나 지금 펫이 보이지 않는 AI 의 칸은 숨긴다 (알림 때문에 나온 펫도 칸이 보이게)
+        sec.root.hidden = (!s.rows.length && !s.error) || !pets.has(kind);
       }
       U.session.hidden = !usage.session;
       U.session.textContent = usage.session ? sessionText(usage.session) : '';
@@ -798,7 +837,7 @@ function render() {
     lastTurn = null;
     lastCollabTab = null;
   }
-  if (U.root.hidden === !!(usage && pets.size)) renderUsage(); // 보일 펫이 생기거나 없어지면 패널도 보이거나 숨긴다 (내용은 사용량을 받을 때만 다시 그린다)
+  if (U.root.hidden === !!(usage && pets.size) || (usage && [...pets.keys()].join() !== usageKinds)) renderUsage(); // 보일 펫이 생기거나 없어지면 패널·AI 별 칸도 다시 맞춘다 (내용은 사용량을 받을 때만 새로 온다)
   reportSize();
 }
 
@@ -806,7 +845,8 @@ window.pet.onState((s) => {
   const sprite = (v) => (typeof v === 'string' && v.length <= 100 ? v : null);
   state = {
     mode: s?.mode || 'always', codex: !!s?.codex, kinds: s?.kinds || {}, collab: s?.collab?.active ? s.collab : null,
-    sprites: { claude: sprite(s?.sprites?.claude), codex: sprite(s?.sprites?.codex) },
+    inUse: Array.isArray(s?.inUse) ? s.inUse.filter((k) => AGENT_IDS.includes(k)) : null,
+    sprites: Object.fromEntries(AGENT_IDS.map((k) => [k, sprite(s?.sprites?.[k])])),
   };
   render();
 });
@@ -814,7 +854,7 @@ window.pet.onState((s) => {
 window.pet.onUsage((s) => {
   if (!s || typeof s !== 'object') return;
   const section = (x) => ({ rows: Array.isArray(x?.rows) ? x.rows : [], error: typeof x?.error === 'string' ? x.error : null, updatedAt: Number.isFinite(x?.updatedAt) ? x.updatedAt : null });
-  usage = { expanded: s.expanded !== false, claude: section(s.claude), codex: section(s.codex), session: s.session || null, refresh: s.refresh || {} };
+  usage = { expanded: s.expanded !== false, ...Object.fromEntries(AGENT_IDS.map((k) => [k, section(s[k])])), session: s.session || null, refresh: s.refresh || {} };
   renderUsage();
   reportSize();
 });

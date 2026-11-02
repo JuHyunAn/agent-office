@@ -76,6 +76,12 @@ function bundledCodex(localAppData = process.env.LOCALAPPDATA || path.join(os.ho
   return best && best.exe;
 }
 
+// 공식 설치기(irm https://chatgpt.com/codex/install.ps1 | iex)는 %LOCALAPPDATA%\Programs\OpenAI\Codex\bin\codex.exe 에 두고 PATH 는 앱이 바로 알지 못한다 (설치 직후 앱 PATH 는 옛 값).
+function nativeCodex(localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local')) {
+  const exe = path.join(localAppData, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe');
+  return fs.existsSync(exe) ? exe : null;
+}
+
 // npm 설치본(codex.cmd)은 node 스크립트를 거쳐 패키지 안의 실제 codex.exe 를 부른다 (vendor\<플랫폼>\codex\codex.exe).
 // cmd.exe 를 거치면 hook 인자의 따옴표가 지워지므로 그 exe 를 직접 찾는다.
 function npmVendorExe(cmdPath) {
@@ -94,6 +100,8 @@ function pickCodex(candidates, localAppData) {
   const exe = (file) => ({ file, prefixArgs: [], display: file });
   for (const c of candidates) if (/\.exe$/i.test(c) && fs.existsSync(c)) return exe(c);
   for (const c of candidates) if (/\.cmd$/i.test(c) && fs.existsSync(c)) { const v = npmVendorExe(c); if (v) return exe(v); }
+  const native = nativeCodex(localAppData);
+  if (native) return exe(native);
   const bundled = bundledCodex(localAppData);
   return bundled ? exe(bundled) : null;
 }
@@ -259,6 +267,6 @@ async function authStatus(loc, { appVersion, timeoutMs = 3000 } = {}) {
 }
 
 module.exports = {
-  HOOK_EVENTS, hookCommand, hookArgs, tabArgs, execArgs, parseModels, models, bundledCodex, npmVendorExe, pickCodex, locate, version,
+  HOOK_EVENTS, hookCommand, hookArgs, tabArgs, execArgs, parseModels, models, bundledCodex, nativeCodex, npmVendorExe, pickCodex, locate, version,
   windowLabel, limitRows, parseRollout, rateLimits, appServerRequest, parseLoginStatus, methodLabel, authStatus,
 };

@@ -5,6 +5,7 @@ import { exampleDocument, makeLayout, footprint } from './model.js';
 import { readOffice } from './storage.js';
 import { MATERIALS } from './catalog.js';
 import { loadDrinkImages } from '../pixel-office/drink-images.js';
+import { loadResidentSprites } from '../pixel-office/resident-sprite.js';
 import { resolveEnvironment } from './environment.js';
 
 let initial = exampleDocument(), loadError = null, saved = false;
@@ -35,7 +36,7 @@ const theme = {
       if (backgroundSource) { const source = backgroundSource, image = new Image(); image.onload = () => { if (source === backgroundSource) background = image; }; image.src = source; }
     }
   },
-  async load() { await loadDrinkImages(); this.setDraft(this.editor.doc); },
+  async load() { await Promise.all([loadDrinkImages(), loadResidentSprites()]); this.setDraft(this.editor.doc); },
   mount(view) { this.editor.mount(view); },
   unmount() { this.editor.unmount(); },
   hitTest(x, y) {

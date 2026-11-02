@@ -2,6 +2,9 @@
 
 const http = require('node:http');
 const crypto = require('node:crypto');
+const { normAgent } = require('../shared/agents.js');
+const { GROK_TOOL_NAMES, pickGrokInput } = require('./grokTools.cjs');
+const { AGY_TOOL_NAMES } = require('./agyTools.cjs');
 
 const MAX_BODY = 1024 * 1024;
 
@@ -25,10 +28,71 @@ function clip(v, n) {
 const TOOL_INPUT_KEYS = ['file_path', 'notebook_path', 'pattern', 'path', 'description', 'command', 'query', 'url',
   'subagent_type', 'skill', 'to', 'summary'];
 
+// Muse 는 tool_input 을 JSON 문자열로 보낼 수 있다(Grok 처럼) — 문자열이면 객체로 푼다. 풀 수 없으면 undefined.
+function parseToolInput(v) {
+  if (typeof v !== 'string') return v;
+  try { return JSON.parse(v); } catch { return undefined; }
+}
+
 function pickToolInput(input) {
   if (!input || typeof input !== 'object') return undefined;
   const out = {};
   for (const k of TOOL_INPUT_KEYS) if (input[k] !== undefined) out[k] = clip(typeof input[k] === 'string' ? input[k] : String(input[k]), 300);
+  return out;
+}
+
+// Grok 은 같은 내용을 camelCase 와 Claude 호환 snake_case 로 함께 보낸다(1.0.70 실측). tool_input·tool_response 는 JSON 문자열이다.
+const GROK_CAMEL_KEYS = ['hookEventName', 'sessionId', 'toolName', 'toolInput', 'toolResult', 'transcriptPath', 'workspaceRoot', 'timestamp',
+  'permissionMode', 'promptId', 'toolUseId', 'backgroundTasks', 'sessionCrons', 'stopHookActive', 'lastAssistantMessage',
+  'toolInputTruncated', 'toolResultTruncated', 'durationMs', 'isBackgrounded'];
+
+// Grok 본문(hookEventName 이 있는 것)을 Claude 모양으로 맞춘다. 그 밖의 본문은 그대로 돌려준다.
+// 종료 직전 두 번째 Stop(reason: shutdown — 뒤에 SessionEnd 가 온다)은 null: 호출부가 버린다.
+function normalizeGrok(payload) {
+  if (!payload || typeof payload !== 'object' || typeof payload.hookEventName !== 'string') return payload;
+  if (payload.hook_event_name === 'Stop' && payload.reason === 'shutdown') return null;
+  const out = { ...payload };
+  const input = pickGrokInput(out.tool_input !== undefined ? out.tool_input : out.toolInput);
+  if (out.tool_input !== undefined || out.toolInput !== undefined) out.tool_input = input;
+  if (typeof out.tool_name !== 'string' && typeof out.toolName === 'string') out.tool_name = out.toolName;
+  if (typeof out.tool_name === 'string' && Object.hasOwn(GROK_TOOL_NAMES, out.tool_name)) out.tool_name = GROK_TOOL_NAMES[out.tool_name];
+  for (const k of GROK_CAMEL_KEYS) delete out[k];
+  delete out.tool_response;
+  out._grok = true;
+  return out;
+}
+
+// Antigravity(agy) hook 본문(camelCase, 이벤트 이름 필드 없음 — 주소의 ev 쿼리로 구분, 1.4.12 실측)를 Claude 모양으로 맞춘다.
+// 쿼리가 antigravity 가 아니거나 ev 가 없으면 본문을 그대로 돌려준다. 사무실에 쓰지 않는 이벤트(첫 호출이 아닌 PreInvocation 등)와 읽을 수 없는 본문은 null: 호출부가 버린다.
+// 원본 camelCase 키는 가져가지 않고 필요한 필드만 새 객체에 담는다.
+const AGY_INPUT_KEYS = { CommandLine: 'command', Path: 'file_path', AbsolutePath: 'file_path', TargetFile: 'file_path', query: 'query', Url: 'url' };
+function normalizeAgy(payload, query = {}) {
+  if (query.cli !== 'antigravity' || !query.ev) return payload;
+  if (!payload || typeof payload !== 'object') return null;
+  const out = {};
+  if (typeof payload.conversationId === 'string') out.session_id = payload.conversationId;
+  if (Array.isArray(payload.workspacePaths) && typeof payload.workspacePaths[0] === 'string') out.cwd = payload.workspacePaths[0];
+  if (query.ev === 'SessionStart') {
+    out.hook_event_name = 'SessionStart';
+    out.source = 'startup';
+  } else if (query.ev === 'PreInvocation') {
+    if (payload.invocationNum !== 0 && payload.invocationNum !== '0') return null; // 스텝마다 반복되는 호출은 첫 번째만 「프롬프트 제출」로 본다
+    out.hook_event_name = 'UserPromptSubmit';
+    if (typeof payload.lastUserInput === 'string') out.prompt = payload.lastUserInput;
+  } else if (query.ev === 'PreToolUse') {
+    const call = payload.toolCall;
+    if (!call || typeof call !== 'object' || typeof call.name !== 'string' || !call.name) return null;
+    out.hook_event_name = 'PreToolUse';
+    out.tool_name = Object.hasOwn(AGY_TOOL_NAMES, call.name) ? AGY_TOOL_NAMES[call.name] : call.name;
+    out.tool_input = {};
+    if (call.args && typeof call.args === 'object') {
+      for (const [from, to] of Object.entries(AGY_INPUT_KEYS)) if (typeof call.args[from] === 'string' && out.tool_input[to] === undefined) out.tool_input[to] = call.args[from];
+    }
+  } else if (query.ev === 'Stop') {
+    out.hook_event_name = 'Stop';
+  } else {
+    return null;
+  }
   return out;
 }
 
@@ -37,8 +101,10 @@ function pickToolInput(input) {
 function toEvent(payload, headers, src, now = Date.now(), query = {}) {
   const raw = headers['x-office-tab'] || query.tab;
   const tab = raw && /^[a-z0-9-]{1,40}$/i.test(String(raw)) ? raw : null;
-  const ev = { ...payload };
-  ev.tool_input = pickToolInput(ev.tool_input);
+  const norm = normalizeGrok(payload);
+  if (norm === null) return null;
+  const ev = { ...norm };
+  ev.tool_input = pickToolInput(parseToolInput(ev.tool_input));
   delete ev.tool_response;
   ev.prompt = clip(ev.prompt, 300);
   ev.last_assistant_message = clip(ev.last_assistant_message, 400);
@@ -47,7 +113,8 @@ function toEvent(payload, headers, src, now = Date.now(), query = {}) {
   delete ev.agent_transcript_path;
   ev._tab = tab ? String(tab) : null;
   ev._src = src || null;
-  ev._cli = query.cli === 'codex' ? 'codex' : 'claude';
+  ev._cli = ev._grok ? 'grok' : normAgent(query.cli); // Grok 은 Claude 호환 hook 경로(cli 없음)로 와도 Grok
+  delete ev._grok;
   ev._at = now;
   return ev;
 }
@@ -116,14 +183,22 @@ async function startHookServer({ port, token, onEvent, onStatus = () => {}, host
         try { onStatus(sp, rawTab && /^[a-z0-9-]{1,40}$/i.test(rawTab) ? rawTab : null); } catch { /* 사용량 쪽 오류는 무시 */ }
         return;
       }
-      const key = crypto.createHash('sha1').update(body).digest('hex');
+      const src = url.searchParams.get('src');
+      const query = { tab: url.searchParams.get('tab'), cli: url.searchParams.get('cli') };
+      // Antigravity 는 본문에 이벤트 이름이 없어 주소의 ev 로 구분한다 — 본문이 같아도 ev 가 다르면 다른 이벤트.
+      const agyEv = query.cli === 'antigravity' ? url.searchParams.get('ev') : null;
+      if (agyEv) query.ev = agyEv;
+      const key = crypto.createHash('sha1').update(agyEv ? `${agyEv}|${body}` : body).digest('hex');
       let payload = null;
       try { payload = JSON.parse(body); } catch { /* 파싱 실패는 아래에서 버린다 */ }
+      payload = normalizeAgy(payload, query); // null 이면 아래에서 버리고 「결정 없음」으로 응답한다
+      // Grok 은 앱 전용 hook 파일과 Claude 전역 hook, 두 경로로 같은 이벤트를 보낼 수 있다. 본문이 바이트까지 같다고 보장할 수 없어
+      // 이벤트 식별자(세션·이벤트·도구 호출·하위 에이전트·시각)로도 중복을 거른다. 시각이 없으면 서로 다른 이벤트를 하나로 볼 수 있어 이 키는 쓰지 않는다.
+      const grokKey = payload && typeof payload === 'object' && typeof payload.hookEventName === 'string' && payload.timestamp
+        ? `grok|${payload.session_id}|${payload.hook_event_name}|${payload.tool_use_id || ''}|${payload.agent_id || ''}|${payload.timestamp}` : null;
       const valid = !!payload && typeof payload === 'object' && !!payload.hook_event_name;
       // 렌더러로 가는 ev 에서는 지우는 transcript_path 를 메인(사용량)에만 따로 알린다.
       const meta = { transcriptPath: valid && typeof payload.transcript_path === 'string' ? payload.transcript_path : null };
-      const src = url.searchParams.get('src');
-      const query = { tab: url.searchParams.get('tab'), cli: url.searchParams.get('cli') };
       const ev = valid ? toEvent(payload, req.headers, src, Date.now(), query) : null;
       // 붙잡는 대상: 앱이 띄운 탭의 세션 hook 이 보낸 PermissionRequest 이고 지금 카드로 답할 수 있을 때뿐이다.
       let hold = false;
@@ -133,7 +208,9 @@ async function startHookServer({ port, token, onEvent, onStatus = () => {}, host
       if (!hold) {
         // 그 밖의 hook 에는 「결정 없음」으로 즉시 응답한다 — Claude 작업을 늦추지 않는 것이 최우선.
         res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
-        if (isDup(key)) return;
+        const dupBody = isDup(key);
+        const dupGrok = grokKey ? isDup(grokKey) : false;
+        if (dupBody || dupGrok) return;
         if (!ev) return;
         try { onEvent(ev, meta); } catch { /* 화면 쪽 오류는 무시 */ }
         return;
@@ -175,4 +252,4 @@ async function startHookServer({ port, token, onEvent, onStatus = () => {}, host
   throw lastErr;
 }
 
-module.exports = { startHookServer, createDeduper, toEvent };
+module.exports = { startHookServer, createDeduper, toEvent, normalizeGrok, normalizeAgy };

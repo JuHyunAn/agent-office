@@ -9,21 +9,21 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-  <!-- 진입 화면: Claude Code 설치·로그인 확인 -->
+  <!-- 진입 화면: AI 설치·로그인 확인 (왼쪽 AI 목록 · 오른쪽 상세) -->
   <section id="gate" class="gate">
     <div class="gate-card">
       <div class="gate-logo"><span class="brand-mark" aria-hidden="true"></span></div>
       <h1>Agent Office</h1>
       <p class="gate-sub">작은 에이전트들이 모여, 큰 일을 만드는 곳.</p>
-      <div id="gate-body" class="gate-body">Claude Code 확인 중…</div>
+      <div id="gate-body" class="gate-body">AI 연결 확인 중…</div>
+      <p id="gate-term-title" class="hint gate-term-title" hidden></p>
       <div id="gate-term" class="gate-term" hidden></div>
     </div>
   </section>
 
   <header class="topbar">
     <span class="brand"><span class="brand-mark" aria-hidden="true"></span>AGENT OFFICE</span>
-    <span id="account" class="pill">계정 확인 중</span>
-    <button id="codex-account" class="pill pill-btn" type="button" hidden>Codex 확인 중</button>
+    <button id="agents-pill" class="pill pill-btn" type="button">연결 확인 중</button>
     <button id="global-hooks" class="pill pill-btn" title="VS Code·터미널 등 다른 곳의 Claude Code 세션도 사무실에 표시">다른 세션 보기: 확인 중</button>
     <span id="headcount" class="pill">근무 중 0명</span>
     <span class="spacer"></span>
@@ -57,7 +57,11 @@
 
     <section class="cli-pane">
       <div id="cli-resizer" class="cli-resizer" role="separator" aria-orientation="vertical" aria-label="오른쪽 영역 너비 조절" title="끌어서 너비 조절 · 두 번 클릭하면 기본 너비"></div>
-      <div class="terminal-heading"><span class="eyebrow">TERMINAL</span><span>Claude Code · Codex</span><span class="terminal-local">로컬 세션</span></div>
+      <div class="terminal-heading"><span class="eyebrow">TERMINAL</span>
+        <!-- <span>Claude Code · Codex</span> -->
+        <span class="terminal-local">로컬 세션</span>
+        <span class="terminal-remote">원격 세션</span>
+      </div>
       <nav class="tabbar">
         <div id="tabs" class="tabs"></div>
         <button id="new-tab" class="tab-add" title="새 탭">＋</button>
@@ -75,31 +79,41 @@
 
   <div id="tooltip" class="tooltip" hidden></div>
 
-  <dialog id="newtab" class="dialog">
+  <dialog id="newtab" class="dialog dialog-wide">
     <form method="dialog" class="dialog-inner">
       <h2>새 탭 열기</h2>
-      <section>
-        <h3>실행</h3>
-        <div class="kind-pick" role="radiogroup" aria-label="실행할 AI">
-          <label><input type="radio" name="tab-kind" value="claude" checked> Claude Code</label>
-          <label><input type="radio" name="tab-kind" value="codex"> Codex</label>
-          <label><input type="radio" name="tab-kind" value="collab"> 협업 대화 (Claude + Codex)</label>
-        </div>
-        <p id="kind-hint" class="hint"></p>
-        <p id="kind-login" class="hint" hidden><button type="button" id="kind-login-btn" class="btn small">Codex 로그인 탭 열기</button></p>
-      </section>
-      <section>
-        <h3>작업 폴더</h3>
-        <button type="button" id="pick-folder" class="btn primary">📁 폴더 선택…</button>
-        <ul id="recent" class="list"></ul>
-      </section>
-      <section>
-        <h3>다른 곳에서 실행 중인 세션</h3>
-        <p id="external-hint" class="hint"></p>
-        <ul id="external" class="list"></ul>
-      </section>
+      <div class="newtab-split">
+        <section class="newtab-ai" aria-labelledby="newtab-ai-title">
+          <h3 id="newtab-ai-title">AI</h3>
+          <div class="kind-pick" role="radiogroup" aria-label="AI 선택"></div>
+          <fieldset id="collab-agents" class="collab-agents" aria-describedby="collab-agents-hint" hidden>
+            <legend>협업에 참여할 AI (2개 이상)</legend>
+            <div id="collab-agents-list"></div>
+            <p id="collab-agents-hint" class="hint"></p>
+          </fieldset>
+          <p id="kind-hint" class="hint"></p>
+        </section>
+        <section class="newtab-project" aria-labelledby="newtab-project-title">
+          <h3 id="newtab-project-title">프로젝트</h3>
+          <button type="button" id="pick-folder" class="btn primary">📁 폴더 선택…</button>
+          <ul id="recent" class="list"></ul>
+          <details id="newtab-external" class="newtab-external">
+            <summary>다른 곳에서 실행 중인 세션</summary>
+            <p id="external-hint" class="hint"></p>
+            <ul id="external" class="list"></ul>
+          </details>
+        </section>
+      </div>
       <div class="dialog-actions"><button class="btn">닫기</button></div>
     </form>
+  </dialog>
+
+  <dialog id="agentsdlg" class="dialog dialog-wide" aria-labelledby="agentsdlg-title">
+    <div class="dialog-inner">
+      <h2 id="agentsdlg-title">AI 연결</h2>
+      <div id="agentsdlg-body"></div>
+      <div class="dialog-actions"><button type="button" id="agentsdlg-close" class="btn">닫기</button></div>
+    </div>
   </dialog>
 
   <dialog id="petpick" class="dialog petpick">

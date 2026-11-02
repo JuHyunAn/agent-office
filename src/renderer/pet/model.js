@@ -1,4 +1,5 @@
 // 펫 화면의 순수 규칙 (DOM 에 기대지 않아 테스트할 수 있다).
+import { AGENT_IDS } from '../../shared/agents.js';
 
 // Codex 펫 형식(openai/skills hatch-pet): 버전 1 = 1536x1872 (8열 x 9행), 버전 2 = 1536x2288 (8열 x 11행, 9·10행은 커서를 바라보는 16방향), 칸 192x208.
 // 행마다 쓰는 칸 수와 칸별 시간(ms).
@@ -30,12 +31,17 @@ export function gazeCell(dx, dy) {
   return { row: 9 + Math.floor(o / 8), col: o % 8 };
 }
 
-// 보일 펫: 상시 → Claude(+ Codex 가 설치돼 있으면 Codex), 알림만 → 알림이 있는 종류만. 끄기 → 없음.
-// 협업 대화가 진행 중이면 모드와 상관없이(끄기 제외) 둘 다 — Claude 왼쪽 · Codex 오른쪽.
-export function visiblePets({ mode, codex, kinds = {}, collab = null } = {}) {
+// 보일 펫 (순서 = 레지스트리 순서): 상시 → 앱에서 쓰는 중인 AI(inUse, 탭을 연 AI) + 알림이 있는 AI (inUse 를 아직 모르면 예전처럼 Claude + 설치된 Codex), 알림만 → 알림이 있는 종류만. 끄기 → 없음.
+// 협업 대화가 진행 중이면 모드와 상관없이(끄기 제외) 참여 AI 전부(collab.agents, 없으면 Claude·Codex) + 알림이 있는 AI (상시면 쓰는 중인 AI 도) — 협업 밖 AI 의 권한 카드가 가려지지 않게.
+export function visiblePets({ mode, codex, inUse = null, kinds = {}, collab = null, all = AGENT_IDS } = {}) {
   if (mode === 'off') return [];
-  if (collab?.active) return ['claude', 'codex'];
-  if (mode === 'alerts') return ['claude', 'codex'].filter((k) => (kinds[k]?.attention || []).length > 0);
+  const alert = (k) => (kinds[k]?.attention || []).length > 0;
+  if (collab?.active) {
+    const roster = Array.isArray(collab.agents) && collab.agents.length >= 2 ? collab.agents : ['claude', 'codex'];
+    return all.filter((k) => roster.includes(k) || alert(k) || (mode === 'always' && Array.isArray(inUse) && inUse.includes(k)));
+  }
+  if (mode === 'alerts') return all.filter(alert);
+  if (Array.isArray(inUse)) return all.filter((k) => inUse.includes(k) || alert(k)); // 알림은 숨기지 않는다 (외부 세션 알림 등)
   return codex ? ['claude', 'codex'] : ['claude'];
 }
 

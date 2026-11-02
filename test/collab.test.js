@@ -765,3 +765,271 @@ test('글도 도구 사용도 없이 끝난 AI 발언은 빈 발언으로 보고
   m.halt();
   assert.equal(isEmptyReply(m.messages.at(-1)), false, '쓰는 중에 중단하면 그대로 둔다');
 });
+
+// ───── 0C: 참여자(roster) 다자 진행 — 가짜 세 번째 AI 'x' 로 확인한다 (2명 동작은 위의 기존 테스트가 고정) ─────
+import { OWNERS, nameOf, ownerOptions, targetsOf, mentionOf, agreedText, placeholderOf } from '../src/renderer/collab/moderator.js';
+
+const room3 = (opts = {}) => room({ roster: ['claude', 'codex', 'x'], ...opts });
+
+test('roster: 기본은 [claude, codex](동결), 잘못된 값은 오류, 구현 담당 기본은 claude 가 있으면 claude 아니면 첫 AI', () => {
+  const { m } = room();
+  assert.deepEqual([...m.roster], ['claude', 'codex']);
+  assert.ok(Object.isFrozen(m.roster));
+  assert.deepEqual(Object.keys(m.seen), ['claude', 'codex']);
+  assert.deepEqual(Object.keys(m.prefs), ['claude', 'codex']);
+  assert.deepEqual(Object.keys(m.catalog), ['claude', 'codex']);
+  assert.equal(m.owner, 'claude');
+  assert.equal(room({ roster: ['codex', 'x'] }).m.owner, 'codex');
+  assert.deepEqual(Object.keys(room3().m.prefs), ['claude', 'codex', 'x']);
+  for (const bad of [['claude'], [], ['claude', 'claude'], ['claude', 3], ['claude', ''], 'claude,codex', {}, ['claude', 'all'], ['ask', 'claude'], ['user', 'claude'], ['claude', 'system']]) {
+    assert.throws(() => room({ roster: bad }), /잘못된 협업 참여자/, JSON.stringify(bad));
+  }
+});
+
+test('roster 3명: 「모두에게」 는 구현 담당부터 한 바퀴 (claude→codex→x, 구현 담당 codex 면 codex→x→claude)', () => {
+  const a = room3();
+  a.m.say('안건');
+  a.reply('claude', '의견 1'); a.reply('codex', '의견 2');
+  assert.deepEqual(a.sent.map((s) => s.agent), ['claude', 'codex', 'x']);
+  const b = room3();
+  b.m.owner = 'codex';
+  b.m.say('안건');
+  b.reply('codex', '의견 1'); b.reply('x', '의견 2');
+  assert.deepEqual(b.sent.map((s) => s.agent), ['codex', 'x', 'claude']);
+  const c = room3();
+  c.m.say('엑스부터', 'x');
+  assert.deepEqual(c.sent.map((s) => s.agent), ['x'], '지정하면 그 AI 하나');
+});
+
+test('roster 3명: 자동 이어가기는 직전 발언자 다음 사람에게 넘기는 라운드 로빈', () => {
+  const { m, sent, reply } = room3();
+  m.say('시작', 'claude');
+  for (let i = 0; i < 6; i++) reply(sent.at(-1).agent, `발언 ${i}`);
+  assert.deepEqual(sent.map((s) => s.agent), ['claude', 'codex', 'x', 'claude', 'codex', 'x', 'claude']);
+  const off = room3();
+  off.m.auto = false;
+  off.m.say('한 번만', 'codex');
+  off.reply('codex', '끝');
+  assert.equal(off.sent.length, 1); assert.equal(off.m.status, 'idle', '자동 이어가기를 끄면 지정한 상대만');
+});
+
+test('roster 3명: 합의는 제안한 AI 를 뺀 나머지 전원이 이어서 [완료] 를 써야 하고, 중간에 반론이 나오면 처음부터', () => {
+  const { m, sent, reply } = room3();
+  m.say('안건');
+  reply('claude', '최종안입니다\n[완료]');
+  reply('codex', '동의합니다\n[완료]');
+  assert.equal(m.status, 'running'); assert.equal(m.running, 'x', '아직 x 차례 — 합의 전');
+  assert.equal(m.round.final, null);
+  reply('x', '동의합니다\n[완료]');
+  assert.equal(m.status, 'idle');
+  assert.equal(m.round.final.from, 'claude'); assert.equal(m.round.final.final, true);
+  assert.equal(sent.length, 3);
+
+  const b = room3();
+  b.m.say('안건');
+  b.reply('claude', '최종안입니다\n[완료]');
+  b.reply('codex', '동의합니다\n[완료]');
+  b.reply('x', '그런데 이 부분은 다릅니다');
+  assert.equal(b.m.round.final, null); assert.equal(b.m.round.proposal, null); assert.equal(b.m.round.agreed.size, 0);
+  assert.equal(b.m.status, 'running'); assert.equal(b.m.running, 'claude', '반론 뒤에는 다음 사람(claude)이 이어서');
+});
+
+test('roster 3명: 짧은 동의가 제안이면 같은 라운드 앞의 참여 AI 답(x 포함)이 최종 답변이다', () => {
+  const { m, reply } = room3();
+  m.owner = 'x';
+  m.say('안건');
+  reply('x', '긴 답변입니다. '.repeat(10));
+  reply('claude', '동의\n[완료]');
+  reply('codex', '동의\n[완료]');
+  reply('x', '동의\n[완료]');
+  assert.equal(m.status, 'idle');
+  assert.equal(m.round.final.from, 'x'); assert.ok(m.round.final.text.length >= 80);
+});
+
+test('roster 3명: 여러 AI 가 [질문] 하면 askers 순서를 기억하고, 사용자 답은 첫 질문자부터 한 바퀴', () => {
+  const { m, sent, reply } = room3();
+  m.say('결제 붙여 줘');
+  reply('claude', '의견입니다');
+  reply('codex', '어떤 PG?\n[질문] 토스 / 카카오');
+  reply('x', '범위는?\n[질문] 전체 / 일부');
+  assert.equal(m.status, 'question');
+  assert.deepEqual(m.round.askers, ['codex', 'x']);
+  assert.equal(m.asker, 'codex');
+  m.say('토스로', 'all');
+  assert.deepEqual(sent.slice(3).map((s) => s.agent), ['codex'], '질문한 쪽이 먼저');
+  reply('codex', '확인');
+  reply('x', '확인'); reply('claude', '확인');
+  assert.deepEqual(sent.slice(3, 6).map((s) => s.agent), ['codex', 'x', 'claude'], '첫 질문자부터 한 바퀴');
+});
+
+test('roster 3명: 답변 중 「모두에게」 끼어들기는 나머지 → 답하던 쪽 순서로 전원', () => {
+  const { m, sent, reply } = room3();
+  m.say('시작', 'claude');
+  m.say('잠깐', 'all');
+  assert.equal(sent.length, 1, '진행 중에는 새 턴을 만들지 않는다');
+  reply('claude', '첫 의견');
+  reply('codex', '둘째'); reply('x', '셋째');
+  assert.deepEqual(sent.map((s) => s.agent), ['claude', 'codex', 'x', 'claude']);
+});
+
+test('roster 3명: steer 「모두에게」 는 나머지 둘을 대기열에 넣고, 진행 중 AI 지정은 다른 차례를 지운다', () => {
+  const a = room3({ steer: () => true });
+  a.m.say('시작', 'claude');
+  a.m.say('덧붙임', 'all');
+  assert.deepEqual(a.m.pending, ['codex', 'x']);
+  a.m.say('또 덧붙임', 'all');
+  assert.deepEqual(a.m.pending, ['codex', 'x'], '이미 있으면 중복해서 넣지 않는다');
+  const b = room3({ steer: () => true });
+  b.m.say('시작');
+  assert.deepEqual(b.m.pending, ['codex', 'x']);
+  b.m.say('너만', 'claude');
+  assert.deepEqual(b.m.pending, [], 'claude 지정은 다른 사람 차례를 지운다');
+});
+
+test('roster 3명: x 의 프롬프트에는 claude·codex 발언이 들어가고 자기 발언은 빠지며, 이미 동의한 사람이 cue 에 나온다', () => {
+  const { m, sent, reply } = room3();
+  m.say('안건');
+  reply('claude', '클로드 최종안\n[완료]');
+  reply('codex', '코덱스 동의\n[완료]');
+  assert.match(sent[2].text, /\[사용자\] 안건/);
+  assert.match(sent[2].text, /\[Claude\] 클로드 최종안/);
+  assert.match(sent[2].text, /\[Codex\] 코덱스 동의/);
+  assert.match(sent[2].text, /— 당신\(x\) 차례입니다/);
+  assert.match(sent[2].text, /상대\(Claude\)가 \[완료\] 로 최종안을 냈습니다[\s\S]*\(이미 동의: Codex\)$/);
+  reply('x', 'x 반론');
+  reply('claude', '재검토'); reply('codex', '재검토 동의');
+  assert.equal(sent.at(-1).agent, 'x');
+  assert.ok(!sent.at(-1).text.includes('x 반론'), '자기 발언은 다시 보내지 않는다');
+  assert.match(sent.at(-1).text, /\[Claude\] 재검토/);
+  assert.match(sent[3].text, /\[x\] x 반론/, 'claude 는 x 발언을 받는다');
+});
+
+test('roster 2명: cue 에 「이미 동의」 가 생기지 않는다', () => {
+  const { m, sent, reply } = room();
+  m.say('안건');
+  reply('claude', '최종안\n[완료]');
+  assert.match(sent[1].text, /상대\(Claude\)가 \[완료\] 로 최종안을 냈습니다/);
+  assert.ok(!sent[1].text.includes('이미 동의'));
+});
+
+test('ownerLine(ask): 2명은 기존 문장 그대로, 3명은 「모두」 와 roster 첫 AI 가 묻는다', () => {
+  const two = room().m; two.owner = 'ask';
+  assert.equal(two.ownerLine('claude'), '구현 담당: 정하지 않음 — 파일을 수정하지 마세요. 계획에 둘 다 동의하면 당신(Claude)이 구현 승인과 구현 담당을 한 [질문] 으로 사용자에게 묻습니다.');
+  assert.equal(two.ownerLine('codex'), '구현 담당: 정하지 않음 — 파일을 수정하지 마세요. 계획에 둘 다 동의하면 Claude 가 구현 승인과 구현 담당을 묻습니다. 당신(Codex)은 승인 [질문] 을 내지 말고 계획 의견만 내세요.');
+  const three = room3().m; three.owner = 'ask';
+  assert.equal(three.ownerLine('claude'), '구현 담당: 정하지 않음 — 파일을 수정하지 마세요. 계획에 모두 동의하면 당신(Claude)이 구현 승인과 구현 담당을 한 [질문] 으로 사용자에게 묻습니다.');
+  assert.equal(three.ownerLine('x'), '구현 담당: 정하지 않음 — 파일을 수정하지 마세요. 계획에 모두 동의하면 Claude 가 구현 승인과 구현 담당을 묻습니다. 당신(x)은 승인 [질문] 을 내지 말고 계획 의견만 내세요.');
+  const second = room({ roster: ['codex', 'claude'] }).m; second.owner = 'ask';
+  assert.match(second.ownerLine('claude'), /^구현 담당: 정하지 않음 — 파일을 수정하지 마세요\. 계획에 둘 다 동의하면 Codex 가 구현 승인과 구현 담당을 묻습니다\./, '묻는 사람은 roster 첫 AI');
+  three.owner = 'x';
+  assert.equal(three.ownerLine('x'), '구현 담당: x (당신)');
+  assert.equal(three.ownerLine('codex'), '구현 담당: x — 당신(Codex)은 파일을 수정하지 말고 설계·검토·의견만 내세요.');
+});
+
+test('표에 없는 AI: 자동 모델·노력 단계는 null(CLI 기본값), 이름은 id 그대로, 빈 발언 판정은 참여 AI 전체', () => {
+  assert.deepEqual(autoChoice('x', '원인 분석'), { kind: 'hard', model: null, effort: null });
+  assert.deepEqual(resolveChoice('x', { model: 'auto', effort: 'auto' }, '로그인 화면'), { model: null, effort: null });
+  assert.deepEqual(autoChoice('constructor', ''), { kind: 'normal', model: null, effort: null });
+  assert.equal(nameOf('x'), 'x'); assert.equal(nameOf('claude'), 'Claude'); assert.equal(nameOf('constructor'), 'constructor');
+  assert.equal(isEmptyReply({ from: 'x', text: '', tools: [] }), true);
+  assert.equal(isEmptyReply({ from: 'x', text: '', tools: [], streaming: true }), false);
+  assert.equal(isEmptyReply({ from: 'user', text: '' }), false);
+  assert.equal(isEmptyReply({ from: 'system', text: '' }), false);
+});
+
+test('화면 파생값: 2명일 때 지금 화면 문자열과 같고, 3명 이상은 roster 로 만든다', () => {
+  const two = ['claude', 'codex'], three = ['claude', 'codex', 'x'];
+  assert.deepEqual(ownerOptions(two), OWNERS);
+  assert.deepEqual(ownerOptions(three), [{ value: 'claude', label: 'Claude' }, { value: 'codex', label: 'Codex' }, { value: 'x', label: 'x' }, { value: 'ask', label: '구현 전에 물어보기' }]);
+  assert.deepEqual(targetsOf(two), [{ value: 'all', label: '모두에게' }, { value: 'claude', label: 'Claude 에게' }, { value: 'codex', label: 'Codex 에게' }]);
+  assert.deepEqual(targetsOf(three).map((t) => t.value), ['all', 'claude', 'codex', 'x']);
+  assert.equal(agreedText(two), '두 AI 합의 완료 — 최종 답변 표시를 확인하세요');
+  assert.equal(agreedText(three), '참여 AI 모두 합의 완료 — 최종 답변 표시를 확인하세요');
+  assert.equal(placeholderOf(two), '메시지 입력 · Enter 보내기 · Shift+Enter 줄바꿈 · Esc 중단 · @claude / @codex 로 지정 · 답변 중에 보내면 지금 답변에 반영해요 (Codex 는 하던 작업이 끝난 지점에서)');
+  assert.match(placeholderOf(three), /@claude \/ @codex \/ @x 로 지정/);
+  assert.deepEqual(mentionOf(two, '@Codex 안녕'), { to: 'codex', text: '안녕' });
+  assert.deepEqual(mentionOf(two, '@claude'), { to: 'claude', text: '@claude' }, '지정만 쓰면 글은 그대로');
+  assert.equal(mentionOf(two, '안녕 @codex'), null);
+  assert.equal(mentionOf(two, '@claudex 안녕'), null);
+  assert.equal(mentionOf(two, '@x 안녕'), null);
+  assert.deepEqual(mentionOf(three, '@x 해 줘'), { to: 'x', text: '해 줘' });
+});
+
+test('placeholderOf: Codex 안내는 Codex 가 참여할 때만, rosterOf: 2명 미만이면 기본 참여자', async () => {
+  const { placeholderOf, rosterOf } = await import('../src/renderer/collab/moderator.js');
+  assert.match(placeholderOf(['claude', 'codex']), /@claude \/ @codex 로 지정 .*\(Codex 는 하던 작업이 끝난 지점에서\)$/);
+  assert.doesNotMatch(placeholderOf(['claude', 'x']), /Codex/);
+  assert.deepEqual(rosterOf(['claude', 'codex', 'x']), ['claude', 'codex', 'x']);
+  for (const v of [null, undefined, [], ['claude'], 'claude']) assert.deepEqual(rosterOf(v), ['claude', 'codex']);
+});
+
+// ───── Grok 참여: roster [claude, grok] (기존 2명 테스트는 그대로) ─────
+test('roster [claude, grok]: 구현 담당 claude 부터 한 바퀴 돌고, 지정·표기·모델 선택지가 Grok 으로 나온다', () => {
+  const { m, sent, reply } = room({ roster: ['claude', 'grok'] });
+  assert.deepEqual([...m.roster], ['claude', 'grok']); assert.equal(m.owner, 'claude');
+  assert.deepEqual(Object.keys(m.prefs), ['claude', 'grok']);
+  m.say('안건');
+  reply('claude', '의견');
+  assert.deepEqual(sent.map((s) => s.agent), ['claude', 'grok']);
+  assert.match(sent[1].text, /\[Claude\] 의견/);
+  assert.match(sent[1].text, /당신\(Grok\)은 파일을 수정하지 말고/);
+  assert.equal(nameOf('grok'), 'Grok');
+  assert.deepEqual(targetsOf(['claude', 'grok']).map((t) => t.value), ['all', 'claude', 'grok']);
+  assert.deepEqual(ownerOptions(['claude', 'grok']).map((o) => o.value), ['claude', 'grok', 'ask']);
+  assert.match(placeholderOf(['claude', 'grok']), /@claude \/ @grok 로 지정/);
+  assert.deepEqual(MODEL_OPTIONS.grok.map((o) => o.value), ['auto', 'grok-4.7']);
+});
+
+test('roster [claude, grok]: Grok 의 자동 모델은 CLI 기본(모델·단계 생략), 고른 모델은 CLI 가 알려 준 단계로 맞춘다', () => {
+  assert.deepEqual(autoChoice('grok', '원인 분석'), { kind: 'hard', model: null, effort: null });
+  assert.deepEqual(resolveChoice('grok', { model: 'auto', effort: 'auto' }, '로그인 화면 만들어 줘'), { model: null, effort: null });
+  const grok = [{ value: 'grok-4.7', label: 'grok-4.7', efforts: ['low', 'medium', 'high', 'xhigh'] }];
+  assert.deepEqual(resolveChoice('grok', { model: 'grok-4.7', effort: 'xhigh' }, '', grok), { model: 'grok-4.7', effort: 'xhigh' });
+  assert.deepEqual(resolveChoice('grok', { model: 'grok-4.7', effort: 'max' }, '', grok), { model: 'grok-4.7', effort: 'high' }, '지원하지 않는 단계는 high');
+  const { m, sent } = room({ roster: ['claude', 'grok'] });
+  m.catalog.grok = grok; m.prefs.grok = { model: 'grok-4.7', effort: 'ultra' };
+  m.say('Grok 먼저', 'grok');
+  assert.deepEqual(sent[0].choice, { model: 'grok-4.7', effort: 'high' });
+});
+
+test('roster [claude, grok]: Grok 이 답하는 중 보낸 사용자 글은 가로채지 않고(steer 호출 없음) 이 턴이 끝난 뒤 다음 차례에 함께 전달된다', () => {
+  const calls = [];
+  const { m, sent, reply } = room({ roster: ['claude', 'grok'], steer: (...a) => { calls.push(a); return true; } });
+  m.say('시작', 'grok');
+  m.say('잠깐, 보안도 고려해', 'grok');
+  assert.equal(calls.length, 0, 'Grok 은 가로채기를 지원하지 않는다'); assert.equal(sent.length, 1, '진행 중에는 새 턴을 만들지 않는다');
+  reply('grok', '첫 의견');
+  assert.equal(sent.length, 2); assert.equal(sent[1].agent, 'grok');
+  assert.match(sent[1].text, /\[사용자\] 잠깐, 보안도 고려해/);
+});
+
+// ───── Muse 참여: roster [claude, muse] ─────
+test('roster [claude, muse]: 구현 담당 claude 부터 한 바퀴 돌고, 지정·표기·고정 모델 선택지가 Muse 로 나온다', () => {
+  const { m, sent, reply } = room({ roster: ['claude', 'muse'] });
+  assert.deepEqual([...m.roster], ['claude', 'muse']); assert.equal(m.owner, 'claude');
+  assert.deepEqual(Object.keys(m.prefs), ['claude', 'muse']);
+  m.say('안건');
+  reply('claude', '의견');
+  assert.deepEqual(sent.map((s) => s.agent), ['claude', 'muse']);
+  assert.match(sent[1].text, /\[Claude\] 의견/);
+  assert.match(sent[1].text, /당신\(Muse\)은 파일을 수정하지 말고/);
+  assert.equal(nameOf('muse'), 'Muse');
+  assert.deepEqual(targetsOf(['claude', 'muse']).map((t) => t.value), ['all', 'claude', 'muse']);
+  assert.deepEqual(ownerOptions(['claude', 'muse']).map((o) => o.value), ['claude', 'muse', 'ask']);
+  assert.match(placeholderOf(['claude', 'muse']), /@claude \/ @muse 로 지정/);
+  assert.deepEqual(MODEL_OPTIONS.muse.map((o) => o.value), ['auto', 'muse-spark-1.3', 'muse-spark-1.2', 'muse-wonder-1.0']);
+});
+
+test('roster [claude, muse]: Muse 의 자동 모델은 CLI 기본(모델·단계 생략), 고른 모델은 그대로 넘기고 가로채기는 지원하지 않는다', () => {
+  assert.deepEqual(autoChoice('muse', '원인 분석'), { kind: 'hard', model: null, effort: null });
+  assert.deepEqual(resolveChoice('muse', { model: 'auto', effort: 'auto' }, '로그인 화면 만들어 줘'), { model: null, effort: null });
+  assert.deepEqual(resolveChoice('muse', { model: 'muse-spark-1.3', effort: 'xhigh' }, ''), { model: 'muse-spark-1.3', effort: 'xhigh' }, '목록 조회가 없으니 단계를 맞추지 않는다');
+  const calls = [];
+  const { m, sent, reply } = room({ roster: ['claude', 'muse'], steer: (...a) => { calls.push(a); return true; } });
+  m.say('시작', 'muse');
+  m.say('잠깐, 보안도 고려해', 'muse');
+  assert.equal(calls.length, 0, 'Muse 는 가로채기를 지원하지 않는다'); assert.equal(sent.length, 1);
+  reply('muse', '첫 의견');
+  assert.equal(sent.length, 2); assert.equal(sent[1].agent, 'muse');
+  assert.match(sent[1].text, /\[사용자\] 잠깐, 보안도 고려해/);
+});

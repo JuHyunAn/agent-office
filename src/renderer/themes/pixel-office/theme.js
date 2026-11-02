@@ -1,7 +1,8 @@
 import layout from './layout.js';
-import { drawCharacter } from './sprites.js';
+import { drawCharacter, usesAgentSprite } from './sprites.js';
 import { createAtmosphere } from './atmosphere.js';
 import { loadDrinkImages } from './drink-images.js';
+import { loadResidentSprites } from './resident-sprite.js';
 import { createExterior, loadCityImages } from './exterior.js';
 import { polygon, line, PIXEL_DETAIL } from './raster.js';
 import { attentionFill } from '../attention.js';
@@ -521,7 +522,7 @@ function bubble(ctx, a, p, t, occupied) {
   const w = Math.ceil(Math.max(...lines.map(value => ctx.measureText(value).width))) + 18;
   const h = 12 + lines.length * 17;
   let x = Math.max(4, Math.min(WIDTH - w - 4, Math.round(p.x - w / 2)));
-  const seatedCodex = a.cli === 'codex' && ['sit', 'type', 'read', 'run'].includes(a.pose);
+  const seatedCodex = usesAgentSprite(a.cli) && ['sit', 'type', 'read', 'run'].includes(a.pose);
   const head = seatedCodex ? (a.isLead ? 78 : 68) : 50;
   let y = Math.max(50, p.y - head - h);
   const overlaps = (x, y) => occupied.some(b => x < b.x + b.w + 4 && x + w + 4 > b.x && y < b.y + b.h + 4 && y + h + 4 > b.y);
@@ -568,7 +569,7 @@ export default {
     });
   },
   async load() {
-    await Promise.all([loadDrinkImages(), loadCityImages()]);
+    await Promise.all([loadDrinkImages(), loadCityImages(), loadResidentSprites()]);
     if (!floorCache) {
       floorCache = buildFloor(); atmosphere.load(floorCache);
       shadedFloorCache = document.createElement('canvas');

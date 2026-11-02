@@ -8,7 +8,9 @@ import { visiblePets, petState, bubbleOf, cardOf, cardPreview as cardPreviewUi, 
 
 const require = createRequire(import.meta.url);
 const rules = require('../src/main/petRules.cjs');
-const { normalizePetConfig, normalizeSprite, sanitizeUsage, shouldShow, hasAttention, displayFor, placeBounds, anchorOf, readPet, answerableIds, permsToRelease, cardPreview } = rules;
+const { normalizePetConfig, normalizeSprite, sanitizeUsage, shouldShow, hasAttention, displayFor, placeBounds, anchorOf, readPet, answerableIds, permsToRelease, cardPreview, sanitizeInUse, sanitizeCollab, fitPetSize, PET_KINDS, TAB_ID_RE } = rules;
+const { AGENT_IDS } = require('../src/shared/agents.js');
+const twoKinds = (o) => ({ claude: o.claude, codex: o.codex }); // Claude·Codex 칸만 (새 AI 칸은 다른 단언이 본다)
 const { createPetController, sanitizeKinds } = require('../src/main/pet.cjs');
 
 const item = (kind, extra = {}) => ({ key: 'k', tabId: 't1', label: 'proj', reason: kind === 'done' ? 'done' : 'permission', kind, text: kind === 'done' ? '✅ 답변 완료' : '❓ 권한 확인', at: 1, ...extra });
@@ -123,16 +125,16 @@ test('펫 모델: 말풍선은 가장 최근 알림', () => {
 });
 
 test('펫 설정 정리', () => {
-  assert.deepEqual(normalizePetConfig(undefined), { mode: 'always', anchor: null, sprites: { claude: null, codex: null }, usage: { expanded: true } });
+  assert.deepEqual(normalizePetConfig(undefined), { mode: 'always', anchor: null, sprites: Object.fromEntries(AGENT_IDS.map((k) => [k, null])), usage: { expanded: true } });
   assert.deepEqual(normalizePetConfig({ mode: 'alerts', anchor: { right: 100, bottom: 200 }, sprites: { claude: 'user:my-pet_1', codex: 'builtin:office-codex' } }),
-    { mode: 'alerts', anchor: { right: 100, bottom: 200 }, sprites: { claude: 'user:my-pet_1', codex: 'builtin:office-codex' }, usage: { expanded: true } });
+    { mode: 'alerts', anchor: { right: 100, bottom: 200 }, sprites: { ...Object.fromEntries(AGENT_IDS.map((k) => [k, null])), claude: 'user:my-pet_1', codex: 'builtin:office-codex' }, usage: { expanded: true } });
   // 예전 맨 id 는 user: 로 옮기고, 'none' 은 그대로, 그 밖은 null
-  assert.deepEqual(normalizePetConfig({ sprites: { claude: 'my-pet_1', codex: 'none' } }).sprites, { claude: 'user:my-pet_1', codex: 'none' });
-  assert.deepEqual(normalizePetConfig({ sprites: { claude: 'user:../x', codex: 'builtin:a b' } }).sprites, { claude: null, codex: null });
-  assert.deepEqual(normalizePetConfig({ sprites: { claude: 'other:abc', codex: 'user:' } }).sprites, { claude: null, codex: null });
-  assert.deepEqual(normalizePetConfig({ sprites: { claude: 'user:-bad', codex: 'builtin:x\n' } }).sprites, { claude: null, codex: null });
-  assert.deepEqual(normalizePetConfig({ sprites: { claude: 'None', codex: '' } }).sprites, { claude: 'user:none', codex: null }, '맨 id 는 소문자로 user: 로');
-  assert.deepEqual(normalizePetConfig({ sprites: { claude: 'User:Mine', codex: 'builtin:Office-Codex' } }).sprites, { claude: null, codex: 'builtin:office-codex' }, '접두는 소문자만 인정, id 는 소문자로');
+  assert.deepEqual(twoKinds(normalizePetConfig({ sprites: { claude: 'my-pet_1', codex: 'none' } }).sprites), { claude: 'user:my-pet_1', codex: 'none' });
+  assert.deepEqual(twoKinds(normalizePetConfig({ sprites: { claude: 'user:../x', codex: 'builtin:a b' } }).sprites), { claude: null, codex: null });
+  assert.deepEqual(twoKinds(normalizePetConfig({ sprites: { claude: 'other:abc', codex: 'user:' } }).sprites), { claude: null, codex: null });
+  assert.deepEqual(twoKinds(normalizePetConfig({ sprites: { claude: 'user:-bad', codex: 'builtin:x\n' } }).sprites), { claude: null, codex: null });
+  assert.deepEqual(twoKinds(normalizePetConfig({ sprites: { claude: 'None', codex: '' } }).sprites), { claude: 'user:none', codex: null }, '맨 id 는 소문자로 user: 로');
+  assert.deepEqual(twoKinds(normalizePetConfig({ sprites: { claude: 'User:Mine', codex: 'builtin:Office-Codex' } }).sprites), { claude: null, codex: 'builtin:office-codex' }, '접두는 소문자만 인정, id 는 소문자로');
   assert.equal(normalizeSprite('user:MyPet_1'), 'user:mypet_1');
   assert.equal(normalizeSprite('MyPet'), 'user:mypet');
   assert.equal(normalizeSprite('user:a'), 'user:a');
@@ -147,7 +149,7 @@ test('펫 설정 정리', () => {
   assert.equal(normalizePetConfig({ anchor: { right: 5 } }).anchor, null);
   assert.equal(normalizePetConfig({ anchor: { right: '5', bottom: 5 } }).anchor, null);
   const s = normalizePetConfig({ sprites: { claude: '../evil', codex: 42 } }).sprites;
-  assert.deepEqual(s, { claude: null, codex: null });
+  assert.deepEqual(s, Object.fromEntries(AGENT_IDS.map((k) => [k, null])));
   assert.equal(normalizePetConfig({ sprites: { claude: '-bad' } }).sprites.claude, null);
   assert.equal(normalizePetConfig('x').mode, 'always');
 });
@@ -881,13 +883,13 @@ test('펫 그림 해석: 기본 · 아이콘만 · 내장 · 가져온 펫 · �
     const f = petFixture({ builtinPetsDir, userDataDir, sprites: { claude: c, codex: x } });
     try {
       open(f);
-      assert.deepEqual(lastState(f).sprites, { claude: rc, codex: rx }, JSON.stringify([c, x]));
+      assert.deepEqual(twoKinds(lastState(f).sprites), { claude: rc, codex: rx }, JSON.stringify([c, x]));
     } finally { f.pet.shutdown(); }
   }
   // 내장 폴더가 없거나 인자가 없어도 기본은 아이콘
   for (const dir of [undefined, path.join(os.tmpdir(), 'ao-no-such-dir')]) {
     const f = petFixture({ builtinPetsDir: dir, userDataDir });
-    try { open(f); assert.deepEqual(lastState(f).sprites, { claude: 'none', codex: 'none' }); } finally { f.pet.shutdown(); }
+    try { open(f); assert.deepEqual(lastState(f).sprites, Object.fromEntries(AGENT_IDS.map((k) => [k, 'none']))); } finally { f.pet.shutdown(); }
   }
 });
 
@@ -980,8 +982,8 @@ test('listPets: 내장 → 가져온 순 · 설정 원값과 해석값 · 검사
       ['user:mine', 'user', 'mine'], ['user:zzz', 'user', 'zzz'],
     ]);
     assert.equal(list.pets[0].displayName, '이름 office-claude');
-    assert.deepEqual(list.selected, { claude: 'user:mine', codex: 'user:gone' });
-    assert.deepEqual(list.resolved, { claude: 'user:mine', codex: 'none' });
+    assert.deepEqual(list.selected, { ...Object.fromEntries(AGENT_IDS.map((k) => [k, null])), claude: 'user:mine', codex: 'user:gone' });
+    assert.deepEqual(list.resolved, { ...Object.fromEntries(AGENT_IDS.map((k) => [k, 'none'])), claude: 'user:mine', codex: 'none' });
     assert.deepEqual([...f.pet.builtinIds].sort(), ['office-claude', 'office-codex']);
     assert.ok(f.pet.readPetByKey('user:mine').bytes, '목록에 있는 키만 읽는다');
     for (const key of ['user:gone', 'builtin:gone', 'user:bad', '../x', 'user:../mine', 5, undefined, 'mine']) assert.equal(f.pet.readPetByKey(key), null, String(key));
@@ -1058,4 +1060,113 @@ test('readPet: 앞의 BOM 이 붙은 pet.json 도 읽는다', () => {
     write(d, 'bom/sheet.png', PNG);
   });
   assert.equal(readPet(dir, 'bom').displayName, 'Bom');
+});
+
+// ───────────────────────── 0D: AI 종류 N종 · 연결된 AI 만 보이는 펫 ─────────────────────────
+
+const FIVE = ['claude', 'codex', 'grok', 'muse', 'antigravity']; // 레지스트리에 5종이 등록됐다고 치는 가짜 목록
+
+test('펫 종류는 레지스트리와 같고, 설정의 sprites 키도 그 종류 전부', () => {
+  assert.deepEqual(PET_KINDS, AGENT_IDS);
+  assert.deepEqual(Object.keys(normalizePetConfig({}).sprites), [...AGENT_IDS]);
+  assert.deepEqual(Object.keys(normalizePetConfig({ sprites: { claude: 'builtin:a', zzz: 'x' } }).sprites), [...AGENT_IDS], '모르는 종류는 버린다');
+});
+
+test('펫 모델: inUse 규칙 — 탭을 연 AI + 알림이 있는 AI, [] 는 없음, null 은 예전 규칙', () => {
+  assert.deepEqual(visiblePets({ mode: 'always', codex: false, inUse: ['codex'] }), ['codex']);
+  assert.deepEqual(visiblePets({ mode: 'always', codex: true, inUse: ['codex', 'claude'] }), ['claude', 'codex'], '레지스트리 순서');
+  assert.deepEqual(visiblePets({ mode: 'always', codex: true, inUse: [] }), [], '탭이 없고 알림도 없으면 펫 없음');
+  assert.deepEqual(visiblePets({ mode: 'always', codex: true, inUse: [], kinds: { claude: { attention: [] } } }), []);
+  assert.deepEqual(visiblePets({ mode: 'always', codex: true, inUse: [], kinds: { claude: { attention: [item('alert')] } } }), ['claude'], '탭이 없어도 알림이 있는 AI 는 보인다');
+  assert.deepEqual(visiblePets({ mode: 'always', codex: true, inUse: ['codex'], kinds: { claude: { attention: [item('done')] } } }), ['claude', 'codex'], '쓰는 중 + 알림 합침');
+  assert.deepEqual(visiblePets({ mode: 'always', codex: false, inUse: null }), ['claude']);
+  assert.deepEqual(visiblePets({ mode: 'always', codex: true, inUse: null }), ['claude', 'codex']);
+  assert.deepEqual(visiblePets({ mode: 'off', codex: true, inUse: ['codex'] }), []);
+  assert.deepEqual(visiblePets({ mode: 'alerts', codex: true, inUse: ['claude', 'codex'], kinds: {} }), [], '알림만 모드는 쓰는 중과 상관없이 알림이 있는 종류만');
+});
+
+test('펫 모델: 가짜 5종 — 연결 3종은 레지스트리 순서, 협업은 참여 AI 전부', () => {
+  const all = FIVE;
+  assert.deepEqual(visiblePets({ mode: 'always', inUse: ['antigravity', 'claude', 'muse'], all }), ['claude', 'muse', 'antigravity']);
+  assert.deepEqual(visiblePets({ mode: 'alerts', kinds: { grok: { attention: [item('done')] }, claude: { attention: [item('alert')] } }, all }), ['claude', 'grok']);
+  assert.deepEqual(visiblePets({ mode: 'always', inUse: ['claude'], collab: { active: true, agents: ['muse', 'claude', 'grok'] }, all }), ['claude', 'grok', 'muse'], '협업 3명');
+  assert.deepEqual(visiblePets({ mode: 'alerts', collab: { active: true, agents: ['grok', 'codex'] }, all }), ['codex', 'grok']);
+  assert.deepEqual(visiblePets({ mode: 'always', collab: { active: true, agents: ['grok'] }, all }), ['claude', 'codex'], '1명이면 예전처럼 Claude·Codex');
+  assert.deepEqual(visiblePets({ mode: 'always', collab: { active: true }, all }), ['claude', 'codex'], 'agents 가 없으면 Claude·Codex');
+  assert.deepEqual(visiblePets({ mode: 'off', collab: { active: true, agents: ['grok', 'codex'] }, all }), []);
+});
+
+test('sanitizeInUse: 배열이면 알려진 종류만(레지스트리 순서), 아니면 null', () => {
+  assert.deepEqual(sanitizeInUse(['codex', 'claude', 'codex', 'zzz', 5]), ['claude', 'codex']);
+  assert.deepEqual(sanitizeInUse([]), []);
+  for (const v of [null, undefined, 'claude', { 0: 'claude' }, 3]) assert.equal(sanitizeInUse(v), null, String(v));
+});
+
+test('sanitizeCollab: agents 는 알려진 종류만·중복 없이·2개 이상일 때만, 나머지 필드는 그대로', () => {
+  const base = { active: true, tabId: 'c1', speaker: 'codex', prev: 'claude', turn: 4.9 };
+  assert.deepEqual(sanitizeCollab({ ...base, agents: ['codex', 'claude', 'codex', 'zzz'] }), { active: true, tabId: 'c1', speaker: 'codex', prev: 'claude', turn: 4, agents: ['claude', 'codex'] });
+  assert.equal(sanitizeCollab({ ...base, agents: ['claude'] }).agents, null, '1명 → null');
+  assert.equal(sanitizeCollab({ ...base, agents: ['claude', 'zzz'] }).agents, null, '알려진 종류가 1개');
+  assert.equal(sanitizeCollab({ ...base, agents: 'claude' }).agents, null);
+  assert.equal(sanitizeCollab(base).agents, null);
+  assert.deepEqual(sanitizeCollab({ active: true, tabId: 'bad id!', speaker: 'zzz', prev: null, turn: 'x' }), { active: true, tabId: null, speaker: null, prev: null, turn: 0, agents: null });
+  for (const v of [null, undefined, 'x', { active: false }]) assert.equal(sanitizeCollab(v), null);
+  assert.ok(TAB_ID_RE.test('abc-12') && !TAB_ID_RE.test('a b') && !TAB_ID_RE.test(''));
+});
+
+test('fitPetSize: 폭 1600·높이 600 이하, 40 이상, 숫자가 아니면 null', () => {
+  assert.deepEqual(fitPetSize({ width: 1200, height: 170 }), { width: 1200, height: 170 });
+  assert.deepEqual(fitPetSize({ width: 2000, height: 900 }), { width: 1600, height: 600 });
+  assert.deepEqual(fitPetSize({ width: 1, height: -5 }), { width: 40, height: 40 });
+  assert.deepEqual(fitPetSize({ width: '300.4', height: 99.6 }), { width: 300, height: 100 });
+  for (const v of [{ width: NaN, height: 100 }, { width: 100 }, { width: 100, height: 'a' }, {}, null, undefined]) assert.equal(fitPetSize(v), null, JSON.stringify(v));
+});
+
+test('shouldShow: 상시 모드에서 쓰는 AI·알림·협업이 모두 없으면(빈 배열) 숨김, 모르면(null) 보임', () => {
+  assert.equal(shouldShow('always', { inUse: [] }), false);
+  assert.equal(shouldShow('always', { inUse: [], kinds: { claude: { attention: [] } } }), false, '알림이 비어 있으면 숨김');
+  assert.equal(shouldShow('always', { inUse: [], kinds: { claude: { attention: [item('alert')] } } }), true, '알림이 있으면 탭이 없어도 보임');
+  assert.equal(shouldShow('always', { inUse: null }), true);
+  assert.equal(shouldShow('always', {}), true);
+  assert.equal(shouldShow('always', { inUse: ['codex'] }), true);
+  assert.equal(shouldShow('always', { inUse: [], collab: { active: true } }), true);
+  assert.equal(shouldShow('off', { inUse: ['claude'] }), false);
+  assert.equal(shouldShow('alerts', { inUse: [] }), false, '알림만 모드는 예전 그대로');
+});
+
+test('펫 컨트롤러: setState 의 inUse·collab.agents 를 정리해 pet:state 로 보낸다 · 처음·clearState 뒤 [] · sprites 키 = 레지스트리', () => {
+  const f = petFixture();
+  const push = (extra) => f.handlers.get('pet:state')({ sender: f.main.webContents }, { kinds: {}, ...extra });
+  try {
+    open(f);
+    assert.deepEqual(lastState(f).inUse, [], '처음에는 쓰는 AI 없음 (아무것도 안 보인다)');
+    assert.deepEqual(Object.keys(lastState(f).sprites), [...AGENT_IDS]);
+    push({ inUse: ['codex'] });
+    assert.deepEqual(lastState(f).inUse, ['codex']);
+    push({ inUse: ['codex', 'claude', 'zzz'] });
+    assert.deepEqual(lastState(f).inUse, ['claude', 'codex']);
+    push({ inUse: ['zzz'] });
+    assert.deepEqual(lastState(f).inUse, [], '알 수 없는 종류만 있으면 빈 목록');
+    for (const bad of ['x', 5, { a: 1 }, undefined]) { push({ inUse: bad }); assert.deepEqual(lastState(f).inUse, [], String(bad)); }
+    push({ inUse: ['claude'], collab: { active: true, tabId: 'c1', speaker: 'claude', prev: null, turn: 1, agents: ['codex', 'claude', 'qq'] } });
+    assert.deepEqual(lastState(f).collab.agents, ['claude', 'codex']);
+    push({ inUse: ['claude'] });
+    f.pet.clearState();
+    assert.deepEqual(lastState(f).inUse, [], 'clearState 뒤에는 다시 쓰는 AI 없음');
+    assert.equal(lastState(f).collab, null);
+    const listed = f.pet.listPets();
+    assert.deepEqual(Object.keys(listed.selected), [...AGENT_IDS]);
+    assert.deepEqual(Object.keys(listed.resolved), [...AGENT_IDS]);
+  } finally { f.pet.shutdown(); }
+});
+
+test('visiblePets: 협업 중에도 협업 밖 AI 의 알림 펫(상시면 쓰는 중인 AI 도)은 보인다 — 레지스트리 순서', () => {
+  const all = ['claude', 'codex', 'grok', 'muse', 'antigravity'];
+  const collab = { active: true, agents: ['claude', 'grok'] };
+  const kinds = { codex: { attention: [{ kind: 'alert' }] } };
+  assert.deepEqual(visiblePets({ mode: 'always', inUse: ['claude', 'grok'], kinds: {}, collab, all }), ['claude', 'grok']);
+  assert.deepEqual(visiblePets({ mode: 'always', inUse: ['claude', 'grok'], kinds, collab, all }), ['claude', 'codex', 'grok']);
+  assert.deepEqual(visiblePets({ mode: 'always', inUse: ['claude', 'grok', 'muse'], kinds: {}, collab, all }), ['claude', 'grok', 'muse']);
+  assert.deepEqual(visiblePets({ mode: 'alerts', inUse: ['claude', 'grok', 'muse'], kinds, collab, all }), ['claude', 'codex', 'grok']); // 알림만 모드는 쓰는 중이어도 알림 없으면 안 보임
+  assert.deepEqual(visiblePets({ mode: 'off', inUse: all, kinds, collab, all }), []);
 });

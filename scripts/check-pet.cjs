@@ -663,6 +663,31 @@ if (!process.versions.electron) {
     await leave();
     await scene({ mode: 'off', codex: true, kinds: {} });
 
+    // 11. 쓰는 중인 AI(inUse): 상시 모드의 펫 = 탭을 연 AI + 알림이 있는 AI (가로 한 줄), 모르면(없음) 예전 규칙, 사용량 칸도 쓰는 중인 AI 것만 보인다
+    const idleKinds = { claude: { working: false, attention: [] }, codex: { working: false, attention: [] } };
+    const boxes = () => win.webContents.executeJavaScript(`[...document.querySelectorAll('.pet')].map(p => { const r = p.getBoundingClientRect(); return { kind: p.dataset.kind, left: r.left, right: r.right, top: r.top }; })`);
+    await scene({ mode: 'off', codex: true, kinds: {} });
+    const onlyCodex = await scene({ mode: 'always', codex: false, inUse: ['codex'], kinds: idleKinds });
+    assert.deepEqual(onlyCodex.map(p => p.kind), ['codex'], 'inUse [codex] -> 코덱스 펫 하나');
+    const both = await scene({ mode: 'always', codex: false, inUse: ['claude', 'codex'], kinds: idleKinds });
+    assert.deepEqual(both.map(p => p.kind), ['claude', 'codex'], 'inUse 두 개 -> 두 펫 (레지스트리 순서)');
+    const row = await boxes();
+    assert.ok(row[1].left >= row[0].right - 0.5, `가로로 겹치지 않는다 ${JSON.stringify(row)}`);
+    assert.ok(row[1].left > row[0].left, '왼쪽부터 레지스트리 순서');
+    assert.equal(row[0].top, row[1].top, '같은 줄');
+    assert.deepEqual((await scene({ mode: 'always', codex: false, inUse: [], kinds: idleKinds })).map(p => p.kind), [], 'inUse [] + 알림 없음 -> 펫 없음');
+    const alertOnly = { claude: { working: false, attention: [{ key: 'a1', tabId: null, label: 'ext', reason: 'done', kind: 'done', text: '✅ 답변 완료', at: 1 }] }, codex: { working: false, attention: [] } };
+    assert.deepEqual((await scene({ mode: 'always', codex: false, inUse: [], kinds: alertOnly })).map(p => p.kind), ['claude'], 'inUse [] + claude 알림 -> 클로드 펫만');
+    assert.deepEqual((await scene({ mode: 'always', codex: false, kinds: idleKinds })).map(p => p.kind), ['claude'], 'inUse 없음 + codex false -> 예전 규칙 (Claude 만)');
+    assert.deepEqual((await scene({ mode: 'always', codex: true, inUse: null, kinds: idleKinds })).map(p => p.kind), ['claude', 'codex'], 'inUse null + codex true -> 예전 규칙');
+    await scene({ mode: 'always', codex: true, inUse: ['codex'], kinds: idleKinds });
+    const onlyCodexUsage = await usageScene(usageSnap());
+    assert.equal(onlyCodexUsage.claude, null, 'Claude 탭이 없으면 사용량의 Claude 칸이 숨는다');
+    assert.ok(onlyCodexUsage.codex, 'Codex 칸은 보인다');
+    await scene({ mode: 'always', codex: true, inUse: ['claude', 'codex'], kinds: idleKinds });
+    assert.ok((await readUsage()).claude, 'Claude 탭을 열면 Claude 칸이 다시 보인다');
+    await scene({ mode: 'off', codex: true, kinds: {} });
+
     // 6. 창 크기 보고
     assert.ok(calls.size.length > 0, '크기 보고 없음');
     assert.ok(calls.size.every(s => s.width > 0 && s.height > 0), JSON.stringify(calls.size));

@@ -1,15 +1,22 @@
 'use strict';
 
-// 협업 대화: 화면 없는 공식 실행 방식으로 Claude·Codex 와 대화한다.
+// 협업 대화: 화면 없는 공식 실행 방식으로 Claude·Codex·Grok·Muse 와 대화한다.
 //  - Claude: claude -p --input-format/--output-format stream-json — 한 프로세스에서 여러 턴, 글자 단위 실시간 출력 (2.1.312 실측)
 //  - Codex : codex exec --json — 턴마다 실행하고 exec resume 으로 같은 세션을 이어 간다 (0.163 실측)
+//  - Grok  : grok --prompt-file … --output-format streaming-json — 턴마다 실행하고 -r 로 같은 세션을 이어 간다 (1.0.70 실측)
+//  - Muse  : muse exec --json --prompt-file … --session-id — 턴마다 실행하고 같은 --session-id 로 대화를 이어 간다 (1.4.14 실측, museCli.cjs)
 // 이 모듈은 실행·해석만 맡고, 누가 말할 차례인지는 화면 쪽 진행자(collab/moderator.js)가 정한다.
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { StringDecoder } = require('node:string_decoder');
 const { spawn: nodeSpawn, execFile } = require('node:child_process');
 const claudeCli = require('./claudeCli.cjs');
 const codexCli = require('./codexCli.cjs');
+const { GROK_TOOL_NAMES, pickGrokInput } = require('./grokTools.cjs');
+const museCli = require('./museCli.cjs');
 
 const SAFE = /^[A-Za-z0-9._:-]{1,80}$/;
 const EFFORT_RE = /^[a-z]{2,12}$/; // 단계 이름은 Claude 가 알려 준 목록(low … max)에서 온다
@@ -404,4 +411,192 @@ class CodexChat {
   }
 }
 
-module.exports = { claudeChatArgs, claudeUserLine, replayText, parseClaudeLine, parseClaudeModels, claudeModels, parseCodexLine, lineReader, killTree, spawnCli, ClaudeChat, CodexChat };
+// 프롬프트 파일을 쓰고 턴마다 프로세스를 띄우는 협업 실행기의 공통 골격 (Grok·Muse).
+//  - 프롬프트는 --prompt-file 로 넘긴다 (stdin 은 읽지 않음 — 한글·큰따옴표·% 가 셸을 거치지 않아 깨지지 않는다). 파일은 프로세스가 끝나면 반드시 지운다.
+//  - 출력 줄마다 하위 클래스의 parse 가 이벤트로 바꾼다. 'end' 이벤트는 턴이 끝났다는 내부 표시라 대화창에 내보내지 않는다.
+//  - 하위 클래스가 채울 것: subj·obj(오류 문구의 AI 이름과 조사)·filePrefix(프롬프트 파일 이름) · buildArgs({ file, resume, model, effort }) · parse(j) · failText(tail, errText)
+const GROK_EFFORT_RE = /^(low|medium|high|xhigh)$/;
+const GROK_EXIT_WAIT_MS = 300; // exit 가 stdout 의 마지막 줄(end)보다 먼저 올 수 있어 close 를 이만큼 기다린 뒤 끝낸다
+const GROK_END_GRACE_MS = 3000; // end 줄을 받은 뒤 프로세스가 이 안에 끝나지 않으면 정상으로 끝내고 프로세스를 죽인다
+const GROK_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/; // 첫 글자는 영숫자 (-로 시작하면 CLI 옵션으로 읽힐 수 있다)
+const PROMPT_FILE_RE = /^ao-(?:grok|muse)-\d+-\d+\.txt$/; // 이 앱이 만드는 프롬프트 파일 이름 규칙 (FileTurnChat.send)
+let promptSeq = 0;
+
+// 앱이 비정상 종료해 남은 프롬프트 파일 중 오래된 것만 지운다 (앱 시작 때). 이 앱의 이름 규칙에 맞는 파일만 대상이다.
+function cleanStalePromptFiles({ tmpDir = os.tmpdir(), now = Date.now(), maxAgeMs = 3600000, fsApi = fs } = {}) {
+  let n = 0;
+  let names = [];
+  try { names = fsApi.readdirSync(tmpDir); } catch { return 0; }
+  for (const name of names) {
+    if (!PROMPT_FILE_RE.test(name)) continue;
+    const file = path.join(tmpDir, name);
+    try {
+      const st = fsApi.statSync(file);
+      if (!st.isFile() || now - st.mtimeMs <= maxAgeMs) continue;
+      fsApi.rmSync(file, { force: true }); n++;
+    } catch { /* 다른 프로세스가 쓰는 중이면 건너뛴다 */ }
+  }
+  return n;
+}
+
+class FileTurnChat {
+  constructor({ loc, cwd, systemPrompt, env, onEvent, spawn = nodeSpawn, kill = killTree, tmpDir = os.tmpdir(), endGraceMs = GROK_END_GRACE_MS }) {
+    Object.assign(this, { loc, cwd, systemPrompt, env, onEvent, spawnFn: spawn, killFn: kill, tmpDir, endGraceMs });
+    this.sessionId = crypto.randomUUID();
+    this.started = false; // 첫 턴이 정상으로 끝난 뒤에만 이어 간다 (Grok 은 -r, Muse 는 같은 --session-id)
+    this.announcedId = null; // 마지막으로 알린 세션 ID — 바뀔 때마다 session 이벤트를 다시 낸다 (협업 방 ↔ CLI 세션 연결용)
+    this.closed = false;
+    this.run = null; // 현재 실행: { p, file, turn, finished, stopped, ended, endOk, error, errText, timer, endTimer, wrote, sawText }
+  }
+
+  get proc() { return this.run && !this.run.finished ? this.run.p : null; }
+
+  get busy() { return !!this.run && !this.run.finished; }
+
+  send(text, { model, effort } = {}, turn = null) {
+    if (this.closed || this.busy) return;
+    const run = { p: null, file: path.join(this.tmpDir, `ao-${this.filePrefix}-${process.pid}-${++promptSeq}.txt`), turn, finished: false, stopped: false, ended: false, endOk: true, error: '', errText: '', timer: null, endTimer: null, wrote: false, sawText: false };
+    this.run = run;
+    const emit = (ev) => this.onEvent(turn == null ? ev : { ...ev, turn });
+    // 내가 쓴 파일만 지운다 (wx 로 만들지 못한 — 이미 있던 — 파일은 건드리지 않는다)
+    const cleanup = () => { if (run.wrote) try { fs.rmSync(run.file, { force: true }); } catch { /* 열려 있으면 프로세스가 끝난 뒤 다시 지운다 */ } };
+    const finish = () => {
+      if (run.finished) return;
+      run.finished = true; clearTimeout(run.timer); clearTimeout(run.endTimer); cleanup();
+      if (run.ended && run.endOk) this.started = true; // 첫 턴은 이미 성공 — 유예 중 중단돼도 세션 ID 를 유지한다
+      if (run.ended && run.endOk && !run.stopped) { emit({ type: 'done', ok: true }); return; }
+      if (!this.started) this.sessionId = crypto.randomUUID(); // 첫 응답 전에 실패·중단됐으면 같은 ID 를 다시 쓰지 않는다 (다음 send 가 session 을 다시 알린다)
+      if (run.stopped) emit({ type: 'done', ok: false, stopped: true });
+      else emit({ type: 'done', ok: false, error: run.error || this.failText(tail, run.errText) });
+    };
+    let tail = '';
+    run.cleanup = cleanup; run.finish = finish;
+    try {
+      const args = this.buildArgs({ file: run.file, resume: this.started, model, effort });
+      run.wrote = true;
+      try {
+        fs.writeFileSync(run.file, this.started || !this.systemPrompt ? String(text) : `${this.systemPrompt}\n\n${text}`, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+      } catch (e) { if (e.code === 'EEXIST') run.wrote = false; throw e; } // 이미 있는 파일은 덮어쓰지도 지우지도 않는다
+      run.p = spawnCli(this.spawnFn, this.loc, args, { cwd: this.cwd, env: this.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      run.error = `${this.obj} 실행하지 못했습니다: ${e.message}`; finish(); return;
+    }
+    const p = run.p;
+    if (this.announcedId !== this.sessionId) { this.announcedId = this.sessionId; emit({ type: 'session', sessionId: this.sessionId }); }
+    p.stdout.on('data', lineReader((j) => {
+      if (run.finished) return; // 중단했거나 끝난 실행의 늦은 출력
+      const ev = this.parse(j);
+      if (!ev) return;
+      if (ev.type === 'end') {
+        run.ended = true; run.endOk = ev.ok !== false;
+        if (!run.endOk) run.error = String(ev.reason || ev.text || '').slice(0, 300) || `${this.subj} 오류로 끝났습니다`;
+        else if (ev.text && !run.sawText) emit({ type: 'text', text: ev.text }); // 조각 출력 없이 최종 응답만 온 경우
+        // 끝 줄을 받았는데 프로세스가 끝나지 않으면(자식이 파이프를 쥐고 있는 경우 등) 잠시 기다렸다가 정상으로 끝내고 죽인다
+        clearTimeout(run.endTimer); // 끝 줄이 또 오면 유예를 다시 잰다 (앞 타이머를 남기지 않는다)
+        run.endTimer = setTimeout(() => { if (run.finished) return; this.killFn(run.p); finish(); }, this.endGraceMs);
+        run.endTimer.unref?.();
+        return;
+      }
+      if (ev.type === 'notice') run.error = ev.text;
+      if (ev.type === 'text' && ev.text) run.sawText = true;
+      emit(ev);
+    }));
+    p.stderr?.on?.('data', (d) => { tail = String(d).trim().split('\n').pop().slice(0, 200) || tail; run.errText = (run.errText + d).slice(-600); });
+    p.on('error', (e) => { run.error ||= `${this.obj} 실행하지 못했습니다: ${e.message}`; finish(); cleanup(); });
+    p.on('close', () => { finish(); cleanup(); }); // 중단·닫기로 먼저 끝난 실행도 프로세스가 끝나면 프롬프트 파일을 다시 지운다
+    p.on('exit', () => { if (!run.finished) { run.timer = setTimeout(finish, GROK_EXIT_WAIT_MS); run.timer.unref?.(); } });
+  }
+
+  // 실행 중 입력을 받지 않는다 — 진행자가 턴이 끝난 뒤 다음 차례에 전달한다.
+  steer() { return false; }
+
+  stop() {
+    const run = this.run;
+    if (!run || run.finished) return;
+    run.stopped = true;
+    this.killFn(run.p);
+    run.finish(); // 종료 이벤트를 기다리지 않고 바로 「중단됨」으로 끝낸다 (kill 은 비동기 — 늦은 출력은 무시)
+  }
+
+  close() {
+    this.closed = true;
+    const run = this.run;
+    if (!run || run.finished) return;
+    run.finished = true; clearTimeout(run.timer); clearTimeout(run.endTimer);
+    this.killFn(run.p);
+    run.cleanup();
+  }
+}
+
+// Grok Build 협업: 턴마다 실행하고 -r 로 같은 세션을 이어 간다 (grok 1.0.70 실측).
+//  - 승인 없이 실행: 공식 --always-approve (Codex 협업의 승인 우회와 같은 역할)
+//  - 출력 --output-format streaming-json: 줄마다 JSON ({type:'text'|'tool_call'|'end'|'error'|…})
+function grokChatArgs({ file, cwd, sessionId, resume, model, effort }) {
+  return ['--prompt-file', file, '--output-format', 'streaming-json', '--no-auto-update', '--always-approve', '--cwd', cwd,
+    ...(resume ? ['-r', sessionId] : ['-s', sessionId]),
+    ...(model && model !== 'auto' && GROK_MODEL_RE.test(String(model)) ? ['-m', model] : []),
+    ...(effort && effort !== 'auto' && GROK_EFFORT_RE.test(String(effort)) ? ['--effort', effort] : [])];
+}
+
+// end 는 턴이 정상으로 끝났다는 내부 표시라 대화창에 내보내지 않는다 (FileTurnChat 이 처리). thought·usage·available_commands·tool_call_update 는 null.
+function parseGrokLine(j) {
+  if (!j || typeof j !== 'object') return null;
+  if (j.type === 'text') return { type: 'text', text: String(j.data ?? '') };
+  if (j.type === 'tool_call') return { type: 'tool', name: GROK_TOOL_NAMES[j.toolName] || String(j.toolName || j.title || 'tool').slice(0, 80), input: pick(pickGrokInput(j.rawInput)) };
+  if (j.type === 'end') return { type: 'end', stopReason: String(j.stopReason ?? '') };
+  if (j.type === 'error') return { type: 'notice', text: String(j.message || '오류').slice(0, 300) };
+  return null;
+}
+
+class GrokChat extends FileTurnChat {
+  get subj() { return 'Grok 이'; }
+
+  get obj() { return 'Grok 을'; }
+
+  get filePrefix() { return 'grok'; }
+
+  buildArgs({ file, resume, model, effort }) { return grokChatArgs({ file, cwd: this.cwd, sessionId: this.sessionId, resume, model, effort }); }
+
+  parse(j) { return parseGrokLine(j); }
+
+  failText(tail) { return tail || 'Grok 이 응답 없이 끝났습니다'; }
+}
+
+// Muse Code 협업: 턴마다 `muse exec --json` 을 실행하고 같은 --session-id 로 대화를 이어 간다 (muse 1.4.14 실측, 인자·줄 해석은 museCli.cjs).
+//  - 세션 ID 는 방 내내 같은 UUID 를 쓴다 (첫 턴 실패·중단이면 새 ID + session 재통지). 사무실 hook 은 hooks(-c hooks.<이벤트>=…)로 넣고 주소의 tab 이 방 ID 라 매핑 표가 필요 없다.
+//  - extraArgs: exec 인자 끝에 덧붙인다 (점검에서 --provider echo 로 로그인 없이 실제 실행해 보기 위함).
+//  - cmd.exe 경유(cmdShim) 위치는 JSON 인자가 깨지므로 만들 때 거절한다 (실행 파일 muse-bin-*.exe 를 직접 써야 한다).
+class MuseChat extends FileTurnChat {
+  constructor(opts) {
+    if (opts?.loc?.cmdShim) throw new Error('Muse 실행 파일(muse-bin-*.exe)을 찾지 못했습니다 — Muse 를 다시 설치하세요');
+    super(opts);
+    this.hooks = opts.hooks || [];
+    this.extraArgs = opts.extraArgs || [];
+  }
+
+  // 도구 호출 중복 제거 표는 턴마다 새로 시작한다 (이미 실행 중이면 send 는 무시되므로 표도 건드리지 않는다).
+  send(text, opts, turn = null) {
+    if (this.closed || this.busy) return;
+    this.seenTools = new Set();
+    super.send(text, opts, turn);
+  }
+
+  get subj() { return 'Muse 가'; }
+
+  get obj() { return 'Muse 를'; }
+
+  get filePrefix() { return 'muse'; }
+
+  buildArgs({ file, model, effort }) {
+    return [...museCli.execArgs({ promptFile: file, sessionId: this.sessionId, model, effort, hooks: this.hooks }), ...this.extraArgs];
+  }
+
+  parse(j) { return museCli.parseMuseLine(j, this.sessionId, this.seenTools); }
+
+  failText(tail, errText) {
+    if (museCli.LOGIN_HINT_RE.test(errText) || museCli.LOGIN_HINT_RE.test(tail)) return 'Muse 로그인이 필요합니다 (결제 수단·구독이 있는 Meta 계정)';
+    return tail || 'Muse 가 응답 없이 끝났습니다';
+  }
+}
+
+module.exports = { claudeChatArgs, claudeUserLine, replayText, parseClaudeLine, parseClaudeModels, claudeModels, parseCodexLine, grokChatArgs, parseGrokLine, cleanStalePromptFiles, lineReader, killTree, spawnCli, ClaudeChat, CodexChat, GrokChat, MuseChat };

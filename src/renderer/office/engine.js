@@ -5,6 +5,7 @@ import { roleOf, displayType } from './roles.js';
 import { toolPhrase, toolPose, clip, baseName, activitySummary } from './phrases.js';
 import { Navigation } from './navigation.js';
 import { createAppearance } from './appearance.js';
+import { AGENT_IDS, normAgent } from '../../shared/agents.js';
 
 export const TIMING = {
   speed: 150, // 논리 좌표 px/초
@@ -281,7 +282,7 @@ export class OfficeEngine {
     let s = this.sessions.get(sid);
     const label = meta.label || (ev.cwd ? `외부 · ${baseName(ev.cwd)}` : '외부 세션');
     if (!s) {
-      s = { id: sid, label, cli: ev._cli === 'codex' ? 'codex' : 'claude', external: !meta.label, pending: [], typeCounts: {}, lastEventAt: this.time };
+      s = { id: sid, label, cli: normAgent(ev._cli), external: !meta.label, pending: [], typeCounts: {}, lastEventAt: this.time };
       this.sessions.set(sid, s);
     } else if (meta.label && s.label !== meta.label) {
       s.label = meta.label;
@@ -289,7 +290,7 @@ export class OfficeEngine {
       const lead = this.agents.get(`${sid}:lead`);
       if (lead) lead.label = meta.label;
     }
-    if ((ev._cli === 'codex' || ev._cli === 'claude') && s.cli !== ev._cli) {
+    if (AGENT_IDS.includes(ev._cli) && s.cli !== ev._cli) {
       s.cli = ev._cli;
       for (const a of this.agents.values()) if (a.sessionId === sid) a.cli = s.cli;
     }

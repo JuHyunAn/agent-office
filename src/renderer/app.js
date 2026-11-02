@@ -4,9 +4,12 @@ import { OfficeView } from './office/view.js';
 import { baseName } from './office/phrases.js';
 import { THEMES, getTheme } from './themes/index.js';
 import { createCollabPanel } from './collab/panel.js';
+import { rosterOf } from './collab/moderator.js';
 import { setupCliResizer } from './layout.js';
 import { cardPreview } from './pet/model.js';
 import { createCodePanel } from './code/panel.js';
+import { AGENTS, AGENT_IDS, agentName, agentById, normAgent } from '../shared/agents.js';
+import { agentsOf, connectedIds, canEnter, accountText, pickDefault, collabReady, collabSupported } from './agentStatus.js';
 
 const api = window.office;
 const $ = (sel) => document.querySelector(sel);
@@ -51,6 +54,7 @@ const state = {
   seq: 0,
   attention: new Map(), // 「확인 필요」: 탭 id(외부 세션은 ext:<세션 id>) → 항목 — 사무실 말풍선 반짝임(과 다음 단계 펫)의 단일 출처
   entered: false,
+  agentPick: null, // AI 목록에서 고른 AI (id) — 진입 화면과 「AI 연결」 대화상자가 함께 쓴다
 };
 
 let theme = getTheme(store.get('ao.theme', 'pixel-office'));
@@ -162,10 +166,19 @@ function newTerminal() {
 
 // ───────────────────────── 진입 화면 ─────────────────────────
 
+const IS_WIN = /Windows/i.test(navigator.userAgent); // 앱 안 설치(공식 PowerShell 명령)는 Windows 에서만 — 메인도 같은 기준으로 막는다
+const setupWord = (mode) => (mode === 'install' ? '설치' : '로그인'); // 준비 터미널·탭의 종류 이름
+
 let gateTerm = null;
-let loginCli = 'claude'; // 진입 화면 로그인 터미널이 마지막으로 띄운 로그인 (claude · codex)
+let loginAgent = null; // 진입 화면 터미널이 마지막으로 띄운 로그인·설치의 AI id
+let loginMode = 'login'; // 그 터미널이 띄운 것: 'login' | 'install'
+let loginRunning = false; // 그 터미널이 아직 끝나지 않았다 (종료 알림 전)
+let loginGen = 0; // startGateProc 호출마다 올린다 — 늦게 끝난 앞선 호출이 화면을 덮어쓰지 않게
+let gateUi = null; // 진입 화면(정상 상태)에서 갱신하는 요소들
 let statusLoading = null; // 진행 중인 상태 확인 — 겹쳐 부르면 같은 결과를 기다린다
 let statusAgain = false; // 확인 중에 다시 불렸으면 끝난 뒤 한 번 더 (로그인 직후 옛 결과가 남지 않게)
+
+const currentAgents = () => agentsOf(state.status);
 
 function refreshStatus() {
   if (statusLoading) { statusAgain = true; return statusLoading; }
@@ -176,10 +189,11 @@ function refreshStatus() {
       state.status = { error: String(e && e.message || e) };
     }
     renderGate();
+    if ($('#agentsdlg').open) syncAgentsDialog(false);
+    updateAgentPanels();
     renderTopbar();
     publishPet();
-    renderCodexAccount();
-    if ($('#newtab').open) renderKindPick();
+    renderKindPick(); // 닫혀 있어도 맞춰 둔다 (열기 전에 눌린 폴더 선택 등이 최신 연결 상태를 보게)
   })().finally(() => {
     statusLoading = null;
     if (statusAgain) { statusAgain = false; refreshStatus(); }
@@ -187,84 +201,179 @@ function refreshStatus() {
   return statusLoading;
 }
 
-// 진입 화면의 Codex(ChatGPT) 줄 — 입장하기가 있는 화면(Claude 로그인 뒤)에만 붙는다. 선택 사항이라 입장은 막지 않는다.
-function codexGateRow(st) {
-  const ca = st.codexAuth;
-  const row = el('div', { class: 'gate-codex' });
-  const recheck = el('button', { class: 'btn', onclick: refreshStatus }, '다시 확인');
-  if (!st.codex) {
-    row.append(
-      el('p', { class: 'hint' }, 'Codex(ChatGPT) — 설치되어 있지 않습니다 (선택 사항 · Codex 탭·협업 대화에 필요)'),
-      el('div', { class: 'gate-row' },
-        el('button', { class: 'btn', onclick: () => api.openExternal('https://developers.openai.com/codex/cli') }, '설치 안내'), recheck));
-  } else if (ca?.loggedIn) {
-    row.append(el('p', { class: 'gate-account' }, `✅ Codex · ${ca.email || ca.methodLabel || '로그인됨'}${ca.plan ? ` · ${ca.plan} 플랜` : ''}`));
-  } else if (ca?.error) {
-    row.append(el('p', {}, 'Codex(ChatGPT) — 상태를 확인하지 못했습니다'), el('p', { class: 'err' }, ca.error), recheck);
-  } else {
-    row.append(
-      el('p', {}, 'Codex(ChatGPT) — 로그인되어 있지 않습니다 (선택 사항)'),
-      el('div', { class: 'gate-row' }, el('button', { class: 'btn', onclick: () => startLogin('codex') }, 'Codex 로그인'), recheck));
-  }
-  return row;
-}
-
-// Claude 로그인 전 화면의 Codex 상태 한 줄 (같은 터미널에서 두 로그인이 부딪히지 않게 버튼은 두지 않는다)
-function codexGateHint(st) {
-  const ca = st.codexAuth;
-  const text = !st.codex ? '설치되어 있지 않음 (선택 사항)'
-    : ca?.loggedIn ? `✅ ${ca.email || ca.methodLabel || '로그인됨'}`
-      : ca?.error ? '상태를 확인하지 못했습니다'
-        : '로그인 필요 (Claude 로그인 뒤 할 수 있습니다)';
-  return el('p', { class: 'hint' }, `Codex(ChatGPT): ${text}`);
+// 상태를 읽지 못했거나(오류) 아직 읽는 중일 때 보여 줄 안내 — 진입 화면·AI 연결 대화상자 공용
+function statusNote(st) {
+  if (!st) return [el('p', {}, 'AI 연결 확인 중…')];
+  return [el('p', { class: 'err' }, st.error), el('button', { type: 'button', class: 'btn', onclick: refreshStatus }, '다시 확인')];
 }
 
 function renderGate() {
   const body = $('#gate-body');
-  body.replaceChildren();
   const st = state.status;
-  if (!st) { body.append('Claude Code 확인 중…'); return; }
-  if (st.error) {
-    body.append(el('p', { class: 'err' }, st.error), el('button', { class: 'btn', onclick: refreshStatus }, '다시 확인'));
+  if (!st || st.error) {
+    body.dataset.mode = st ? 'error' : 'loading';
+    gateUi = null;
+    body.replaceChildren(...statusNote(st));
     return;
   }
-  if (!st.claude) {
-    body.append(
-      el('p', {}, 'Claude Code 가 설치되어 있지 않습니다. 아래 명령으로 설치한 뒤 다시 확인해 주세요.'),
-      el('code', {}, 'npm install -g @anthropic-ai/claude-code'),
-      el('div', { class: 'gate-row' },
-        el('button', { class: 'btn', onclick: () => api.openExternal('https://code.claude.com/docs/en/setup') }, '설치 안내 열기'),
-        el('button', { class: 'btn primary', onclick: refreshStatus }, '다시 확인')),
-      codexGateHint(st),
-    );
-    return;
+  if (body.dataset.mode !== 'ready') {
+    // 정상 화면은 처음 한 번만 만든다 — 이후 상태 갱신은 제자리에서 (초점·로그인 터미널 위치가 흐트러지지 않게)
+    body.dataset.mode = 'ready';
+    const count = el('p', { class: 'gate-count' });
+    const enterBtn = el('button', { id: 'gate-enter', type: 'button', class: 'btn primary', onclick: () => enter() }, '입장하기');
+    const host = el('div', { class: 'gate-panel' });
+    body.replaceChildren(
+      el('div', { class: 'gate-head' },
+        el('div', { class: 'gate-headtext' }, count, el('p', { class: 'hint' }, 'Claude 를 메인으로 지원합니다 · 다른 AI 는 연결하면 함께 쓸 수 있어요 (하나 이상 연결되면 입장)')),
+        enterBtn),
+      host);
+    gateUi = { count, enterBtn };
+    renderAgentPanel(host, { where: 'gate' });
   }
-  if (!st.auth || !st.auth.loggedIn) {
-    body.append(
-      el('p', {}, `Claude Code ${st.claude.version || ''} 이(가) 설치되어 있습니다. Claude 계정으로 로그인해 주세요.`),
-      el('p', { class: 'hint' }, '로그인은 공식 Claude Code 가 진행합니다 (브라우저가 열립니다).'),
-      el('div', { class: 'gate-row' },
-        el('button', { class: 'btn primary', onclick: () => startLogin('claude') }, 'Claude 로그인'),
-        el('button', { class: 'btn', onclick: refreshStatus }, '다시 확인')),
-      st.auth && st.auth.error ? el('p', { class: 'err' }, st.auth.error) : null,
-      codexGateHint(st),
-    );
-    return;
-  }
-  const a = st.auth;
-  body.append(
-    el('p', { class: 'gate-account' }, `✅ ${a.email || '로그인됨'}${a.subscriptionType ? ` · ${a.subscriptionType} 플랜` : ''}`),
-    el('p', { class: 'hint' }, `Claude Code ${st.claude.version || ''} · VS Code 등에서 쓰는 로그인과 같은 계정입니다.`),
-    el('button', { class: 'btn primary', onclick: enter }, '입장하기'),
-    codexGateRow(st),
-  );
+  const list = currentAgents();
+  gateUi.count.textContent = `연결 ${connectedIds(list).length}/${list.length}`;
+  gateUi.enterBtn.disabled = !canEnter(list);
+  gateUi.enterBtn.title = canEnter(list) ? '' : 'AI 를 하나 이상 연결해 주세요';
 }
 
-// 진입 화면 로그인 터미널 (cli: claude · codex). 터미널은 하나라 이전 출력을 지우고 새로 시작한다.
-async function startLogin(cli = 'claude') {
-  loginCli = cli;
+// ───────────────────────── AI 목록 패널 (진입 화면 · 「AI 연결」 대화상자 공용) ─────────────────────────
+// 왼쪽 목록(listbox) + 오른쪽 고른 AI 상세. 행은 처음 한 번만 만들고, 상태가 바뀌면 점·요약·선택 표시만 고치고 상세만 다시 그린다.
+// 같은 패널이 두 곳에 함께 있을 수 있어 패널 안 요소에는 id 를 쓰지 않는다 (data-agent 사용).
+
+const agentPanels = new Set();
+
+function dropAgentPanels(host) {
+  for (const p of agentPanels) if (p.host === host) agentPanels.delete(p);
+}
+
+function renderAgentPanel(host, { where }) {
+  dropAgentPanels(host);
+  const list = el('ul', { class: 'agent-list', role: 'listbox', 'aria-label': 'AI 목록' });
+  const detail = el('div', { class: 'agent-detail' });
+  const panel = { host, where, list, detail, rows: new Map() };
+  for (const def of AGENTS) {
+    const dot = el('span', { class: 'agent-dot' });
+    dot.style.setProperty('--dot', def.color);
+    const sub = el('span', { class: 'agent-sub' });
+    const row = el('li', { class: 'agent-row', role: 'option', tabindex: '-1', 'aria-selected': 'false', 'data-agent': def.id, onclick: () => pickAgent(def.id) },
+      dot, el('span', { class: 'agent-text' }, el('b', {}, def.product), sub));
+    panel.rows.set(def.id, { row, dot, sub });
+    list.append(row);
+  }
+  list.addEventListener('keydown', (e) => agentListKey(e, panel));
+  host.replaceChildren(el('div', { class: 'agent-split' }, list, detail));
+  agentPanels.add(panel);
+  updateAgentPanel(panel);
+}
+
+// APG listbox: 위·아래 화살표(Home/End 포함)는 선택과 초점을 함께 옮기고, Space·Enter 는 페이지가 스크롤·제출되지 않게만 막는다.
+function agentListKey(e, panel) {
+  const ids = AGENTS.map((a) => a.id);
+  const at = ids.indexOf(e.target.closest?.('.agent-row')?.dataset.agent ?? state.agentPick);
+  let next = null;
+  if (e.key === 'ArrowDown') next = Math.min(ids.length - 1, at + 1);
+  else if (e.key === 'ArrowUp') next = Math.max(0, at - 1);
+  else if (e.key === 'Home') next = 0;
+  else if (e.key === 'End') next = ids.length - 1;
+  else if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); if (at >= 0) pickAgent(ids[at]); return; }
+  else return;
+  e.preventDefault();
+  pickAgent(ids[next]);
+  panel.rows.get(ids[next])?.row.focus();
+}
+
+function pickAgent(id) {
+  state.agentPick = id;
+  store.set('ao.agentPick', id);
+  updateAgentPanels();
+}
+
+function updateAgentPanels() {
+  for (const p of agentPanels) {
+    if (!p.list.isConnected) agentPanels.delete(p);
+    else updateAgentPanel(p);
+  }
+}
+
+function updateAgentPanel(panel) {
+  const st = state.status;
+  if (!st || st.error) return;
+  const list = currentAgents();
+  if (!list.some((e) => e.id === state.agentPick)) state.agentPick = pickDefault(list, store.get('ao.agentPick', null));
+  for (const e of list) {
+    const r = panel.rows.get(e.id);
+    r.dot.className = `agent-dot state-${e.state}`;
+    r.sub.textContent = accountText(e);
+    const on = e.id === state.agentPick;
+    r.row.setAttribute('aria-selected', String(on));
+    r.row.tabIndex = on ? 0 : -1;
+  }
+  renderAgentDetail(panel, list.find((e) => e.id === state.agentPick));
+}
+
+// 로그인만으로는 쓸 수 없는 AI 의 계정 조건 안내 (로그인 필요·오류 상태의 상세에만 붙는다). Muse 는 결제 수단·구독이 없으면 로그인 직후 CLI 가 자격 증명을 지운다 (1.4.14 실측).
+const ACCOUNT_NOTES = {
+  muse: {
+    text: 'Muse Code 는 결제 수단을 등록한 Meta 계정(종량제) 또는 구독이 필요합니다. 등록 뒤 다시 로그인하세요.',
+    label: 'Meta 계정 설정 열기',
+    url: 'https://accountscenter.meta.com/muse_code/',
+  },
+};
+
+function renderAgentDetail(panel, e) {
+  const { def } = e;
+  const recheck = el('button', { type: 'button', class: 'btn', 'data-act': 'recheck', onclick: () => refreshStatus() }, '다시 확인');
+  const loginBtn = el('button', { type: 'button', class: 'btn primary', 'data-act': 'login', onclick: () => {
+    if (panel.where === 'gate') { startGateProc(def.id, 'login'); return; }
+    $('#agentsdlg').close();
+    openSetupTab(def.id, 'login');
+  } }, `${def.name} 로그인`);
+  const installBtn = el('button', { type: 'button', class: 'btn primary', 'data-act': 'install', onclick: () => {
+    if (panel.where === 'gate') { startGateProc(def.id, 'install'); return; }
+    $('#agentsdlg').close();
+    openSetupTab(def.id, 'install');
+  } }, `${def.name} 설치`);
+  const loginHint = el('p', { class: 'hint' }, '로그인을 마쳐도 터미널이 저절로 끝나지 않으면 터미널을 닫고(작업용으로 쓰지 말고) 「다시 확인」을 누르세요.'); // Antigravity 는 전용 로그인 명령이 없어 CLI 화면 자체로 로그인한다
+  const note = ACCOUNT_NOTES[def.id];
+  const accountNote = note ? [el('p', { class: 'hint' }, note.text), el('div', { class: 'gate-row' }, el('button', { type: 'button', class: 'btn', 'data-act': 'account', onclick: () => api.openExternal(note.url) }, note.label))] : [];
+  const kids = [el('h3', { class: 'agent-title' }, e.version ? `${def.product} · ${e.version}` : def.product)];
+  if (e.state === 'missing') {
+    kids.push(
+      el('p', {}, '설치되어 있지 않습니다'),
+      ...(IS_WIN ? [el('div', { class: 'gate-row' }, installBtn),
+        el('p', { class: 'hint' }, '「설치」를 누르면 아래 공식 설치 명령을 앱 안 터미널에서 실행합니다. 끝나면 자동으로 다시 확인합니다.')] : []),
+      el('code', {}, def.install.cmd),
+      el('div', { class: 'gate-row' }, el('button', { type: 'button', class: 'btn', onclick: () => api.openExternal(def.install.url) }, '설치 안내'), recheck));
+  } else if (e.state === 'login') {
+    kids.push(el('p', {}, '로그인되어 있지 않습니다'), el('div', { class: 'gate-row' }, loginBtn, recheck), loginHint, ...accountNote);
+  } else if (e.state === 'error') {
+    kids.push(el('p', {}, '상태를 확인하지 못했습니다'), el('p', { class: 'err' }, e.auth?.error || ''), el('div', { class: 'gate-row' }, loginBtn, recheck), loginHint, ...accountNote);
+  } else {
+    kids.push(
+      el('p', { class: 'gate-account', title: [e.version && `버전 ${e.version}`, e.path].filter(Boolean).join('\n') }, accountText(e)),
+      el('div', { class: 'gate-row' }, recheck));
+    if (def.id === 'antigravity' && state.status?.hooks?.agy) kids.push(el('p', { class: 'err', title: state.status.hooks.agy.error || '' }, '~/.gemini/config/hooks.json 을 읽지 못해 사무실 표시를 켤 수 없습니다 — 파일을 확인하세요'));
+  }
+  // 상세를 다시 그려도 그 안에 있던 키보드 초점은 같은 동작 버튼으로 되돌린다 (「다시 확인」을 누른 뒤 초점이 사라지지 않게)
+  const act = panel.detail.contains(document.activeElement) ? document.activeElement.dataset?.act : null;
+  panel.detail.replaceChildren(...kids);
+  if (act) panel.detail.querySelector(`[data-act="${act}"]`)?.focus();
+}
+
+// 진입 화면 로그인·설치 터미널 (id: AI id, mode: 'login' | 'install'). 터미널은 하나라 이전 출력을 지우고 새로 시작한다.
+async function startGateProc(id, mode = 'login') {
+  if (loginRunning && loginMode === 'install' && !window.confirm('설치가 진행 중입니다. 중단하고 새로 시작할까요?')) return;
+  const gen = ++loginGen;
+  const switched = loginRunning && (loginAgent !== id || loginMode !== mode); // 다른 AI·다른 종류로 바꿨다 — 끊긴 앞 터미널은 종료 알림이 없다
+  loginAgent = id;
+  loginMode = mode;
   const host = $('#gate-term');
   host.hidden = false;
+  const title = $('#gate-term-title');
+  title.hidden = false;
+  title.textContent = mode === 'install'
+    ? `${agentById(id).product} 설치 — 설치가 끝나면 상태를 다시 확인합니다`
+    : `${agentById(id).product} 로그인 — 브라우저에서 로그인을 마치면 상태를 다시 확인합니다`;
   if (!gateTerm) {
     gateTerm = newTerminal();
     gateTerm.term.open(host);
@@ -272,14 +381,20 @@ async function startLogin(cli = 'claude') {
   }
   gateTerm.term.reset();
   gateTerm.fit.fit();
+  loginRunning = true;
   try {
-    await api.createPty({ tabId: 'login', mode: 'login', cli, cols: gateTerm.term.cols, rows: gateTerm.term.rows });
+    await api.createPty({ tabId: 'login', mode, cli: id, cols: gateTerm.term.cols, rows: gateTerm.term.rows });
   } catch (e) {
-    gateTerm.term.write(`\r\n\x1b[31m${e.message}\x1b[0m\r\n`);
+    if (gen === loginGen) { loginRunning = false; gateTerm.term.write(`\r\n\x1b[31m${e.message}\x1b[0m\r\n`); }
   }
+  if (switched) refreshStatus();
 }
 
 async function enter() {
+  if (loginRunning && !window.confirm(loginMode === 'install'
+    ? '설치가 진행 중입니다. 입장하면 설치가 중단됩니다. 입장할까요?'
+    : `진행 중인 ${agentById(loginAgent).product} 로그인이 끝납니다. 입장할까요?`)) return;
+  loginRunning = false;
   state.entered = true;
   $('#gate').hidden = true;
   if (gateTerm) api.killPty('login'); // 입장 뒤 보이지 않는 로그인 프로세스를 남기지 않는다
@@ -299,18 +414,56 @@ async function enter() {
 
 // ───────────────────────── 상단 막대 ─────────────────────────
 
+// 상단 「연결 n/N」 칸 — 누르면 같은 AI 목록 패널이 대화상자로 뜬다.
+function renderAgentsPill() {
+  const btn = $('#agents-pill');
+  const st = state.status;
+  if (!st) { btn.textContent = '연결 확인 중…'; btn.className = 'pill pill-btn'; btn.title = ''; return; }
+  if (st.error) { btn.textContent = '⚠ 연결 확인 실패'; btn.className = 'pill pill-btn warn'; btn.title = `${st.error}\n눌러서 다시 확인`; return; }
+  const list = currentAgents();
+  const n = connectedIds(list).length;
+  btn.textContent = `연결 ${n}/${list.length}`;
+  btn.className = `pill pill-btn${n === list.length ? ' on' : n === 0 ? ' warn' : ''}`;
+  btn.title = list.map((e) => `${e.def.product}: ${accountText(e)}`).join('\n'); // 칸이 잘려도 계정을 볼 수 있게
+  btn.setAttribute('aria-label', `AI ${btn.textContent} — 눌러서 AI 연결 목록 열기`); // 화면 낭독기가 무엇의 연결인지 읽게
+}
+
+// 「AI 연결」 대화상자 본문: 열 때 새로 만들고, 상태가 바뀌면 제자리에서 갱신 (오류↔정상이 바뀌면 다시 만든다)
+function syncAgentsDialog(fresh) {
+  const host = $('#agentsdlg-body');
+  const st = state.status;
+  if (!st || st.error) {
+    host.dataset.mode = 'error';
+    dropAgentPanels(host);
+    host.replaceChildren(...statusNote(st));
+  } else if (fresh || host.dataset.mode !== 'panel') {
+    host.dataset.mode = 'panel';
+    renderAgentPanel(host, { where: 'dialog' });
+  }
+}
+
+$('#agents-pill').addEventListener('click', () => {
+  if (!state.entered) return; // 입장 전에는 진입 화면이 같은 목록을 보여 준다 (키보드로 뒤쪽 칸에 닿아도 열지 않음)
+  if (state.status?.error) { refreshStatus(); return; }
+  const dlg = $('#agentsdlg');
+  if (dlg.open) return;
+  syncAgentsDialog(true);
+  dlg.showModal();
+});
+$('#agentsdlg-close').addEventListener('click', () => $('#agentsdlg').close());
+$('#agentsdlg').addEventListener('close', () => {
+  const host = $('#agentsdlg-body');
+  dropAgentPanels(host);
+  delete host.dataset.mode;
+  host.replaceChildren();
+});
+
 function renderTopbar() {
   const st = state.status;
+  renderAgentsPill();
   if (st?.pet?.mode) $('#pet-mode').value = st.pet.mode;
-  const acc = $('#account');
-  if (st && st.auth && st.auth.loggedIn) {
-    acc.textContent = `● ${st.auth.email || '로그인됨'}${st.auth.subscriptionType ? ` · ${st.auth.subscriptionType}` : ''}`;
-    acc.className = 'pill on';
-  } else {
-    acc.textContent = '로그인 필요';
-    acc.className = 'pill warn';
-  }
   const btn = $('#global-hooks');
+  btn.hidden = !!st && !st.error && !currentAgents().find((e) => e.id === 'claude')?.found; // 다른 곳 세션 보기는 Claude Code 기능이다
   const g = st && st.hook && st.hook.global;
   if (!g) { btn.textContent = '다른 세션 보기: -'; return; }
   if (g.error) { btn.textContent = '다른 세션 보기: 설정 오류'; btn.className = 'pill pill-btn warn'; btn.title = g.error; return; }
@@ -328,38 +481,6 @@ function renderTopbar() {
 function needsReconnect(g) {
   return g.installed && (g.portMatches === false || g.tokenMatches === false);
 }
-
-// 상단 Codex(ChatGPT) 계정 칸 — Codex 를 찾았을 때만 보인다. 선택 사항이라 로그인이 없어도 막지 않는다.
-function renderCodexAccount() {
-  const st = state.status;
-  const btn = $('#codex-account');
-  const ca = st?.codexAuth;
-  btn.hidden = !st?.codex;
-  if (btn.hidden) return;
-  if (ca?.loggedIn) {
-    btn.textContent = `● Codex · ${ca.email || ca.methodLabel || '로그인됨'}${ca.plan ? ` · ${ca.plan}` : ''}`;
-    btn.className = 'pill pill-btn on';
-    btn.title = `${btn.textContent.slice(2)} — 눌러서 다시 확인`; // 칸이 잘려도 전체 계정을 볼 수 있게
-  } else if (ca?.error) {
-    btn.textContent = '⚠ Codex 상태 확인 실패';
-    btn.className = 'pill pill-btn warn';
-    btn.title = ca.error;
-  } else {
-    btn.textContent = 'Codex 로그인 필요';
-    btn.className = 'pill pill-btn warn';
-    btn.title = '눌러서 Codex(ChatGPT) 로그인 탭 열기';
-  }
-}
-
-$('#codex-account').addEventListener('click', () => {
-  const st = state.status;
-  const ca = st?.codexAuth;
-  const needLogin = !!st?.codex && !ca?.loggedIn && !ca?.error;
-  if (needLogin && state.entered) { openCodexLogin(); return; }
-  if (needLogin && st.auth?.loggedIn) { startLogin('codex'); return; } // 진입 전에는 Claude 로그인이 끝났을 때만
-  $('#codex-account').textContent = 'Codex 확인 중…';
-  refreshStatus();
-});
 
 $('#global-hooks').addEventListener('click', async () => {
   const g = state.status && state.status.hook && state.status.hook.global;
@@ -427,27 +548,29 @@ function uniqueLabel(base) {
   for (let i = 2; ; i++) if (!names.has(`${base} #${i}`)) return `${base} #${i}`;
 }
 
-const KIND_NAME = { claude: 'Claude Code', codex: 'Codex', collab: '협업 대화' };
-const KIND_PREFIX = { claude: '', codex: 'Codex · ', collab: '협업 · ' };
+const KIND_NAME = { ...Object.fromEntries(AGENTS.map((a) => [a.id, a.product])), collab: '협업 대화' };
+const KIND_PREFIX = { ...Object.fromEntries(AGENTS.map((a) => [a.id, a.tabPrefix])), collab: '협업 · ' };
 
-// kind: claude(공식 Claude Code 화면) · codex(공식 Codex 화면) · collab(Claude + Codex 협업 대화)
-// login: 입장 뒤 Codex(ChatGPT) 로그인 탭 — 폴더 없이 홈 폴더에서 공식 codex login 을 띄운다.
-async function openTab({ cwd, mode = 'new', resumeId = null, kind = 'claude', login = false }) {
+// kind: claude(공식 Claude Code 화면) · codex(공식 Codex 화면) · collab(고른 AI 들의 협업 대화)
+// login: 입장 뒤 로그인·설치 탭 — 준비하려는 AI 의 id (mode 가 'login' 이면 공식 로그인 명령, 'install' 이면 공식 설치 명령). 폴더 없이 홈 폴더에서 띄운다 (아니면 false).
+// agents: 협업 대화에 참여하는 AI id 목록 (대화창에 그대로 넘긴다 — 없으면 Claude·Codex)
+async function openTab({ cwd, mode = 'new', resumeId = null, kind = 'claude', login = false, agents = null }) {
   const id = `t${Date.now().toString(36)}${(state.seq++).toString(36)}`;
-  const label = uniqueLabel(login ? 'Codex 로그인' : `${KIND_PREFIX[kind]}${baseName(cwd) || cwd}`);
+  const label = uniqueLabel(login ? `${agentName(login)} ${setupWord(mode)}` : `${KIND_PREFIX[kind]}${baseName(cwd) || cwd}`);
   const pane = el('div', { class: 'pane' });
   $('#panes').append(pane);
   const dot = el('span', { class: 'dot' });
-  const btn = el('button', { class: `tab kind-${kind}`, title: login ? 'Codex 로그인 (공식 codex login)' : `${KIND_NAME[kind]} · ${cwd}`, onclick: () => activate(id) },
+  const btn = el('button', { class: `tab kind-${kind}`, title: login ? `${agentById(login).product} ${setupWord(mode)} (공식 ${setupWord(mode)} 명령)` : `${KIND_NAME[kind]} · ${cwd}`, onclick: () => activate(id) },
     dot, el('span', { class: 'name' }, label),
     el('span', { class: 'close', title: '탭 닫기', onclick: (e) => { e.stopPropagation(); closeTab(id); } }, '×'));
   $('#tabs').append(btn);
   if (!login) store.set('ao.recent', [cwd, ...store.get('ao.recent', []).filter((p) => p !== cwd)].slice(0, 8));
 
   // sessions: 이 탭에서 나온 모든 세션 (탭 안에서 실행한 중첩 claude 포함) — 탭을 닫을 때 함께 정리한다.
-  const tab = { id, kind, label, cwd, mode, login, sessionId: null, sessions: new Set(), term: null, fit: null, panel: null, pane, btn, dot, status: 'idle', exited: false,
+  const tab = { id, kind, label, cwd, mode, login, agents, sessionId: null, sessions: new Set(), term: null, fit: null, panel: null, pane, btn, dot, status: 'idle', exited: false,
     collabSpeaker: null, collabLast: null, collabPrev: null, collabTurn: 0, collabAt: 0 };
   state.tabs.set(id, tab);
+  publishPet(); // 탭을 연 AI 가 쓰는 중이 된다 — 펫이 나타나게
   // 코드 화면의 허용 폴더 등록 (협업 탭도 첫 메시지 전에 등록) — 등록이 끝난 뒤 폴더 목록을 알린다. 실패해도 조용히 넘어간다 (고르면 화면에 오류가 보인다).
   if (!login) api.codeAllow(cwd).catch(() => {}).then(syncCodeFolders);
   // 탭 영역(터미널·대화창)을 클릭하거나 포커스가 들어오면 「확인 필요」를 끈다.
@@ -456,7 +579,7 @@ async function openTab({ cwd, mode = 'new', resumeId = null, kind = 'claude', lo
   if (kind === 'collab') {
     pane.classList.add('pane-collab');
     // 작업 상태는 전이 알림(동기)으로도 정한다 — 창이 숨겨져 렌더가 멈춰도 펫이 협업 진행을 바로 알게.
-    tab.panel = createCollabPanel({ api, roomId: id, cwd, onStatus: (s) => setTabStatus(tab, s === 'running' ? 'working' : 'idle'), onTransition: (prev, next, agent) => { setTabStatus(tab, next === 'running' ? 'working' : 'idle'); collabAttention(tab, prev, next, agent); }, onSpeaker: (agent) => collabSpeaker(tab, agent) });
+    tab.panel = createCollabPanel({ api, roomId: id, cwd, agents, onStatus: (s) => setTabStatus(tab, s === 'running' ? 'working' : 'idle'), onTransition: (prev, next, agent) => { setTabStatus(tab, next === 'running' ? 'working' : 'idle'); collabAttention(tab, prev, next, agent); }, onSpeaker: (agent) => collabSpeaker(tab, agent) });
     pane.append(tab.panel.root);
     activate(id);
     return;
@@ -478,11 +601,11 @@ async function openTab({ cwd, mode = 'new', resumeId = null, kind = 'claude', lo
   }
 }
 
-// 입장 뒤 Codex 로그인: 이미 열린 로그인 탭이 있으면 그 탭으로, 없으면 일반 탭으로 연다.
-function openCodexLogin() {
-  const open = [...state.tabs.values()].find((t) => t.login && !t.exited);
+// 입장 뒤 로그인·설치: 같은 AI·같은 종류의 열린 준비 탭이 있으면 그 탭으로, 없으면 새로 연다.
+function openSetupTab(id, mode = 'login') {
+  const open = [...state.tabs.values()].find((t) => t.login === id && t.mode === mode && !t.exited);
   if (open) activate(open.id);
-  else openTab({ kind: 'codex', mode: 'login', login: true });
+  else openTab({ kind: id, mode, login: id });
 }
 
 function fitTab(tab) {
@@ -523,14 +646,14 @@ function publishFocus() {
 async function closeTab(id) {
   const tab = state.tabs.get(id);
   if (!tab) return;
-  const what = tab.login ? 'Codex 로그인' : tab.kind === 'collab' ? '협업 대화(Claude·Codex)' : `${KIND_NAME[tab.kind]} 세션`;
+  const what = tab.login ? `${agentName(tab.login)} ${setupWord(tab.mode)}` : tab.kind === 'collab' ? `협업 대화(${rosterOf(tab.agents).map(agentName).join('·')})` : `${KIND_NAME[tab.kind]} 세션`;
   if (!tab.exited && !window.confirm(`「${tab.label}」 탭을 닫으면 그 ${what}도 종료됩니다. 닫을까요?`)) return;
   state.tabs.delete(id);
   syncCodeFolders();
   state.closedTabs.add(id);
   if (state.closedTabs.size > 200) state.closedTabs.delete(state.closedTabs.values().next().value); // 오래 켜 둬도 끝없이 늘지 않게
   if (tab.panel) await api.collabClose(id);
-  else { await api.killPty(id); tab.term.dispose(); }
+  else { await api.killPty(id); tab.term?.dispose(); } // 만들다 실패한 탭은 term 이 없을 수 있다
   tab.pane.remove();
   tab.btn.remove();
   endTabSessions(tab);
@@ -551,7 +674,7 @@ const ATTENTION_TEXT = {
 
 // 사용자가 그 탭을 보고 있다: 활성 탭이고 창이 보이며 포커스가 있고, 새 탭·펫 그림 대화상자가 닫혀 있다.
 function isLooking(tabId) {
-  return tabId != null && state.active === tabId && document.visibilityState === 'visible' && document.hasFocus() && !$('#newtab').open && !$('#petpick').open;
+  return tabId != null && state.active === tabId && document.visibilityState === 'visible' && document.hasFocus() && !$('#newtab').open && !$('#petpick').open && !$('#agentsdlg').open;
 }
 
 function renderDot(tab) {
@@ -567,20 +690,22 @@ function publishAttention() {
 // 바탕화면 펫에 보낼 상태 — 같은 내용이면 보내지 않는다 (hook 이벤트마다 불린다).
 let lastPet = '';
 function publishPet() {
-  const kinds = { claude: { working: false, attention: [] }, codex: { working: false, attention: [] } };
-  for (const t of state.tabs.values()) if (t.status === 'working') for (const k of t.kind === 'collab' ? ['claude', 'codex'] : [t.kind]) if (kinds[k]) kinds[k].working = true;
+  const kinds = Object.fromEntries(AGENT_IDS.map((k) => [k, { working: false, attention: [] }]));
+  for (const t of state.tabs.values()) if (t.status === 'working') for (const k of t.kind === 'collab' ? rosterOf(t.agents) : [t.kind]) if (kinds[k]) kinds[k].working = true;
   for (const x of [...state.attention.values()].sort((a, b) => a.at - b.at)) {
-    kinds[x.cli === 'codex' ? 'codex' : 'claude'].attention.push({ key: x.key, tabId: x.tabId, label: x.label, reason: x.reason, kind: x.kind, text: x.text, at: x.at,
+    kinds[normAgent(x.cli)].attention.push({ key: x.key, tabId: x.tabId, label: x.label, reason: x.reason, kind: x.kind, text: x.text, at: x.at,
       permId: x.permId ?? null, tool: x.tool ?? '', preview: x.preview ?? '', canAnswer: !!x.canAnswer });
   }
   // 협업 대화: 답변 중인 협업 탭 가운데 말하는 AI 가 가장 최근에 바뀐 탭 기준 (두 캐릭터 상호작용용).
   let best = null;
   for (const t of state.tabs.values()) if (t.kind === 'collab' && t.status === 'working' && (!best || t.collabAt >= best.collabAt)) best = t;
-  const collab = best ? { active: true, tabId: best.id, speaker: best.collabSpeaker, turn: best.collabTurn, prev: best.collabPrev } : { active: false };
-  const json = JSON.stringify({ kinds, collab });
+  const collab = best ? { active: true, tabId: best.id, speaker: best.collabSpeaker, turn: best.collabTurn, prev: best.collabPrev, agents: rosterOf(best.agents) } : { active: false };
+  // 쓰는 중인 AI: 앱에서 탭을 연 AI (협업 탭은 참여 AI 전부, 로그인 탭은 제외). 탭이 없으면 빈 목록 → 펫 없음.
+  const inUse = AGENT_IDS.filter((k) => [...state.tabs.values()].some((t) => !t.login && (t.kind === 'collab' ? rosterOf(t.agents) : [t.kind]).includes(k)));
+  const json = JSON.stringify({ kinds, collab, inUse });
   if (json === lastPet) return;
   lastPet = json;
-  api.petState?.({ kinds, collab });
+  api.petState?.({ kinds, collab, inUse });
 }
 
 const attentionTimers = new Map(); // 외부 세션 key → 자동 해제 타이머 (항목마다 하나만)
@@ -621,7 +746,7 @@ function permissionPreview(input) {
 function noteAttention(tab, ev) {
   const sid = ev.session_id, name = ev.hook_event_name, agentId = ev.agent_id || null;
   if (tab?.kind === 'collab') { if (ev._cli) (tab.cliSession ||= {})[ev._cli] = sid; return; } // 협업 대화는 대화창 상태로 정한다 (Stop 은 턴마다 온다)
-  if (tab ? sid !== tab.sessionId : ev._tab === 'login' || ev._cli === 'codex') return;
+  if (tab ? sid !== tab.sessionId : ev._tab === 'login' || !agentById(normAgent(ev._cli))?.caps.externalSessions) return; // 외부 세션은 다른 곳 세션을 받을 수 있는 AI 만
   const key = tab ? tab.id : `ext:${sid}`, prev = state.attention.get(key);
   let reason = null;
   if (name === 'Stop' && !agentId) reason = tab ? 'done' : null;
@@ -674,6 +799,7 @@ window.addEventListener('focus', lookAgain);
 document.addEventListener('visibilitychange', lookAgain);
 $('#newtab').addEventListener('close', lookAgain);
 $('#petpick').addEventListener('close', lookAgain);
+$('#agentsdlg').addEventListener('close', lookAgain);
 
 function setTabStatus(tab, status) {
   tab.status = status;
@@ -697,6 +823,8 @@ function endTabSessions(tab) {
 function onHookEvent(ev) {
   // 닫은 탭의 늦은 이벤트(Codex hook 은 PowerShell 을 거쳐 늦게 오기도 한다)는 버린다 — 유령 캐릭터·외부 세션 오인 방지.
   if (ev._tab && state.closedTabs.has(ev._tab)) return;
+  // 로그인 탭(진입 화면 로그인 터미널 'login' 포함)의 프로세스가 보내는 hook 은 세션·캐릭터로 잡지 않는다.
+  if (ev._tab === 'login' || tabForEvent(ev)?.login) return;
   // 붙잡힌 권한 요청이 전역 hook 사본과 겹쳐 두 번째로 온 사본: 엔진·탭 상태는 건드리지 않고 카드 정보(permId)만 갱신한다.
   if (ev._dupHold) { noteAttention(tabForEvent(ev), ev); updateHeadcount(); return; }
   const tab = tabForEvent(ev);
@@ -713,7 +841,7 @@ function onHookEvent(ev) {
     tab.sessions.add(ev.session_id);
     label = ev.session_id === tab.sessionId ? tab.label : `${tab.label} · 하위`;
     // 협업 대화는 Claude·Codex 두 세션이 한 탭에 있다 — 각각 팀장 캐릭터로 표시하고, 탭 상태는 대화창이 정한다.
-    if (tab.kind === 'collab') label = `${tab.label} · ${ev._cli === 'codex' ? 'Codex' : 'Claude'}`;
+    if (tab.kind === 'collab') label = `${tab.label} · ${agentName(normAgent(ev._cli))}`;
   }
   if (tab && tab.kind !== 'collab' && ev.session_id === tab.sessionId) {
     const name = ev.hook_event_name;
@@ -724,7 +852,7 @@ function onHookEvent(ev) {
     } else if (!tab.exited) {
       setTabStatus(tab, 'working');
     }
-  } else if (!tab && ev._tab !== 'login' && ev._cli !== 'codex') { // 외부 세션 목록은 Claude 이어받기용
+  } else if (!tab && ev._tab !== 'login' && agentById(normAgent(ev._cli))?.caps.externalSessions) { // 외부 세션 목록은 Claude 이어받기용
     const prev = state.external.get(ev.session_id) || {};
     state.external.set(ev.session_id, { sessionId: ev.session_id, cwd: ev.cwd || prev.cwd || '', at: Date.now() });
     if (ev.hook_event_name === 'SessionEnd') state.external.delete(ev.session_id);
@@ -760,7 +888,10 @@ api.onPtyData(({ tabId, data }) => {
 api.onCollabEvent(({ roomId, agent, ...ev }) => state.tabs.get(roomId)?.panel?.handle(agent, ev));
 api.onPtyExit(({ tabId, exitCode }) => {
   if (tabId === 'login') {
-    gateTerm?.term.write(`\r\n\x1b[90m[로그인 터미널 종료 · 코드 ${exitCode}] 상태를 다시 확인합니다\x1b[0m\r\n`);
+    loginRunning = false; // 바꾸거나 끝낸 앞 로그인의 종료 알림은 오지 않는다 (PtyManager) — 이 알림은 지금 로그인의 것
+    gateTerm?.term.write(loginMode === 'install'
+      ? `\r\n\x1b[90m[설치 터미널 종료 · 코드 ${exitCode}] ${exitCode === 0 ? '설치가 끝났습니다' : '설치가 실패했을 수 있습니다 — 위 출력을 확인하세요'} · 다시 확인합니다\x1b[0m\r\n`
+      : `\r\n\x1b[90m[로그인 터미널 종료 · 코드 ${exitCode}] 상태를 다시 확인합니다\x1b[0m\r\n`);
     refreshStatus();
     return;
   }
@@ -768,7 +899,7 @@ api.onPtyExit(({ tabId, exitCode }) => {
   if (!tab?.term) return;
   tab.exited = true;
   setTabStatus(tab, 'exited');
-  tab.term.write(`\r\n\x1b[90m[${KIND_NAME[tab.kind]} 종료 · 코드 ${exitCode}] 탭을 닫거나 ＋ 로 새로 여세요.\x1b[0m\r\n`);
+  tab.term.write(`\r\n\x1b[90m[${tab.login ? `${agentName(tab.login)} ${setupWord(tab.mode)}` : KIND_NAME[tab.kind]} 종료 · 코드 ${exitCode}] 탭을 닫거나 ＋ 로 새로 여세요.\x1b[0m\r\n`);
   endTabSessions(tab);
   if (tab.login) { tab.term.write('\r\n\x1b[90m상태를 다시 확인합니다…\x1b[0m\r\n'); refreshStatus(); }
 });
@@ -778,66 +909,152 @@ api.onPtyExit(({ tabId, exitCode }) => {
 const KIND_HINT = {
   claude: '공식 Claude Code 화면을 엽니다.',
   codex: '공식 Codex 화면을 엽니다. 처음 여는 폴더는 Codex 가 신뢰 여부를 묻습니다.',
-  collab: 'Claude 와 Codex 가 한 대화창에서 의견을 주고받습니다. Bypass 모드로 실행되며(확인 없이 파일 수정·명령 실행), 언제든 끼어들거나 중단할 수 있습니다.',
+  collab: '고른 AI 들이 한 대화창에서 의견을 주고받습니다. Bypass 모드로 실행되며(확인 없이 파일 수정·명령 실행), 언제든 끼어들거나 중단할 수 있습니다.',
 };
 
+// 실행 종류 라디오(AI 마다 하나 + 협업)와 협업 참여 체크박스는 처음 한 번만 만든다. 이후에는 disabled·checked·글자만 바꾼다.
+function buildKindPick() {
+  const radios = new Map();
+  const checks = new Map();
+  const makeRadio = (value, color = null) => {
+    const input = el('input', { type: 'radio', name: 'tab-kind', value });
+    const dot = el('span', { class: 'agent-dot', 'aria-hidden': 'true' }); // 진입 화면 AI 목록과 같은 상태 점 (협업은 점 없이 자리만)
+    if (color) dot.style.setProperty('--dot', color);
+    const text = el('span', {});
+    input.addEventListener('change', () => { store.set('ao.tabKind', selectedKind()); renderKindPick(); });
+    $('#newtab .kind-pick').append(el('label', {}, dot, input, text));
+    return { input, text, dot };
+  };
+  for (const def of AGENTS) radios.set(def.id, makeRadio(def.id, def.color));
+  const collab = makeRadio('collab');
+  for (const def of AGENTS) {
+    const input = el('input', { type: 'checkbox', name: 'collab-agent', value: def.id });
+    const text = el('span', {});
+    input.addEventListener('change', () => { store.set('ao.collabAgents', selectedCollabAgents()); renderKindPick(); });
+    $('#collab-agents-list').append(el('label', {}, input, text));
+    checks.set(def.id, { input, text });
+  }
+  return { radios, collab, checks };
+}
+const kindUi = buildKindPick();
+
 function selectedKind() {
-  return document.querySelector('input[name="tab-kind"]:checked')?.value || 'claude';
+  return document.querySelector('input[name="tab-kind"]:checked')?.value || null;
+}
+
+// 협업에 참여하도록 체크된 AI (AGENTS 순서)
+function selectedCollabAgents() {
+  return [...document.querySelectorAll('input[name="collab-agent"]:checked')].map((i) => i.value);
+}
+
+// 고른 실행 종류로 지금 폴더를 열 수 있는가: 그 종류가 활성이고, 협업이면 참여 AI 가 2개 이상이며 지원되는 조합이어야 한다.
+function canOpenSelected() {
+  const kind = selectedKind();
+  if (!kind || document.querySelector(`input[name="tab-kind"][value="${kind}"]`)?.disabled !== false) return false;
+  if (kind !== 'collab') return true;
+  const sel = selectedCollabAgents();
+  return collabReady(sel) && collabSupported(sel);
 }
 
 function renderKindPick() {
-  const hasCodex = !!state.status?.codex;
-  const want = hasCodex ? store.get('ao.tabKind', 'claude') : 'claude';
-  for (const r of document.querySelectorAll('input[name="tab-kind"]')) {
-    r.disabled = r.value !== 'claude' && !hasCodex;
-    r.checked = r.value === want;
+  const list = currentAgents();
+  const ids = connectedIds(list);
+  const connected = new Set(ids);
+  for (const e of list) {
+    const r = kindUi.radios.get(e.id);
+    r.input.disabled = !connected.has(e.id);
+    r.dot.className = `agent-dot state-${e.state}`;
+    r.text.textContent = e.state === 'connected' ? e.def.product : `${e.def.product} · ${e.state === 'missing' ? '설치 안 됨' : e.state === 'error' ? '상태 확인 실패' : '로그인 필요'}`;
+    const c = kindUi.checks.get(e.id);
+    c.input.disabled = !connected.has(e.id);
+    if (!connected.has(e.id)) c.input.checked = false;
+    c.text.textContent = e.def.product;
   }
-  $('#kind-hint').textContent = hasCodex ? KIND_HINT[selectedKind()]
-    : `${KIND_HINT.claude} Codex 를 찾지 못해 Codex·협업 대화는 쓸 수 없습니다 (Codex 앱 또는 npm install -g @openai/codex 설치 후 앱을 다시 실행).`;
-  // Codex 가 필요한 종류(Codex·협업)인데 로그인이 확인되지 않았다 — 열기는 막지 않고 로그인 탭만 안내한다.
-  const needCodexLogin = hasCodex && !state.status?.codexAuth?.loggedIn && selectedKind() !== 'claude';
-  $('#kind-login').hidden = !needCodexLogin;
-  if (needCodexLogin) $('#kind-hint').textContent += ' Codex 로그인이 확인되지 않았습니다 — 로그인하지 않았으면 Codex 화면이 로그인을 요구하고 협업 대화의 Codex 차례는 오류가 납니다.';
+  kindUi.collab.input.disabled = ids.length < 2;
+  kindUi.collab.text.textContent = '협업 대화';
+  // 기본 선택: 새 탭 창에서 고른 값 → 진입 화면에서 고른 AI(연결돼 있으면) → 첫 연결 AI
+  const saved = store.get('ao.tabKind', null);
+  const want = (saved === 'collab' ? !kindUi.collab.input.disabled : connected.has(saved)) ? saved : (connected.has(state.agentPick) ? state.agentPick : (ids[0] ?? null));
+  for (const [id, r] of kindUi.radios) r.input.checked = id === want;
+  kindUi.collab.input.checked = want === 'collab';
+  $('#collab-agents').hidden = want !== 'collab';
+  const sel = selectedCollabAgents();
+  $('#collab-agents-hint').textContent = !collabReady(sel) ? '2개 이상 골라 주세요'
+    : !collabSupported(sel) ? '협업을 지원하지 않는 AI 가 있습니다' : '';
+  let hint;
+  if (ids.length === 0) {
+    hint = `연결된 AI 가 없습니다 — 상단 「연결 0/${list.length}」 에서 로그인해 주세요`;
+  } else {
+    hint = KIND_HINT[want] ?? `공식 ${agentById(want).product} 화면을 엽니다.`;
+    if (ids.length < list.length) hint += ` 상단 「연결 ${ids.length}/${list.length}」 에서 로그인할 수 있습니다`;
+  }
+  $('#kind-hint').textContent = hint;
+  // 열 수 없는 동안에는 폴더를 여는 버튼을 모두 막는다 (이어받기는 Claude 연결일 때만)
+  const ok = canOpenSelected();
+  $('#pick-folder').disabled = !ok;
+  // 이어받기는 실행 종류와 상관없이 항상 Claude 로 연다 — Claude 연결만 본다
+  for (const b of document.querySelectorAll('#recent button, #external button')) b.disabled = b.dataset.resume !== undefined ? !connected.has('claude') : !ok;
 }
 
-for (const r of document.querySelectorAll('input[name="tab-kind"]')) {
-  r.addEventListener('change', () => { store.set('ao.tabKind', selectedKind()); renderKindPick(); });
+// 대화상자를 열 때 협업 참여 체크를 정한다: 저장해 둔 것 중 연결된 것, 2개 미만이면 연결된 전부.
+function resetCollabChecks() {
+  const ids = connectedIds(currentAgents());
+  const saved = store.get('ao.collabAgents', []);
+  let chosen = Array.isArray(saved) ? ids.filter((id) => saved.includes(id)) : [];
+  if (chosen.length < 2) chosen = ids;
+  for (const [id, c] of kindUi.checks) c.input.checked = chosen.includes(id);
+}
+
+// 고른 실행 종류로 폴더를 연다. 열 수 없는 상태(버튼이 막히기 전에 눌렸거나 도중에 상태가 바뀜)면 무시한다.
+function openHere(cwd) {
+  if (!canOpenSelected()) return;
+  const kind = selectedKind();
+  const agents = kind === 'collab' ? selectedCollabAgents() : null;
+  $('#newtab').close();
+  openTab({ cwd, kind, agents });
 }
 
 function openNewTabDialog() {
   const dlg = $('#newtab');
   const recent = $('#recent');
-  renderKindPick();
+  resetCollabChecks();
   recent.replaceChildren(...store.get('ao.recent', []).map((p) => el('li', {},
     el('span', { class: 'grow', title: p }, `📁 ${p}`),
-    el('button', { type: 'button', class: 'btn small', onclick: () => { dlg.close(); openTab({ cwd: p, kind: selectedKind() }); } }, '열기'))));
+    el('button', { type: 'button', class: 'btn small', onclick: () => openHere(p) }, '열기'))));
 
   const g = state.status && state.status.hook && state.status.hook.global;
-  $('#external-hint').textContent = g && g.installed
-    ? '이어받기는 기존 대화를 복제해 새 세션으로 이어 갑니다 (원래 세션은 그대로).'
-    : '상단 「다른 세션 보기」를 켜면 VS Code·터미널에서 실행 중인 세션이 여기에 나타납니다.';
+  const claudeFound = !!currentAgents().find((e) => e.id === 'claude')?.found;
+  $('#external-hint').textContent = !claudeFound ? '다른 곳 세션 보기·이어받기는 Claude Code 가 있을 때 쓸 수 있습니다'
+    : g && g.installed
+      ? '이어받기는 기존 대화를 복제해 새 세션으로 이어 갑니다 (원래 세션은 그대로).'
+      : '상단 「다른 세션 보기」를 켜면 VS Code·터미널에서 실행 중인 세션이 여기에 나타납니다.';
   const since = Date.now() - 6 * 3600 * 1000;
   const ext = [...state.external.values()].filter((x) => x.at > since && x.cwd).sort((a, b) => b.at - a.at).slice(0, 10);
+  $('#newtab-external').open = ext.length > 0; // 외부 세션이 있을 때만 펼쳐 둔다
   $('#external').replaceChildren(...ext.map((x) => el('li', {},
     el('span', { class: 'grow', title: x.cwd }, `🖥 ${baseName(x.cwd)} `, el('span', { class: 'sub' }, `${x.cwd} · ${ago(x.at)}`)),
-    el('button', { type: 'button', class: 'btn small', onclick: () => { dlg.close(); openTab({ cwd: x.cwd, kind: selectedKind() }); } }, '이 폴더에서 새 세션'),
-    el('button', { type: 'button', class: 'btn small', onclick: () => { dlg.close(); openTab({ cwd: x.cwd, mode: 'resume', resumeId: x.sessionId }); } }, '이어받기(복제)'))));
+    el('button', { type: 'button', class: 'btn small', onclick: () => openHere(x.cwd) }, '이 폴더에서 새 세션'),
+    el('button', { type: 'button', class: 'btn small', 'data-resume': '', onclick: () => {
+      if (!connectedIds(currentAgents()).includes('claude')) return;
+      dlg.close();
+      openTab({ cwd: x.cwd, mode: 'resume', resumeId: x.sessionId });
+    } }, '이어받기(복제)'))));
+  renderKindPick(); // 폴더 열기 버튼들을 만든 뒤에 불러야 그 버튼들의 disabled 가 맞는다
   dlg.showModal();
 }
 
 $('#pick-folder').addEventListener('click', async () => {
+  if (!canOpenSelected()) return;
   const p = await api.pickFolder();
   if (!p) return;
-  $('#newtab').close();
-  openTab({ cwd: p, kind: selectedKind() });
+  openHere(p);
 });
-$('#kind-login-btn').addEventListener('click', () => { $('#newtab').close(); openCodexLogin(); });
 $('#new-tab').addEventListener('click', openNewTabDialog);
 $('#empty-new').addEventListener('click', openNewTabDialog);
 
 // ───────────────────────── 펫 그림 선택 ─────────────────────────
 
-const PICK_KINDS = ['claude', 'codex'];
+const PICK_KINDS = AGENT_IDS;
 const PREVIEW_W = 96, PREVIEW_H = 104; // 미리보기 캔버스 CSS 크기 (시트 한 칸 192x208 의 절반)
 let petpickGen = 0; // 대화상자를 열고 닫을 때마다 올린다 — 닫은 뒤 늦게 오는 목록·미리보기 결과를 버린다
 let petpickSig = ''; // 마지막으로 그린 목록의 모양 — 같으면 선택 표시만 갱신한다
@@ -845,6 +1062,15 @@ let petpickBusy = false;
 let previewTargets = new Map(); // 펫 키 → 그 펫을 그리는 캔버스들 (두 구역에 모두 나온다). 대화상자가 열려 있는 동안만 둔다
 
 const petpickMsg = (text) => { $('#petpick-msg').textContent = text; };
+
+// 정적 마크업에 없는 AI(Claude·Codex 밖)의 펫 그림 구역을 만든다 (메시지 줄 앞에, 시작 때 한 번).
+for (const kind of PICK_KINDS) {
+  if ($(`#petpick-${kind}`)) continue;
+  const name = agentName(kind);
+  $('#petpick-msg').before(el('section', {},
+    el('h3', {}, `${name} 펫`),
+    el('div', { id: `petpick-${kind}`, class: 'petpick-list', role: 'radiogroup', 'aria-label': `${name} 펫 그림` })));
+}
 
 function setPetpickBusy(busy) {
   petpickBusy = busy;

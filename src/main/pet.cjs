@@ -4,13 +4,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {
-  PET_MODES, PET_KINDS, PET_ID_RE, normalizePetConfig, normalizeSprite, sanitizeUsage, shouldShow, placeBounds, anchorOf, readPet, answerableIds, permsToRelease, CARD_FIELDS, cardPreview,
-  sheetVersionOf, spriteVersion,
+  PET_MODES, PET_KINDS, PET_ID_RE, TAB_ID_RE, normalizePetConfig, normalizeSprite, sanitizeUsage, shouldShow, placeBounds, anchorOf, readPet, answerableIds, permsToRelease, CARD_FIELDS, cardPreview,
+  sheetVersionOf, spriteVersion, sanitizeInUse, sanitizeCollab, fitPetSize,
 } = require('./petRules.cjs');
 const { imageSize } = require('./petImport.cjs');
 
 const SHEET_HEAD_BYTES = 64 * 1024; // 목록에서 시트 크기를 볼 때 읽는 앞부분
-const TAB_ID_RE = /^[a-z0-9-]{1,40}$/i;
 const PERM_ID_RE = /^[0-9a-f-]{36}$/i;
 const PERM_WATCH_MS = 1000;
 const DRAG_MAX_MS = 60 * 1000; // 마우스 놓침 같은 이상으로 드래그가 끝나지 않을 때의 안전장치
@@ -18,7 +17,7 @@ const CRASH_RETRY_MS = 10 * 1000;
 const CRASH_PAUSE_MS = 60 * 1000;
 const ITEM_TEXT = ['key', 'tabId', 'label', 'reason', 'kind', 'text'];
 
-// 메인 화면이 보낸 상태를 정리한다: claude·codex 만, 알려진 필드만, 문자열은 길이를 제한한다.
+// 메인 화면이 보낸 상태를 정리한다: 등록된 AI 종류만, 알려진 필드만, 문자열은 길이를 제한한다.
 function sanitizeKinds(kinds) {
   const out = {};
   for (const kind of PET_KINDS) {
@@ -40,14 +39,6 @@ function sanitizeKinds(kinds) {
     out[kind] = { working: !!k.working, attention };
   }
   return out;
-}
-
-// 협업 대화 정보: active 가 아니면 null. 말하는 AI 는 claude·codex 만 받는다.
-function sanitizeCollab(c) {
-  if (!c || typeof c !== 'object' || !c.active) return null;
-  const agent = (v) => (PET_KINDS.includes(v) ? v : null);
-  const tabId = typeof c.tabId === 'string' && TAB_ID_RE.test(c.tabId) ? c.tabId : null;
-  return { active: true, tabId, speaker: agent(c.speaker), prev: agent(c.prev), turn: Number.isFinite(c.turn) ? Math.trunc(c.turn) : 0 };
 }
 
 // 폴더 안의 펫 목록 [{ id, displayName, version }] — 소문자 폴더 이름에 readPet 검사를 통과하고, 그림 앞부분(64KB)으로 본 크기가 1536x1872(v1)·1536x2288(v2) 이며
@@ -98,7 +89,7 @@ function createPetController({
   }
 
   let win = null;
-  let last = { kinds: {}, collab: null };
+  let last = { kinds: {}, collab: null, inUse: [] }; // 메인 창이 쓰는 AI 를 알려 주기 전에는 아무것도 보이지 않는다
   let size = { width: 220, height: 170 };
   let drag = null;
   let lastCrash = 0;
@@ -158,8 +149,8 @@ function createPetController({
       }]));
     }
     win.webContents.send('pet:state', {
-      mode: config.pet.mode, codex: !!isCodexAvailable(), kinds, collab: last.collab,
-      sprites: { claude: resolveSprite('claude'), codex: resolveSprite('codex') },
+      mode: config.pet.mode, codex: !!isCodexAvailable(), inUse: last.inUse, kinds, collab: last.collab,
+      sprites: Object.fromEntries(PET_KINDS.map((k) => [k, resolveSprite(k)])),
     });
   }
 
@@ -177,8 +168,8 @@ function createPetController({
         ...builtinPets.map((p) => ({ key: `builtin:${p.id}`, source: 'builtin', id: p.id, displayName: p.displayName, version: p.version })),
         ...userPets.map((p) => ({ key: `user:${p.id}`, source: 'user', id: p.id, displayName: p.displayName, version: p.version })),
       ],
-      selected: { claude: config.pet.sprites.claude, codex: config.pet.sprites.codex },
-      resolved: { claude: resolveSprite('claude'), codex: resolveSprite('codex') },
+      selected: Object.fromEntries(PET_KINDS.map((k) => [k, config.pet.sprites[k]])),
+      resolved: Object.fromEntries(PET_KINDS.map((k) => [k, resolveSprite(k)])),
     };
   }
 
@@ -279,13 +270,13 @@ function createPetController({
 
   function setState(payload) {
     if (!payload || typeof payload.kinds !== 'object' || !payload.kinds) return;
-    last = { kinds: sanitizeKinds(payload.kinds), collab: sanitizeCollab(payload.collab) };
+    last = { kinds: sanitizeKinds(payload.kinds), collab: sanitizeCollab(payload.collab), inUse: sanitizeInUse(payload.inUse) ?? [] };
     refresh();
     reconcile();
   }
 
   function clearState() {
-    last = { kinds: {}, collab: null };
+    last = { kinds: {}, collab: null, inUse: [] }; // 메인 창이 쓰는 AI 를 알려 주기 전에는 아무것도 보이지 않는다
     refresh();
     reconcile();
   }
@@ -353,10 +344,12 @@ function createPetController({
 
   function resize(s) {
     if (!alive() || drag || !s || typeof s !== 'object') return;
-    const fit = (v) => Math.min(600, Math.max(40, Math.round(Number(v))));
-    const width = fit(s.width);
-    const height = fit(s.height);
-    if (!Number.isFinite(width) || !Number.isFinite(height)) return;
+    const s2 = fitPetSize(s);
+    if (!s2) return;
+    // 폭은 그 모니터 작업 영역 폭을 넘지 않게
+    const wa = screen.getDisplayMatching?.(win.getBounds())?.workArea;
+    const width = wa ? Math.min(s2.width, wa.width) : s2.width;
+    const { height } = s2;
     if (width === size.width && height === size.height) return;
     size = { width, height };
     win.setBounds(place(config.pet.anchor)); // 기본 위치(anchor 없음)는 그대로 오른쪽 아래 기준으로 유지

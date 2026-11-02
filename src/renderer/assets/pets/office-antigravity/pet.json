@@ -1,0 +1,9 @@
+{
+  "id": "office-antigravity",
+  "displayName": "제미나이 · 안티그래비티",
+  "description": "승인된 전용 디자인 · 기본 9동작과 별도 수면",
+  "spritesheetPath": "spritesheet.png",
+  "agentOffice": {
+    "sleepSheetPath": "sleep.png"
+  }
+}

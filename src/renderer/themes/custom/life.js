@@ -5,13 +5,25 @@ export class CustomLife extends OfficeLife {
   constructor(layout, engine, random) {
     super(layout, engine, random);
     const locations = layout.interactions.filter(i => !i.door).map(i => i.stand);
-    this.residents.forEach((a, n) => Object.assign(a, locations[n] || layout.playerStart));
+    // 시설이 적은 사용자 배치에서도 새 상주 캐릭터들이 입구 한 칸에 겹치지 않게 한다.
+    for (let y = 24; y < layout.height; y += 48) for (let x = 24; x < layout.width; x += 48)
+      if (this.navigation.isWalkable({ x, y })) locations.push({ x, y });
+    const occupied = [this.player];
+    for (const actor of this.residents) {
+      const spot = locations.find(p => this.navigation.isWalkable(p) && occupied.every(a => Math.hypot(a.x - p.x, a.y - p.y) >= 100))
+        || locations.find(p => occupied.every(a => Math.hypot(a.x - p.x, a.y - p.y) >= 24)) || layout.playerStart;
+      Object.assign(actor, spot); occupied.push(actor);
+    }
   }
   autonomous(actor, activeSkills) {
     actor.nextAt = this.time + 6000;
     const options = this.layout.interactions.filter(i => !i.door && !this.isBusy(i.id, actor));
     if (activeSkills) {
-      const seat = this.layout.rooms.skills.seats[0];
+      const others = [...this.residents.filter(a => a !== actor), this.player, ...this.engine.agents.values()];
+      const seat = this.layout.rooms.skills.seats.find(p => others.every(a => {
+        const end = a.path?.at(-1) || a.seat || a;
+        return Math.hypot(end.x - p.x, end.y - p.y) >= 80;
+      }));
       if (seat && this.moveTo(seat, { label: '스킬 협업', action: 'collaborate' }, actor)) return;
     }
     if (options.length) {

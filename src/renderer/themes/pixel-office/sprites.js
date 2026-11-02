@@ -1,15 +1,22 @@
 import { drawDrinkImage } from './drink-images.js';
-import { drawCodexCharacter } from './codex-sprite.js';
+import { drawAgentCharacter } from './codex-sprite.js';
+import { lookOf } from './agent-looks.js';
+import { drawResidentCharacter } from './resident-sprite.js';
 
 const ORANGE = '#d77b57';
 const SHADE = '#b85e43';
 const INK = '#302f31';
 const ACCENTS = ['#719c9b', '#ad8bb3', '#7f9c74', '#ca8274', '#d0aa64', '#7496b0', '#a2937e', '#8d93b8'];
 
+// 전용 그림을 쓰는 AI — 착석 시 말풍선 높이 보정에 쓴다.
+export const usesAgentSprite = (cli) => !!lookOf(cli);
+
 // All coordinates are integer pixels. Each frame keeps the reference silhouette:
 // one wide body, short side arms, two rectangular eyes, four short legs.
 export function drawCharacter(ctx, a, t, x, y) {
-  if (a.cli === 'codex') return drawCodexCharacter(ctx, a, t, x, y);
+  if (drawResidentCharacter(ctx, a, t, x, y)) return;
+  const look = lookOf(a.cli);
+  if (look) return drawAgentCharacter(ctx, a, t, x, y, look);
   const tick = Math.floor(t / 130);
   const phase = tick + Math.max(0, a.colorIndex) * 9;
   const walking = a.pose === 'walk';

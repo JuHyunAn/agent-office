@@ -104,14 +104,18 @@ test('상주 캐릭터는 자율적으로 이동하고 스킬 작업 중에는 �
   assert.equal(engine.agents.size, 1);
 });
 
-test('기본 상주 캐릭터는 넷이고 그중 하나는 Codex 모습이다', () => {
+test('나를 포함해 생활 캐릭터는 6명이며 새 AI 세 종류가 한 명씩 상주한다', () => {
   const life = new OfficeLife(layout, new OfficeEngine(layout), () => 0.2), nav = new Navigation(layout);
-  assert.equal(life.residents.length, 4);
+  assert.equal(life.residents.length, 5);
+  assert.equal(life.snapshot().length, 6);
+  assert.deepEqual(life.residents.map(a => a.cli), ['claude', 'codex', 'grok', 'muse', 'antigravity']);
+  assert.ok(life.residents.every(a => nav.isWalkable(a)));
+  assert.ok(life.residents.every(a => !['resident-loop', 'resident-coco'].includes(a.id)));
   const codex = life.residents.filter(a => a.cli === 'codex');
   assert.equal(codex.length, 1);
   assert.ok(nav.isWalkable(codex[0]));
   assert.ok(codex[0].isAmbient && !codex[0].isPlayer);
-  assert.equal(new Set(life.residents.map(a => a.id)).size, 4);
+  assert.equal(new Set(life.residents.map(a => a.id)).size, 5);
 });
 
 test('스킬 작업 중 협업 공간에 모인 상주 캐릭터는 같은 자리에 겹치지 않는다', () => {
@@ -119,6 +123,7 @@ test('스킬 작업 중 협업 공간에 모인 상주 캐릭터는 같은 자�
   engine.handleEvent(ev('PreToolUse', { tool_name: 'Skill', tool_input: { skill: 'documents:documents' } }), { label: 'tab' });
   run(life, 120000);
   const gathered = life.residents.filter(a => a.action === 'collaborate' && !a.path.length);
+  assert.equal(gathered.length, 4);
   assert.ok(gathered.some(a => a.cli === 'codex'));
   // 화면에서는 가로 간격이 약 0.36배로 줄고 캐릭터는 1.5배로 그려지므로 넉넉히 띄운다.
   for (const a of gathered) for (const b of gathered) if (a !== b) assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 100, `${a.label}·${b.label}`);

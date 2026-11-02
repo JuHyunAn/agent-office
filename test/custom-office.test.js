@@ -130,3 +130,12 @@ test('가변 사무실의 실제 에이전트와 커피·출입문 동작이 이
   const door = life.doors[0]; assert.equal(door.amount, 1);
   assert.ok(life.moveTo(coffee.stand)); tick(life, 20000); assert.equal(door.amount, 0);
 });
+
+test('사용자 배치에서도 생활 캐릭터 6명이 걸을 수 있는 서로 다른 위치에 생성된다', () => {
+  const layout = makeLayout(exampleDocument()), engine = new OfficeEngine(layout), life = new CustomLife(layout, engine, () => .3);
+  const actors = life.snapshot();
+  assert.equal(actors.length, 6);
+  assert.ok(actors.every(a => layout.isWalkable(a)));
+  for (let i = 0; i < actors.length; i++) for (let j = i + 1; j < actors.length; j++)
+    assert.ok(Math.hypot(actors[i].x - actors[j].x, actors[i].y - actors[j].y) >= 80);
+});

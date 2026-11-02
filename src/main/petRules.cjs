@@ -3,11 +3,14 @@
 // 바탕화면 펫의 순수 규칙 (electron 에 기대지 않아 테스트할 수 있다): 설정 정리, 표시 여부, 창 위치, 펫 그림 읽기.
 const fs = require('node:fs');
 const path = require('node:path');
+const { AGENT_IDS } = require('../shared/agents.js');
 
 const PET_MODES = ['always', 'alerts', 'off'];
-const PET_KINDS = ['claude', 'codex'];
+const PET_KINDS = AGENT_IDS; // 레지스트리 순서 (src/shared/agents.js)
 const PET_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+const TAB_ID_RE = /^[a-z0-9-]{1,40}$/i;
 const MARGIN = 16;
+const MAX_PET_W = 1600; // 펫이 가로 한 줄로 늘어나는 창 폭 상한 (높이 상한은 600)
 const MAX_SHEET_BYTES = 8 * 1024 * 1024;
 const MAX_JSON_BYTES = 64 * 1024;
 const SHEET_TYPES = { '.png': 'image/png', '.webp': 'image/webp' };
@@ -45,7 +48,7 @@ function normalizePetConfig(raw) {
   return {
     mode: PET_MODES.includes(r.mode) ? r.mode : 'always',
     anchor,
-    sprites: { claude: normalizeSprite(s.claude), codex: normalizeSprite(s.codex) },
+    sprites: Object.fromEntries(PET_KINDS.map((k) => [k, normalizeSprite(s[k])])),
     usage: { expanded: r.usage?.expanded !== false }, // 사용량 패널 펼침 (기본 펼침)
   };
 }
@@ -88,7 +91,32 @@ function hasAttention(payload) {
 function shouldShow(mode, payload) {
   if (mode === 'off') return false;
   if (mode === 'alerts') return hasAttention(payload) || !!payload?.collab?.active; // 협업 대화 중에는 알림이 없어도 보인다
+  // 상시 모드: 쓰는 중인 AI(탭을 연 AI)도, 알림도, 협업 대화도 없으면 보일 펫이 없다
+  if (Array.isArray(payload?.inUse)) return payload.inUse.length > 0 || hasAttention(payload) || !!payload?.collab?.active;
   return true;
+}
+
+// 쓰는 중인 AI 목록 정리: 배열이면 알려진 종류만 (레지스트리 순서), 아니면 null (null = 아직 모름 → 예전 규칙).
+function sanitizeInUse(v) {
+  return Array.isArray(v) ? PET_KINDS.filter((k) => v.includes(k)) : null;
+}
+
+// 협업 대화 정보: active 가 아니면 null. 말하는 AI 는 등록된 종류만 받고, 참여 AI(agents)는 2개 이상일 때만 (레지스트리 순서).
+function sanitizeCollab(c) {
+  if (!c || typeof c !== 'object' || !c.active) return null;
+  const agent = (v) => (PET_KINDS.includes(v) ? v : null);
+  const tabId = typeof c.tabId === 'string' && TAB_ID_RE.test(c.tabId) ? c.tabId : null;
+  const agents = Array.isArray(c.agents) ? PET_KINDS.filter((k) => c.agents.includes(k)) : [];
+  return { active: true, tabId, speaker: agent(c.speaker), prev: agent(c.prev), turn: Number.isFinite(c.turn) ? Math.trunc(c.turn) : 0, agents: agents.length >= 2 ? agents : null };
+}
+
+// 펫 창 크기 정리: 40 이상, 폭 1600·높이 600 이하로 맞춘다. 둘 중 하나라도 유한수가 아니면 null.
+// 펫이 가로 한 줄로 늘어나므로 폭만 넓게 — 화면 폭은 resize 가 모니터 작업 영역으로 다시 자른다.
+function fitPetSize(s) {
+  const fit = (v, max) => Math.min(max, Math.max(40, Math.round(Number(v))));
+  const width = fit(s?.width, MAX_PET_W);
+  const height = fit(s?.height, 600);
+  return Number.isFinite(width) && Number.isFinite(height) ? { width, height } : null;
 }
 
 // 카드로 허용·거부할 수 있는 도구와 그 도구의 실제 실행 필드. 카드의 미리보기는 이 필드의 문자열 전체여야 한다 (그 밖의 도구는 안내만).
@@ -242,6 +270,6 @@ function readPet(petsDir, id, fsImpl = fs, { bytes = true, head = 0 } = {}) {
 }
 
 module.exports = {
-  PET_MODES, PET_KINDS, PET_ID_RE, MARGIN, MAX_SHEET_BYTES, SHEETS, sheetVersionOf, spriteVersion,
-  normalizePetConfig, normalizeSprite, sanitizeUsage, hasAttention, shouldShow, CARD_FIELDS, cardPreview, answerableIds, permsToRelease, displayFor, placeBounds, anchorOf, readPet,
+  PET_MODES, PET_KINDS, PET_ID_RE, TAB_ID_RE, MARGIN, MAX_SHEET_BYTES, SHEETS, sheetVersionOf, spriteVersion,
+  normalizePetConfig, normalizeSprite, sanitizeUsage, hasAttention, shouldShow, sanitizeInUse, sanitizeCollab, fitPetSize, CARD_FIELDS, cardPreview, answerableIds, permsToRelease, displayFor, placeBounds, anchorOf, readPet,
 };

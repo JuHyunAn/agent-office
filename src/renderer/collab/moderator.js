@@ -1,16 +1,36 @@
-// 협업 대화 진행자: 사용자·Claude·Codex 가 한 대화방에서 말할 차례를 정한다.
+// 협업 대화 진행자: 사용자와 참여 AI(roster, 기본 Claude·Codex)가 한 대화방에서 말할 차례를 정한다.
 // 프로세스 실행은 메인(collabAgents.cjs)이 맡고, 여기서는 「누구에게 무엇을 보낼지」만 정한다 (화면 없이 테스트 가능).
 
-export const NAMES = { user: '나', claude: 'Claude', codex: 'Codex', system: '안내' };
+import { AGENTS } from '../../shared/agents.js';
+
+export const NAMES = { user: '나', ...Object.fromEntries(AGENTS.map((a) => [a.id, a.name])), system: '안내' };
+// 이름 표에 없는 id(테스트의 가짜 AI 등)는 id 그대로 보여 준다.
+export const nameOf = (id) => (Object.hasOwn(NAMES, id) ? NAMES[id] : id);
 export const OWNERS = [
   { value: 'claude', label: 'Claude' },
   { value: 'codex', label: 'Codex' },
   { value: 'ask', label: '구현 전에 물어보기' },
 ];
+// 구현 담당 선택지: 참여 AI + 「구현 전에 물어보기」 (참여자가 Claude·Codex 두 명이면 OWNERS 와 같다)
+export const ownerOptions = (roster) => [...roster.map((id) => ({ value: id, label: nameOf(id) })), { value: 'ask', label: '구현 전에 물어보기' }];
+// 받는 사람 선택지
+export const targetsOf = (roster) => [{ value: 'all', label: '모두에게' }, ...roster.map((id) => ({ value: id, label: `${nameOf(id)} 에게` }))];
+// 입력 맨 앞의 @id 로 받는 사람 지정 → { to, text }(@id 를 뗀 글), 없으면 null. roster id 는 영문 소문자라 정규식 이스케이프가 필요 없다.
+export function mentionOf(roster, text) {
+  const m = String(text || '').match(new RegExp(`^@(${roster.join('|')})\\b\\s*`, 'i'));
+  return m ? { to: m[1].toLowerCase(), text: text.slice(m[0].length) || text } : null;
+}
+export const agreedText = (roster) => `${roster.length === 2 ? '두 AI' : '참여 AI 모두'} 합의 완료 — 최종 답변 표시를 확인하세요`;
+export const placeholderOf = (roster) => `메시지 입력 · Enter 보내기 · Shift+Enter 줄바꿈 · Esc 중단 · ${roster.map((id) => `@${id}`).join(' / ')} 로 지정 · 답변 중에 보내면 지금 답변에 반영해요${roster.includes('codex') ? ' (Codex 는 하던 작업이 끝난 지점에서)' : ''}`;
+// 탭에 저장된 참여 AI: 2명 이상이면 그대로, 아니면 기본(Claude·Codex)
+export const rosterOf = (agents) => (Array.isArray(agents) && agents.length >= 2 ? agents : ['claude', 'codex']);
 // CLI 에서 목록을 받아오지 못했을 때 쓰는 기본 선택지 (받아오면 화면이 CLI 목록으로 바꾼다).
 export const MODEL_OPTIONS = {
   claude: [{ value: 'auto', label: '자동' }, { value: 'opus', label: 'Opus' }, { value: 'fable', label: 'Fable' }, { value: 'sonnet', label: 'Sonnet' }],
   codex: [{ value: 'auto', label: '자동' }, { value: 'gpt-6.1-sol', label: 'GPT-6.1 Sol' }, { value: 'gpt-6-astra', label: 'GPT-6 Astra' }],
+  grok: [{ value: 'auto', label: '자동' }, { value: 'grok-4.7', label: 'Grok 4.7' }], // 자동 = CLI 기본 모델 (AUTO_MODELS 에는 없음)
+  // Muse: 모델 목록 조회가 없는 고정 선택지 (공식 문서 — muse-wonder 는 미리보기, 한국 미제공). 자동 = CLI 기본 모델 (AUTO_MODELS 에는 없음)
+  muse: [{ value: 'auto', label: '자동' }, { value: 'muse-spark-1.3', label: 'Muse Spark 1.3' }, { value: 'muse-spark-1.2', label: 'Muse Spark 1.2' }, { value: 'muse-wonder-1.0', label: 'Muse Wonder 1.0' }],
 };
 export const EFFORT_LABEL = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max', ultra: 'Ultra' };
 export const EFFORT_OPTIONS = [{ value: 'auto', label: '자동' }, { value: 'high', label: 'High' }, { value: 'xhigh', label: 'Extra High' }];
@@ -68,11 +88,15 @@ const SIMPLE_RE = /주석|오타|문법|맞춤법|포맷|들여쓰기|이름\s*(
 const HARD_RE = /설계|아키텍|구조\s*(개선|변경|검토)|원인|분석|추론|검토|리뷰|전략|복잡|어려|디버그|버그|보안|성능|동시성|최적화|trade.?off|race|architecture|design|debug|review/i;
 
 // 사용자의 최근 요청 내용으로 고른다 (AI 끼리 주고받는 말에는 「검토」 같은 단어가 늘 섞여 있어 기준으로 쓰지 않는다).
+// 자동 모델 표 (AI id → 종류별 모델). 표에 없는 AI 는 모델을 정하지 않는다(null = CLI 기본값). 새 AI 는 여기에 넣는다.
+const AUTO_MODELS = {
+  claude: { hard: 'fable', simple: 'sonnet', normal: 'opus' },
+  codex: { hard: 'gpt-6-astra', simple: 'gpt-6.1-sol', normal: 'gpt-6.1-sol' },
+};
 export function autoChoice(agent, text = '') {
   const kind = SIMPLE_RE.test(text) ? 'simple' : HARD_RE.test(text) ? 'hard' : 'normal';
-  const effort = kind === 'hard' ? 'xhigh' : 'high';
-  if (agent === 'claude') return { kind, model: kind === 'hard' ? 'fable' : kind === 'simple' ? 'sonnet' : 'opus', effort };
-  return { kind, model: kind === 'hard' ? 'gpt-6-astra' : 'gpt-6.1-sol', effort };
+  if (!Object.hasOwn(AUTO_MODELS, agent)) return { kind, model: null, effort: null };
+  return { kind, model: AUTO_MODELS[agent][kind], effort: kind === 'hard' ? 'xhigh' : 'high' };
 }
 
 // 모델이 지원하지 않는 단계면 High → 지원 단계 중 가장 높은 것 → 생략(null, CLI 기본값) 순으로 맞춘다.
@@ -90,10 +114,17 @@ export function resolveChoice(agent, prefs, text, catalog = null) {
   return { model, effort: fitEffort(prefs.effort === 'auto' ? auto.effort : prefs.effort, efforts) };
 }
 
-const other = (agent) => (agent === 'claude' ? 'codex' : 'claude');
+// 참여자(roster) 순서 계산 — 모두 roster 를 인자로 받는 순수 함수. 2명이면 「다른 한 명」과 같다.
+// agent 다음 사람부터 한 바퀴 (agent 제외)
+const othersOf = (roster, agent) => { const i = roster.indexOf(agent); return i < 0 ? [...roster] : [...roster.slice(i + 1), ...roster.slice(0, i)]; };
+// agent 다음 사람 (끝이면 처음)
+const nextOf = (roster, agent) => roster[(roster.indexOf(agent) + 1) % roster.length];
+// first 부터 한 바퀴 전원
+const ring = (roster, first) => { const i = Math.max(0, roster.indexOf(first)); return [...roster.slice(i), ...roster.slice(0, i)]; };
+const RESERVED_IDS = ['all', 'ask', 'user', 'system'];
 // 한 라운드(사용자 메시지 하나에 대한 답들): askers 질문한 AI 순서, asked AI → 그 AI 의 질문 메시지,
-// proposal 아직 상대 동의를 못 받은 [완료] 메시지(최종안 제안), final 합의된 최종 답변 메시지, start 이 라운드 첫 메시지 위치
-const newRound = (start) => ({ askers: [], asked: new Map(), proposal: null, final: null, start });
+// proposal 아직 나머지의 동의를 못 받은 [완료] 메시지(최종안 제안), agreed 그 제안에 동의한 AI 들, final 합의된 최종 답변 메시지, start 이 라운드 첫 메시지 위치
+const newRound = (start) => ({ askers: [], asked: new Map(), proposal: null, agreed: new Set(), final: null, start });
 
 // 입력창 버튼 상태: 글이 있으면 보내기, 빈 입력으로 답변 중이면 중단, 그 밖에는 비활성.
 export function inputMode(text, status) {
@@ -102,18 +133,22 @@ export function inputMode(text, status) {
 
 // 글도 도구 사용도 없이 끝난 AI 발언 (중단·오류·말풍선 분리 등) — 화면에 빈 말풍선을 남기지 않는다.
 export function isEmptyReply(m) {
-  return (m.from === 'claude' || m.from === 'codex') && !m.streaming && !String(m.text || '').trim() && !(m.tools || []).length;
+  return m.from !== 'user' && m.from !== 'system' && !m.streaming && !String(m.text || '').trim() && !(m.tools || []).length;
 }
 
 export class Moderator {
-  constructor({ send, stop, steer = null, onChange = () => {}, now = () => Date.now() }) {
+  // roster: 참여 AI id 배열 (순서 = 한 바퀴 도는 순서). 주어지지 않으면 [claude, codex], 주어졌는데 잘못되면 오류를 던진다.
+  constructor({ send, stop, steer = null, onChange = () => {}, now = () => Date.now(), roster = ['claude', 'codex'] }) {
+    if (!Array.isArray(roster) || roster.length < 2 || new Set(roster).size !== roster.length
+      || roster.some((id) => typeof id !== 'string' || !id || RESERVED_IDS.includes(id))) throw new Error('잘못된 협업 참여자');
     Object.assign(this, { sendFn: send, stopFn: stop, steerFn: steer, onChange, now });
+    this.roster = Object.freeze([...roster]);
     this.messages = [];
-    this.seen = { claude: 0, codex: 0 }; // 각자 이미 받은 메시지 위치
-    this.owner = 'claude';
+    this.seen = Object.fromEntries(roster.map((id) => [id, 0])); // 각자 이미 받은 메시지 위치
+    this.owner = roster.includes('claude') ? 'claude' : roster[0];
     this.auto = true; // 자동 이어가기: 끄면 지정한 상대만 답하고 멈춘다
-    this.prefs = { claude: { model: 'auto', effort: 'auto' }, codex: { model: 'auto', effort: 'auto' } };
-    this.catalog = { claude: null, codex: null }; // CLI 가 알려 준 모델 목록
+    this.prefs = Object.fromEntries(roster.map((id) => [id, { model: 'auto', effort: 'auto' }]));
+    this.catalog = Object.fromEntries(roster.map((id) => [id, null])); // CLI 가 알려 준 모델 목록
     this.status = 'idle'; // idle · running · question · stopped · error
     this.running = null; this.current = null; this.pending = []; this.round = newRound(0);
     this.goal = ''; // 현재 요청(최종 목표) — 대기 중에 보낸 메시지로만 바뀐다 (질문 답·끼어들기·오류/중단 뒤 이어 가기는 그대로)
@@ -147,19 +182,19 @@ export class Moderator {
       this.interjection = target; this.onChange(); return; // 진행 중이면 이 턴이 끝난 뒤 먼저 전달된다
     }
     const answering = (this.status === 'question' || this.status === 'stopped') && this.asker; // 질문에 답하는 중
-    const first = target === 'claude' || target === 'codex' ? target
+    const first = this.roster.includes(target) ? target
       : answering ? this.asker // 상대 차례에서 중단했어도 질문한 쪽이 먼저
-        : this.owner === 'codex' ? 'codex' : 'claude';
+        : this.roster.includes(this.owner) ? this.owner : this.roster[0];
     this.round = newRound(this.messages.length);
-    this.pending = target === 'all' ? [first, other(first)] : [first];
+    this.pending = target === 'all' ? ring(this.roster, first) : [first];
     this.next();
   }
 
   // 답변 중인 AI 에 사용자 메시지를 바로 넣는다. 받았다는 확인(steered)이 오면 말풍선을 나눈다.
   steer(agent, msg, target) {
     msg.steering = agent; // 보냈지만 아직 받았다는 확인(되돌림) 전
-    if (target === 'all' && !this.pending.includes(other(agent))) this.pending.push(other(agent)); // 모두에게면 이 턴 뒤 상대도 답한다
-    else if (target === agent) this.pending = this.pending.filter((a) => a !== other(agent)); // 이 AI 에게만이면 기존 끼어들기처럼 지정한 상대만
+    if (target === 'all') { for (const a of othersOf(this.roster, agent)) if (!this.pending.includes(a)) this.pending.push(a); } // 모두에게면 이 턴 뒤 나머지도 차례로 답한다
+    else if (target === agent) this.pending = this.pending.filter((a) => a === agent); // 이 AI 에게만이면 기존 끼어들기처럼 지정한 상대만 (다른 사람 차례는 지운다)
     const turn = this.current?.turn;
     const fail = () => {
       if (msg.steering !== agent) return;
@@ -191,7 +226,7 @@ export class Moderator {
   }
 
   next() {
-    const agent = this.pending.shift() || (this.auto && this.lastSpeaker ? other(this.lastSpeaker) : null);
+    const agent = this.pending.shift() || (this.auto && this.lastSpeaker ? nextOf(this.roster, this.lastSpeaker) : null);
     if (!agent) { this.status = 'idle'; this.onChange(); return; }
     this.speak(agent);
   }
@@ -203,12 +238,13 @@ export class Moderator {
 
   ownerLine(agent) {
     if (this.owner === 'ask') {
-      // 두 AI 가 같은 승인 질문을 겹쳐 내지 않도록 묻는 쪽을 Claude 로 정한다.
-      return agent === 'claude'
-        ? '구현 담당: 정하지 않음 — 파일을 수정하지 마세요. 계획에 둘 다 동의하면 당신(Claude)이 구현 승인과 구현 담당을 한 [질문] 으로 사용자에게 묻습니다.'
-        : '구현 담당: 정하지 않음 — 파일을 수정하지 마세요. 계획에 둘 다 동의하면 Claude 가 구현 승인과 구현 담당을 묻습니다. 당신(Codex)은 승인 [질문] 을 내지 말고 계획 의견만 내세요.';
+      // 여러 AI 가 같은 승인 질문을 겹쳐 내지 않도록 묻는 쪽을 참여자 첫 AI(기본 Claude)로 정한다.
+      const asker = this.roster[0], all = this.roster.length === 2 ? '둘 다' : '모두';
+      return agent === asker
+        ? `구현 담당: 정하지 않음 — 파일을 수정하지 마세요. 계획에 ${all} 동의하면 당신(${nameOf(agent)})이 구현 승인과 구현 담당을 한 [질문] 으로 사용자에게 묻습니다.`
+        : `구현 담당: 정하지 않음 — 파일을 수정하지 마세요. 계획에 ${all} 동의하면 ${nameOf(asker)} 가 구현 승인과 구현 담당을 묻습니다. 당신(${nameOf(agent)})은 승인 [질문] 을 내지 말고 계획 의견만 내세요.`;
     }
-    return `구현 담당: ${NAMES[this.owner]}${this.owner === agent ? ' (당신)' : ` — 당신(${NAMES[agent]})은 파일을 수정하지 말고 설계·검토·의견만 내세요.`}`;
+    return `구현 담당: ${nameOf(this.owner)}${this.owner === agent ? ' (당신)' : ` — 당신(${nameOf(agent)})은 파일을 수정하지 말고 설계·검토·의견만 내세요.`}`;
   }
 
   // 합의된 최종 답변 메시지: 최종안이 짧으면 「동의 [완료]」 같은 제안이라 같은 라운드 앞의 AI 답이 실제 최종 답변이다.
@@ -219,21 +255,22 @@ export class Moderator {
     const asked = [...this.round.asked.values()];
     for (let i = this.messages.indexOf(p) - 1; i >= this.round.start; i--) {
       const m = this.messages[i];
-      if ((m.from === 'claude' || m.from === 'codex') && !m.streaming && !asked.includes(m)) return m;
+      if (this.roster.includes(m.from) && !m.streaming && !asked.includes(m)) return m;
     }
     return p;
   }
 
   promptFor(agent) {
     const lines = this.messages.slice(this.seen[agent])
-      .filter((m) => (m.from === 'user' || m.from === other(agent)) && m.steered !== agent && m.text.trim())
-      .map((m) => `[${m.from === 'user' ? '사용자' : NAMES[m.from]}] ${m.text.trim()}`);
+      .filter((m) => (m.from === 'user' || (this.roster.includes(m.from) && m.from !== agent)) && m.steered !== agent && m.text.trim())
+      .map((m) => `[${m.from === 'user' ? '사용자' : nameOf(m.from)}] ${m.text.trim()}`);
     const goal = this.goal.replace(/\s+/g, ' ').trim().slice(0, 300);
     const p = this.round.proposal;
+    const done = [...this.round.agreed]; // 3명 이상일 때만 의미가 있다 (2명이면 첫 동의로 바로 합의)
     const cue = p && p.from !== agent
-      ? `상대(${NAMES[p.from]})가 [완료] 로 최종안을 냈습니다. 동의하면 짧은 동의와 함께 마지막 줄에 [완료] 를, 반론이나 보탤 내용이 있으면 그것만 적으세요 (구현 전 계획이라면 [완료] 대신 구현 담당이 승인 [질문] 을 합니다).`
+      ? `상대(${nameOf(p.from)})가 [완료] 로 최종안을 냈습니다. 동의하면 짧은 동의와 함께 마지막 줄에 [완료] 를, 반론이나 보탤 내용이 있으면 그것만 적으세요 (구현 전 계획이라면 [완료] 대신 구현 담당이 승인 [질문] 을 합니다).${this.roster.length >= 3 && done.length ? ` (이미 동의: ${done.map(nameOf).join('·')})` : ''}`
       : '결론에 만족하면 마지막 줄에 [완료] 를 적으세요 (코드 작업의 구현 전 계획 단계라면 [완료] 대신 구현 담당이 승인 [질문] 을 합니다).';
-    return `[협업 대화] ${this.ownerLine(agent)}${goal ? `\n현재 요청(최종 목표): ${goal}` : ''}\n\n${lines.join('\n\n')}\n\n— 당신(${NAMES[agent]}) 차례입니다. 이어서 답하세요. ${cue}`;
+    return `[협업 대화] ${this.ownerLine(agent)}${goal ? `\n현재 요청(최종 목표): ${goal}` : ''}\n\n${lines.join('\n\n')}\n\n— 당신(${nameOf(agent)}) 차례입니다. 이어서 답하세요. ${cue}`;
   }
 
   speak(agent) {
@@ -260,7 +297,7 @@ export class Moderator {
     } else if (ev.type === 'tool') {
       cur.tools.push({ name: ev.name, input: ev.input || {} });
     } else if (ev.type === 'notice') {
-      this.push({ from: 'system', text: `${NAMES[agent]}: ${ev.text}` });
+      this.push({ from: 'system', text: `${nameOf(agent)}: ${ev.text}` });
     } else if (ev.type === 'steered') {
       this.splitFor(agent, cur);
     } else if (ev.type === 'done') {
@@ -272,30 +309,33 @@ export class Moderator {
       const targets = [this.interjection, ...(ev.ok && !ev.stopped ? lost.map((m) => m.target) : [])].filter(Boolean);
       const interjected = targets.includes('all') ? 'all' : targets.at(-1) || null; this.interjection = null;
       if (ev.stopped || this.status === 'stopped') { this.status = 'stopped'; }
-      else if (!ev.ok) { this.status = 'error'; this.pending = []; this.push({ from: 'system', text: `${NAMES[agent]} 오류: ${ev.error || '알 수 없음'}` }); }
+      else if (!ev.ok) { this.status = 'error'; this.pending = []; this.push({ from: 'system', text: `${nameOf(agent)} 오류: ${ev.error || '알 수 없음'}` }); }
       else if (interjected) {
-        // 답변 중에 사용자가 끼어들었으면 자동 이어가기·[완료]·[질문] 과 관계없이 그 메시지부터 답한다 (모두에게면 상대 → 답하던 쪽 순서로 둘 다).
+        // 답변 중에 사용자가 끼어들었으면 자동 이어가기·[완료]·[질문] 과 관계없이 그 메시지부터 답한다 (모두에게면 나머지 → 답하던 쪽 순서로 전원).
         this.round = newRound(this.messages.length);
-        this.pending = interjected === 'all' ? [other(agent), agent] : [interjected];
+        this.pending = interjected === 'all' ? [...othersOf(this.roster, agent), agent] : [interjected];
         this.next(); return;
       }
       else {
-        // 「모두에게」 보낸 메시지는 두 AI 가 한 번씩 답한 뒤에 [질문]·[완료] 를 따른다.
+        // 「모두에게」 보낸 메시지는 참여 AI 가 한 번씩 답한 뒤에 [질문]·[완료] 를 따른다.
         const plain = stripCode(cur.text);
         if (QUESTION_RE.test(plain)) {
           cur.question = parseQuestion(plain); // 선택지 형식이 아니면 null — 그래도 질문이다
           if (!this.round.askers.includes(agent)) this.round.askers.push(agent);
           this.round.asked.set(agent, cur);
-          this.round.proposal = null; // 질문은 합의를 끊는다
+          this.round.proposal = null; this.round.agreed = new Set(); // 질문은 합의를 끊는다
         } else if (DONE_RE.test(plain)) {
           const p = this.round.proposal;
-          if (p && p.from !== agent) { const f = this.finalOf(p); f.final = true; this.round.final = f; this.round.proposal = null; }
-          else this.round.proposal = cur; // 먼저 [완료] 를 쓴 답이 최종안 제안
-        } else this.round.proposal = null; // 반론·보탬이 나오면 합의를 다시
+          if (p && p.from !== agent) {
+            this.round.agreed.add(agent);
+            // 제안한 AI 를 뺀 참여자 전원이 동의해야 합의 (2명이면 첫 동의로 바로 합의)
+            if (this.roster.every((a) => a === p.from || this.round.agreed.has(a))) { const f = this.finalOf(p); f.final = true; this.round.final = f; this.round.proposal = null; }
+          } else { this.round.proposal = cur; this.round.agreed = new Set(); } // 먼저 [완료] 를 쓴 답이 최종안 제안
+        } else { this.round.proposal = null; this.round.agreed = new Set(); } // 반론·보탬이 나오면 합의를 다시
         if (this.pending.length) { this.next(); return; }
         if (this.round.askers.length) { this.status = 'question'; }
-        else if (this.round.final) { this.status = 'idle'; } // 두 AI 가 이어서 [완료] — 합의
-        else { this.next(); return; } // 한쪽 [완료] 는 제안일 뿐 — 상대 차례 (자동 이어가기를 끄면 next() 가 idle 로 멈춤)
+        else if (this.round.final) { this.status = 'idle'; } // 참여 AI 가 이어서 [완료] — 합의
+        else { this.next(); return; } // 일부의 [완료] 는 제안일 뿐 — 다음 차례 (자동 이어가기를 끄면 next() 가 idle 로 멈춤)
       }
     }
     this.onChange();

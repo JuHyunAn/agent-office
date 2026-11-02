@@ -1,5 +1,6 @@
-// 협업 대화 탭 화면: 나 · Claude · Codex 가 한 대화창에서 실시간으로 주고받는다.
-import { Moderator, inputMode, isEmptyReply, NAMES, OWNERS, MODEL_OPTIONS, EFFORT_OPTIONS, EFFORT_LABEL, MODEL_LABEL } from './moderator.js';
+// 협업 대화 탭 화면: 나 · 참여 AI(기본 Claude · Codex)가 한 대화창에서 실시간으로 주고받는다.
+import { Moderator, inputMode, isEmptyReply, rosterOf, nameOf, ownerOptions, targetsOf, mentionOf, agreedText, placeholderOf, MODEL_OPTIONS, EFFORT_OPTIONS, EFFORT_LABEL, MODEL_LABEL } from './moderator.js';
+import { agentById } from '../../shared/agents.js';
 import { toolPhrase } from '../office/phrases.js';
 
 const STATUS_TEXT = {
@@ -11,7 +12,8 @@ const STATUS_TEXT = {
 };
 // 화면에는 최근 메시지만 그린다 — 한 탭에서 오래 대화해도 화면 요소가 끝없이 늘지 않게. (AI 에게 보내는 내용과는 무관)
 const FOLD = 50;
-const TARGETS = [{ value: 'all', label: '모두에게' }, { value: 'claude', label: 'Claude 에게' }, { value: 'codex', label: 'Codex 에게' }];
+// Claude·Codex 는 기존 CSS 색(.collab-claude 등)을 쓰고, 그 밖의 AI 는 레지스트리 색을 --agent-color 로 넘긴다.
+const isBuiltinColor = (id) => id === 'claude' || id === 'codex';
 
 function node(tag, props = {}, ...children) {
   const n = document.createElement(tag);
@@ -52,15 +54,18 @@ function svgIcon(d) {
   return svg;
 }
 
-export function createCollabPanel({ api, roomId, cwd, onStatus = () => {}, onTransition = () => {}, onSpeaker = () => {} }) {
+// agents: 참여 AI id 배열 (2명 이상이면 그대로, 아니면 Claude·Codex)
+export function createCollabPanel({ api, roomId, cwd, agents = null, onStatus = () => {}, onTransition = () => {}, onSpeaker = () => {} }) {
   let frame = 0, last = 'idle', lastRunning = null;
   const schedule = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; render(); }); };
   const mod = new Moderator({
-    send: (agent, text, choice, turn) => api.collabSend({ roomId, agent, cwd, text, turn, ...choice }),
+    send: (agent, text, choice, turn) => api.collabSend({ roomId, agent, cwd, text, turn, roster: mod.roster, ...choice }),
     stop: (agent) => api.collabStop(roomId, agent),
     steer: (agent, text, turn) => api.collabSteer(roomId, agent, text, turn),
     onChange: () => { changed(); schedule(); },
+    roster: rosterOf(agents),
   });
+  const roster = mod.roster; // 진행자가 검증·동결한 참여자 하나만 쓴다
 
   // 상태가 바뀐 순간을 바로 알린다 — 렌더(requestAnimationFrame)는 창이 숨겨지면 멈추므로 거기에 묶지 않는다.
   function changed() {
@@ -76,7 +81,7 @@ export function createCollabPanel({ api, roomId, cwd, onStatus = () => {}, onTra
   const autoBox = node('input', { type: 'checkbox', checked: true, onchange: () => { mod.auto = autoBox.checked; } });
   // 모델·단계 선택지: 각 CLI 가 알려 준 목록이 도착하면 그것으로 바꾼다 (받기 전·실패 시 기본 선택지).
   const AUTO = { value: 'auto', label: '자동' };
-  const modelOptions = (agent) => (mod.catalog[agent] ? [AUTO, ...mod.catalog[agent].map((m) => ({ value: m.value, label: m.label, title: m.description }))] : MODEL_OPTIONS[agent]);
+  const modelOptions = (agent) => (mod.catalog[agent] ? [AUTO, ...mod.catalog[agent].map((m) => ({ value: m.value, label: m.label, title: m.description }))] : MODEL_OPTIONS[agent] || [AUTO]);
   const effortOptions = (agent) => {
     const list = mod.catalog[agent];
     if (!list) return EFFORT_OPTIONS;
@@ -87,29 +92,30 @@ export function createCollabPanel({ api, roomId, cwd, onStatus = () => {}, onTra
   const prefSelects = {};
   const syncEfforts = (agent) => { mod.prefs[agent].effort = fill(prefSelects[agent].effort, effortOptions(agent), mod.prefs[agent].effort); };
   const agentPrefs = (agent) => {
-    const model = select(MODEL_OPTIONS[agent], 'auto', (v) => { mod.prefs[agent].model = v; syncEfforts(agent); }, `${NAMES[agent]} 모델`);
-    const effort = select(EFFORT_OPTIONS, 'auto', (v) => { mod.prefs[agent].effort = v; }, `${NAMES[agent]} 추론 단계`);
+    const model = select(modelOptions(agent), 'auto', (v) => { mod.prefs[agent].model = v; syncEfforts(agent); }, `${nameOf(agent)} 모델`);
+    const effort = select(EFFORT_OPTIONS, 'auto', (v) => { mod.prefs[agent].effort = v; }, `${nameOf(agent)} 추론 단계`);
     prefSelects[agent] = { model, effort };
-    return node('span', { class: `collab-agent collab-${agent}` }, node('b', {}, NAMES[agent]), model, effort);
+    const own = !isBuiltinColor(agent) && agentById(agent)?.color; // Claude·Codex 외 AI 의 색
+    return node('span', { class: `collab-agent collab-${agent}${own ? ' collab-agent-x' : ''}`, style: own ? `--agent-color: ${own}` : null }, node('b', {}, nameOf(agent)), model, effort);
   };
   const labelOf = (agent, model) => mod.catalog[agent]?.find((m) => m.value === model)?.label || MODEL_LABEL[model] || model;
   const header = node('div', { class: 'collab-head' },
     node('div', { class: 'collab-row' },
-      node('label', {}, '구현 담당 ', select(OWNERS, mod.owner, (v) => { mod.owner = v; }, '구현 담당')),
+      node('label', {}, '구현 담당 ', select(ownerOptions(roster), mod.owner, (v) => { mod.owner = v; }, '구현 담당')),
       node('label', { title: '끄면 지정한 상대만 한 번 답하고 멈춥니다' }, autoBox, ' 자동 대화 이어가기'),
       node('span', { class: 'spacer' })),
-    node('div', { class: 'collab-row collab-models' }, agentPrefs('claude'), agentPrefs('codex')),
+    node('div', { class: `collab-row collab-models${roster.length >= 3 ? ' collab-models-wrap' : ''}` }, roster.map((agent) => agentPrefs(agent))),
     node('div', { class: 'collab-row collab-sub' }, status, catalogNote, node('span', { class: 'collab-cwd', title: cwd }, cwd)));
 
   const log = node('div', { class: 'collab-log', role: 'log', 'aria-live': 'polite', tabindex: '-1' });
-  const target = select(TARGETS, 'all', () => {}, '받는 사람');
-  const input = node('textarea', { rows: 3, placeholder: '메시지 입력 · Enter 보내기 · Shift+Enter 줄바꿈 · Esc 중단 · @claude / @codex 로 지정 · 답변 중에 보내면 지금 답변에 반영해요 (Codex 는 하던 작업이 끝난 지점에서)' });
+  const target = select(targetsOf(roster), 'all', () => {}, '받는 사람');
+  const input = node('textarea', { rows: 3, placeholder: placeholderOf(roster) });
   const submit = () => {
     let text = input.value.trim();
     if (!text) return;
     let to = target.value;
-    const m = text.match(/^@(claude|codex)\b\s*/i);
-    if (m) { to = m[1].toLowerCase(); text = text.slice(m[0].length) || text; }
+    const m = mentionOf(roster, text);
+    if (m) { to = m.to; text = m.text; }
     input.value = '';
     mod.say(text, to);
     syncSend();
@@ -148,11 +154,12 @@ export function createCollabPanel({ api, roomId, cwd, onStatus = () => {}, onTra
     const choices = (m.question?.choices || []).map((c) => node('button', {
       type: 'button', class: 'msg-choice', title: `${c.name}${c.desc ? ` — ${c.desc}` : ''}`, onclick: () => choose(m, c),
     }, node('b', {}, c.name), c.desc ? node('span', {}, c.desc) : null));
-    const final = m.from === 'claude' || m.from === 'codex' ? node('span', { class: 'msg-final', hidden: !m.final }, '최종 답변') : null; // 합의되면 나중에 나타난다
+    const final = mod.roster.includes(m.from) ? node('span', { class: 'msg-final', hidden: !m.final }, '최종 답변') : null; // 합의되면 나중에 나타난다
     const pending = m.from === 'user' ? node('span', { class: 'msg-pending', hidden: !m.steering }, '반영 대기 중') : null; // 답변 중에 보냈고 아직 반영 확인 전
-    const el = node('div', { class: `msg from-${m.from}${m.streaming ? ' streaming' : ''}`, hidden: !!m.skip || isEmptyReply(m) },
-      node('div', { class: 'msg-head' }, node('b', {}, NAMES[m.from] || m.from), final, pending, meta ? node('span', { class: 'msg-meta' }, meta) : null,
-        m.target && m.target !== 'all' ? node('span', { class: 'msg-meta' }, `→ ${NAMES[m.target]}`) : null,
+    const own = mod.roster.includes(m.from) && !isBuiltinColor(m.from) && agentById(m.from)?.color; // Claude·Codex 외 AI 의 색
+    const el = node('div', { class: `msg from-${m.from}${own ? ' from-agent' : ''}${m.streaming ? ' streaming' : ''}`, style: own ? `--agent-color: ${own}` : null, hidden: !!m.skip || isEmptyReply(m) },
+      node('div', { class: 'msg-head' }, node('b', {}, nameOf(m.from)), final, pending, meta ? node('span', { class: 'msg-meta' }, meta) : null,
+        m.target && m.target !== 'all' ? node('span', { class: 'msg-meta' }, `→ ${nameOf(m.target)}`) : null,
         node('time', {}, hhmm(m.at))),
       tools.length ? node('ul', { class: 'msg-tools' }, tools) : null,
       node('div', { class: 'msg-body' }, m.text || (m.streaming ? '생각 중…' : '')),
@@ -207,9 +214,9 @@ export function createCollabPanel({ api, roomId, cwd, onStatus = () => {}, onTra
       if (nodes[i].final) syncFinal(m, nodes[i]);
       if (nodes[i].pending) syncPending(m, nodes[i]);
     }
-    const askers = mod.status === 'running' && mod.round.askers.length ? ` · ${mod.round.askers.map((a) => NAMES[a]).join('·')} 질문 있음` : '';
+    const askers = mod.status === 'running' && mod.round.askers.length ? ` · ${mod.round.askers.map(nameOf).join('·')} 질문 있음` : '';
     const agreed = mod.status === 'idle' && mod.round.final;
-    status.textContent = (mod.status === 'running' ? `${NAMES[mod.running]} ${STATUS_TEXT.running}…` : agreed ? '두 AI 합의 완료 — 최종 답변 표시를 확인하세요' : STATUS_TEXT[mod.status]) + askers;
+    status.textContent = (mod.status === 'running' ? `${nameOf(mod.running)} ${STATUS_TEXT.running}…` : agreed ? agreedText(mod.roster) : STATUS_TEXT[mod.status]) + askers;
     status.className = `collab-status ${mod.status}`;
     if (atBottom && !expanded) log.scrollTop = log.scrollHeight; // 펼친 직후에는 드러난 메시지를 보여 준다
     onStatus(mod.status);
@@ -219,25 +226,27 @@ export function createCollabPanel({ api, roomId, cwd, onStatus = () => {}, onTra
 
   // 목록을 받기 전·실패 시에는 기본 선택지를 쓰고 그 사실을 알린다. 못 받은 쪽은 선택 상자를 열 때 다시 시도한다.
   let loading = null;
+  const unlisted = new Set(); // 목록 조회 결과에 키 자체가 없는 AI (조회 대상이 아님) — 다시 시도하지 않는다. 키가 있고 null 이면 조회 실패라 다시 시도한다.
   function loadCatalog() {
-    if (loading || (mod.catalog.claude && mod.catalog.codex)) return;
+    if (loading || roster.every((a) => mod.catalog[a] || unlisted.has(a))) return;
     catalogNote.textContent = '모델 목록 불러오는 중…'; catalogNote.title = '';
     loading = Promise.resolve(api.collabModels?.()).then((catalog) => {
-      for (const agent of ['claude', 'codex']) {
+      for (const agent of roster) {
+        if (catalog && typeof catalog === 'object' && !Object.hasOwn(catalog, agent)) { unlisted.add(agent); continue; }
         if (!catalog?.[agent]?.length) continue;
         mod.catalog[agent] = catalog[agent];
         mod.prefs[agent].model = fill(prefSelects[agent].model, modelOptions(agent), mod.prefs[agent].model);
         syncEfforts(agent);
       }
       return catalog?.errors || {};
-    }, (e) => ({ claude: e?.message || String(e), codex: e?.message || String(e) })).then((errors) => {
+    }, (e) => Object.fromEntries(roster.map((a) => [a, e?.message || String(e)]))).then((errors) => {
       loading = null;
-      const missing = ['claude', 'codex'].filter((a) => !mod.catalog[a]);
-      catalogNote.textContent = missing.length ? `⚠ ${missing.map((a) => NAMES[a]).join('·')} 모델 목록을 받지 못해 기본 선택지 사용 — 선택 상자를 열면 다시 시도` : '';
-      catalogNote.title = missing.map((a) => `${NAMES[a]}: ${errors[a] || '알 수 없음'}`).join('\n');
+      const missing = roster.filter((a) => !mod.catalog[a] && !unlisted.has(a));
+      catalogNote.textContent = missing.length ? `⚠ ${missing.map(nameOf).join('·')} 모델 목록을 받지 못해 기본 선택지 사용 — 선택 상자를 열면 다시 시도` : '';
+      catalogNote.title = missing.map((a) => `${nameOf(a)}: ${errors[a] || '알 수 없음'}`).join('\n');
     });
   }
-  for (const agent of ['claude', 'codex']) prefSelects[agent].model.addEventListener('focus', loadCatalog);
+  for (const agent of roster) prefSelects[agent].model.addEventListener('focus', loadCatalog);
   loadCatalog();
 
   return {

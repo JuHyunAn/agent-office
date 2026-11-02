@@ -105,6 +105,21 @@ test('Codex 위치: PATH 의 exe 우선, 없으면 데스크톱 앱에 포함된
   assert.equal(codexCli.pickCodex([], path.join(dir, 'none')), null);
 });
 
+test('Codex 위치: 공식 설치기 위치(Programs\\OpenAI\\Codex\\bin)는 데스크톱 앱 번들보다 먼저, PATH 보다는 나중', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ao-codex-native-'));
+  assert.equal(codexCli.nativeCodex(dir), null);
+  const bundledDir = path.join(dir, 'OpenAI', 'Codex', 'bin', 'abc'); fs.mkdirSync(bundledDir, { recursive: true });
+  fs.writeFileSync(path.join(bundledDir, 'codex.exe'), '');
+  assert.equal(codexCli.pickCodex([], dir).file, path.join(bundledDir, 'codex.exe'), '설치기 위치가 없으면 번들');
+  const native = path.join(dir, 'Programs', 'OpenAI', 'Codex', 'bin', 'codex.exe');
+  fs.mkdirSync(path.dirname(native), { recursive: true }); fs.writeFileSync(native, '');
+  assert.equal(codexCli.nativeCodex(dir), native);
+  assert.deepEqual(codexCli.pickCodex([], dir), { file: native, prefixArgs: [], display: native });
+  const onPath = path.join(dir, 'codex.exe'); fs.writeFileSync(onPath, '');
+  assert.equal(codexCli.pickCodex([onPath], dir).file, onPath);
+  fs.rmSync(dir, { recursive: true });
+});
+
 test('Codex 의 apply_patch 는 패치 본문에서 파일 이름을 찾아 「수정 중」으로 보여 준다', async () => {
   const { toolPhrase, activitySummary, toolPose } = await import('../src/renderer/office/phrases.js');
   const command = '*** Begin Patch\n*** Update File: src/app.js\n@@\n-a\n+b\n*** End Patch';
@@ -120,6 +135,10 @@ test('hook 서버: Codex 는 탭·CLI 종류를 주소로 알린다', () => {
   const claude = toEvent({ hook_event_name: 'Stop', session_id: 's' }, { 'x-office-tab': 't2' }, 'session', 1, {});
   assert.equal(claude._tab, 't2'); assert.equal(claude._cli, 'claude');
   assert.equal(toEvent({ hook_event_name: 'Stop' }, {}, null, 1, { tab: '<bad>' })._tab, null);
+  // 등록되지 않은 cli 값은 지금처럼 Claude 로 본다 (grok 등은 이제 등록된 AI)
+  assert.equal(toEvent({ hook_event_name: 'Stop' }, {}, 'session', 1, { tab: 't1', cli: 'bogus' })._cli, 'claude');
+  assert.equal(toEvent({ hook_event_name: 'Stop' }, {}, 'session', 1, { tab: 't1' })._cli, 'claude');
+  assert.equal(toEvent({ hook_event_name: 'Stop' }, {}, 'session', 1, { tab: 't1', cli: 'codex' })._cli, 'codex');
 });
 
 test('협업용 Claude 실행 인자: 화면 없는 실시간 대화 · Bypass · 모델/노력 · 세션 이어 가기', () => {

@@ -87,11 +87,11 @@ function tabArgs({ settingsPath, mode, resumeId, sessionId, label }) {
   return args;
 }
 
-function runClaude(loc, args) {
+function runClaude(loc, args, timeoutMs = 20000) {
   const c = commandFor(loc, args);
-  if (typeof c.args !== 'string') return run(c.file, c.args);
+  if (typeof c.args !== 'string') return run(c.file, c.args, timeoutMs);
   return new Promise((resolve) => {
-    execFile(c.file, [c.args], { env: cleanEnv(), windowsHide: true, timeout: 20000, encoding: 'utf8', windowsVerbatimArguments: true },
+    execFile(c.file, [c.args], { env: cleanEnv(), windowsHide: true, timeout: timeoutMs, encoding: 'utf8', windowsVerbatimArguments: true },
       (err, stdout, stderr) => resolve({ code: err ? (err.code ?? 1) : 0, stdout: stdout || '', stderr: stderr || '' }));
   });
 }
