@@ -10,17 +10,19 @@ const { residentState } = await import('../src/renderer/themes/pixel-office/resi
 
 // fillStyle 지정과 fillRect 호출을 순서대로 적는 가짜 캔버스. 나머지 메서드는 아무것도 안 한다.
 function recorder() {
-  const fills = [], rects = [];
+  const fills = [], rects = [], images = [], translations = [];
   let style = null;
   const ctx = new Proxy({}, {
     get(_, k) {
       if (k === 'canvas') return { width: 100, height: 100 };
       if (k === 'fillRect') return (...a) => { rects.push([style, ...a]); };
+      if (k === 'drawImage') return (...a) => { images.push(a); };
+      if (k === 'translate') return (...a) => { translations.push(a); };
       return () => ({ width: 10 });
     },
     set(_, k, v) { if (k === 'fillStyle') { style = v; fills.push(v); } return true; },
   });
-  return { ctx, fills, rects };
+  return { ctx, fills, rects, images, translations };
 }
 
 const base = { pose: 'stand', status: 'working', facing: 'down', colorIndex: 1 };
@@ -63,22 +65,55 @@ test('새 캐릭터도 실제 이동·작업·알림·휴식 상태에 맞는 �
   ]) assert.equal(residentState(actor), expected);
 });
 
-test('drawCharacter: grok 은 grok 몸 색을 쓰고 Claude 주황은 쓰지 않는다', () => {
+test('사무실 그록은 전용 구체 색을 쓰고 Claude 주황은 쓰지 않는다', () => {
   const { ctx, fills } = recorder();
   drawCharacter(ctx, { ...base, cli: 'grok' }, 0, 40, 60);
-  assert.ok(fills.includes(AGENT_LOOKS.grok.body));
+  assert.ok(fills.includes('#30343e'));
   assert.ok(!fills.includes('#d77b57'));
   const claude = recorder();
   drawCharacter(claude.ctx, { ...base, cli: 'claude' }, 0, 40, 60);
   assert.ok(claude.fills.includes('#d77b57'));
 });
 
-test('drawCharacter: muse·antigravity 도 각자 몸 색', () => {
-  for (const cli of ['muse', 'antigravity']) {
+test('사무실 뮤즈·안티그라비티는 인형·무지개 외형의 전용 색을 쓴다', () => {
+  for (const [cli, body] of [['muse', '#d9c6a5'], ['antigravity', '#80aec5']]) {
     const { ctx, fills } = recorder();
     drawCharacter(ctx, { ...base, cli }, 0, 40, 60);
-    assert.ok(fills.includes(AGENT_LOOKS[cli].body), cli);
+    assert.ok(fills.includes(body), cli);
     assert.ok(!fills.includes('#d77b57'), cli);
+  }
+});
+
+test('사무실 세 캐릭터는 이미지 로딩 없이 정수 도트와 제한된 색으로 그린다', () => {
+  for (const cli of ['grok', 'muse', 'antigravity']) {
+    const { ctx, rects, fills, images, translations } = recorder();
+    drawCharacter(ctx, { ...base, cli }, 0, 40.3, 60.6);
+    assert.equal(images.length, 0, cli);
+    assert.ok(new Set(fills).size <= 15, cli);
+    for (const [, x, y, w, h] of rects) {
+      assert.ok([x, y, w, h].every(Number.isInteger), cli);
+      assert.ok(w > 0 && h > 0, cli);
+    }
+    assert.deepEqual(translations[0], [40, 61]);
+  }
+});
+
+test('기존과 같은 보행 주기·착석 높이와 생활·작업 소품을 유지한다', () => {
+  for (const cli of ['grok', 'muse', 'antigravity']) {
+    const walk = [0, 130, 260, 390].map(t => {
+      const r = recorder(); drawCharacter(r.ctx, { ...base, cli, pose: 'walk' }, t, 0, 0);
+      return JSON.stringify([r.rects, r.translations]);
+    });
+    assert.ok(new Set(walk).size >= 3, cli);
+    for (const [pose, status] of [['type', 'working'], ['read', 'working'], ['run', 'working'], ['talk', 'working'], ['alert', 'idle'], ['stand', 'sharing'], ['sit', 'resting']]) {
+      const frames = [0, 130].map(t => { const r = recorder(); drawCharacter(r.ctx, { ...base, cli, pose, status }, t, 0, 0); return JSON.stringify([r.rects, r.translations]); });
+      assert.notEqual(frames[0], frames[1], `${cli}/${pose}/${status}`);
+    }
+    for (const pose of ['stand', 'walk', 'sit', 'type', 'read', 'run', 'drink', 'brew', 'talk', 'alert', 'play', 'water', 'stretch', 'sleep']) {
+      const r = recorder(); drawCharacter(r.ctx, { ...base, cli, pose }, 130, 0, 0);
+      assert.ok(r.rects.every(([, ...coords]) => coords.every(Number.isFinite)), `${cli}/${pose}`);
+      if (['sit', 'read', 'run'].includes(pose)) assert.deepEqual(r.translations[1], [0, -12], `${cli}/${pose}`);
+    }
   }
 });
 

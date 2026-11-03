@@ -44,7 +44,7 @@ test('AGENTS: 협업 표기(collabLabel)와 협업 능력(caps.collab)', () => {
     ['codex', 'Codex(OpenAI Codex)', true],
     ['grok', 'Grok(xAI Grok Build)', true],
     ['muse', 'Muse(Meta Muse Code)', true],
-    ['antigravity', 'Antigravity(Google Antigravity CLI)', false],
+    ['antigravity', 'Gemini(Google Antigravity CLI)', true],
   ]);
   assert.equal(agentById('unknown-ai')?.caps?.collab, undefined); // 모르는 AI 는 협업 가능으로 보지 않는다
 });
@@ -55,7 +55,7 @@ test('AGENTS: 기존 화면 값과 같다', () => {
     ['codex', 'Codex', 'Codex', 'Codex · '],
     ['grok', 'Grok', 'Grok Build', 'Grok · '],
     ['muse', 'Muse', 'Muse Code', 'Muse · '],
-    ['antigravity', 'Antigravity', 'Antigravity CLI', 'Antigravity · '],
+    ['antigravity', 'Gemini', 'Gemini (Antigravity CLI)', 'Gemini · '],
   ]);
   assert.equal(DEFAULT_AGENT, 'claude');
 });
@@ -78,7 +78,7 @@ test('agentName·agentById', () => {
   assert.equal(agentName('codex'), 'Codex');
   assert.equal(agentName('grok'), 'Grok');
   assert.equal(agentName('muse'), 'Muse');
-  assert.equal(agentName('antigravity'), 'Antigravity');
+  assert.equal(agentName('antigravity'), 'Gemini');
   assert.equal(agentName('gemini'), 'Claude');
   assert.equal(agentName(undefined), 'Claude');
   assert.equal(agentById('codex').product, 'Codex');

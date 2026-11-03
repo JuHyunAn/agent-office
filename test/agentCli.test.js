@@ -100,6 +100,20 @@ test('authStatus: 그 밖의 실패(오류 코드·시간 초과)는 error 문�
   assert.equal(long.error, '로그인 상태를 확인하지 못했습니다: ' + 'x'.repeat(120));
 });
 
+test('authStatus: timeoutMs 를 러너에 넘기고(기본 10초), 출력 없는 실패(시간 초과)만 timedOut 을 단다', async () => {
+  const seen = [];
+  const runner = async (l, a, ms) => { seen.push(ms); return out('', { code: 1 }); };
+  const def = await agentCli.authStatus('antigravity', {}, { runner });
+  const wide = await agentCli.authStatus('antigravity', {}, { runner, timeoutMs: 15000 });
+  assert.deepEqual(seen, [10000, 15000]);
+  assert.equal(def.timedOut, true);
+  assert.equal(wide.timedOut, true);
+  const failed = await agentCli.authStatus('antigravity', {}, { runner: async () => out('', { code: 2, stderr: 'connect ECONNREFUSED' }) });
+  assert.equal(failed.timedOut, undefined);
+  const loggedOut = await agentCli.authStatus('antigravity', {}, { runner: async () => out('Please sign in to view available models.\n', { code: 1 }) });
+  assert.deepEqual(loggedOut, { loggedIn: false });
+});
+
 test('INSTALL_ENV: codex 만 비대화 환경 변수를 받는다', () => {
   assert.deepEqual(agentCli.INSTALL_ENV, { codex: { CODEX_NON_INTERACTIVE: '1' } });
 });

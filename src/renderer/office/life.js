@@ -23,6 +23,8 @@ const WANDER_ROOMS = ['rest', 'cafe', 'restroom'];
 const SPREAD = 160;
 // 문 앞은 실제 에이전트가 드나드는 자리라 산책 목적지로 고르지 않는다.
 const DOOR_CLEAR = 90;
+const COLLAB_MAX = 2; // 스킬 협업에 함께 가는 상주 캐릭터 최대 수
+const COLLAB_EPISODE_MS = 30000; // 스킬을 시작한 뒤 이만큼만 협업 연출 (스킬 표시는 턴 끝까지 남는다)
 
 // Local life is separate from Claude sessions and is never counted as executing agents.
 export class OfficeLife {
@@ -30,6 +32,7 @@ export class OfficeLife {
     this.layout = layout; this.engine = engine; this.random = random;
     this.navigation = new Navigation(layout); this.time = 0; this.destination = null;
     this.menu = null; this.effects = []; this.bestScore = 0;
+    this.skillEpisodes = new Map(); // 스킬 쓰는 에이전트 key → { skill, since }
     this.doors = layout.interactions.filter(i => i.door).map(i => ({ id: i.id, amount: 0, heldUntil: 0 }));
     this.player = this.makeActor('player', '나', layout.playerStart, true, 5);
     this.residents = [
@@ -101,7 +104,7 @@ export class OfficeLife {
   update(dtMs) {
     const dt = Math.max(0, Math.min(dtMs, 250)); this.time += dt;
     this.effects = this.effects.filter(e => e.until > this.time);
-    const activeSkills = [...this.engine.agents.values()].some(a => a.skill && a.status === 'working');
+    const helpers = this.skillHelpers();
     for (const a of [this.player, ...this.residents]) {
       if (a.bubble && a.bubble.until <= this.time) a.bubble = null;
       if (a.heldItem && a.heldItem.until <= this.time) {
@@ -111,7 +114,7 @@ export class OfficeLife {
       if (a.path.length) this.step(a, dt);
       else if (a.interaction) this.startAction(a);
       else if (a.action && this.time >= a.until) this.finishAction(a);
-      if (!a.isPlayer && !a.path.length && !a.action && this.time >= a.nextAt) this.autonomous(a, activeSkills);
+      if (!a.isPlayer && !a.path.length && !a.action && this.time >= a.nextAt) this.autonomous(a, helpers.has(a.id));
     }
     const actors = [this.player, ...this.residents, ...this.engine.agents.values()];
     for (const door of this.doors) {
@@ -121,6 +124,22 @@ export class OfficeLife {
       const open = near || door.heldUntil > this.time;
       door.amount = Math.max(0, Math.min(1, door.amount + (open ? 1 : -1) * dt / 320));
     }
+  }
+
+  // 이번에 스킬 협업하러 갈 상주 캐릭터 id. 스킬을 시작한 지 얼마 안 된 작업 중 에이전트 수만큼(최대 COLLAB_MAX)
+  // 고정 순서로 뽑는다 — 스킬 표시가 턴 끝까지 남아도 협업 연출은 COLLAB_EPISODE_MS 뒤 끝난다.
+  skillHelpers() {
+    const skilled = new Set();
+    let fresh = 0;
+    for (const x of this.engine.agents.values()) {
+      if (!x.skill) continue;
+      skilled.add(x.key);
+      let episode = this.skillEpisodes.get(x.key);
+      if (!episode || episode.skill !== x.skill) this.skillEpisodes.set(x.key, episode = { skill: x.skill, since: this.time });
+      if (x.status === 'working' && this.time - episode.since < COLLAB_EPISODE_MS) fresh++;
+    }
+    for (const key of this.skillEpisodes.keys()) if (!skilled.has(key)) this.skillEpisodes.delete(key);
+    return new Set(this.residents.filter(r => r.id !== 'resident-mocha').slice(0, Math.min(COLLAB_MAX, fresh)).map(r => r.id));
   }
 
   step(a, dt) {

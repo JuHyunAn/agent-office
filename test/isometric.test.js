@@ -43,7 +43,7 @@ test('사선 화면 크기는 월드 배치도가 아닌 투영 영역으로 계
   try {
     const view = makeView(theme);
     view.resize();
-    assert.equal(view.view.scale, Math.min(800 / theme.viewport.width, 600 / theme.viewport.height));
+    assert.equal(view.view.scale, 600 / theme.viewport.height); // 투영 영역보다 세로로 긴 화면 → 세로 맞춤
     assert.equal(view.canvas.width, 1600);
     assert.equal(view.canvas.height, 1200);
   } finally {

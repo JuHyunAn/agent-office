@@ -14,14 +14,29 @@ function arrive(life, id) {
 }
 
 test('전체 보기에서는 고정되고 확대 후에도 화면 가장자리를 벗어나지 않는다', () => {
-  const camera = new OfficeCamera(); camera.resize(1000, 700, 3200, 2000);
+  const camera = new OfficeCamera(); camera.resize(1120, 680, 3200, 2000); // 가로 맞춤으로 위아래가 채워지는 화면
   const fit = { x: camera.ox, y: camera.oy };
+  assert.equal(camera.canPan, false);
   camera.pan(5000, -5000); assert.deepEqual({ x: camera.ox, y: camera.oy }, fit);
   camera.zoomAt(0.1); assert.equal(camera.zoom, 1); assert.deepEqual({ x: camera.ox, y: camera.oy }, fit);
-  camera.zoomAt(2); const before = camera.ox; camera.pan(70, 50); assert.notEqual(camera.ox, before);
+  camera.zoomAt(2); assert.equal(camera.canPan, true); const before = camera.ox; camera.pan(70, 50); assert.notEqual(camera.ox, before);
   camera.pan(5000, -5000); assert.equal(camera.ox, 0); assert.equal(camera.oy, camera.ch - camera.height * camera.scale);
-  camera.fit(); camera.resize(800, 900, 3200, 2000); camera.pan(0, 500);
-  assert.equal(camera.oy, (900 - 2000 * camera.scale) / 2);
+  camera.fit(); assert.deepEqual({ x: camera.ox, y: camera.oy }, fit);
+});
+
+test('세로로 긴 화면의 전체 보기는 위아래 빈칸 없이 세로에 맞추고, 넘치는 양옆만 가장자리 안에서 드래그된다', () => {
+  const camera = new OfficeCamera(); camera.resize(1000, 700, 3200, 2000);
+  assert.equal(camera.scale, 700 / 2000); assert.equal(camera.zoom, 1); assert.equal(camera.canPan, true);
+  const w = 3200 * camera.scale, close = (a, b) => assert.ok(Math.abs(a - b) < 1e-9, `${a} ≠ ${b}`);
+  close(camera.ox, (1000 - w) / 2); assert.equal(camera.oy, 0); // 처음에는 가운데
+  camera.pan(5000, 300); assert.equal(camera.ox, 0); assert.equal(camera.oy, 0); // 세로는 고정
+  camera.pan(-5000, 0); close(camera.ox, 1000 - w);
+  camera.zoomAt(0.5); assert.equal(camera.zoom, 1, '휠로 줄여도 꽉 채운 화면이 하한');
+  camera.fit(); close(camera.ox, (1000 - w) / 2);
+  camera.pan(-40, 0); const left = camera.toScene(500, 350).x;
+  camera.resize(1000, 800, 3200, 2000); close(camera.toScene(500, 400).x, left); // 창 크기를 바꿔도 보던 곳 유지
+  camera.resize(1600, 900, 3200, 2000); // 다시 넓어지면 원래 100%(가로 맞춤)로
+  assert.equal(camera.scale, 1600 / 3200); assert.equal(camera.ox, 0); assert.equal(camera.canPan, false);
 });
 
 test('축소 하한을 낮추면 100% 아래로 줄어들고 가운데에 고정되며, 되돌리면 다시 100% 가 하한이다', () => {
@@ -41,8 +56,8 @@ test('전체 보기(100%)는 양옆 빈 공간 없이 가로를 채우되 세로
   camera.zoomAt(2); camera.fit(); assert.equal(camera.oy, 0);
   camera.resize(1600, 600, 3200, 2000); // 아주 넓은 화면: 116% 에서 멈춘다
   assert.equal(camera.scale, (600 / 2000) * 1.16);
-  camera.resize(800, 900, 3200, 2000); // 세로로 긴 화면은 지금처럼 가로 맞춤
-  assert.equal(camera.scale, 800 / 3200);
+  camera.resize(800, 900, 3200, 2000); // 세로로 긴 화면은 위아래가 비지 않게 세로 맞춤
+  assert.equal(camera.scale, 900 / 2000);
 });
 
 test('외형은 머리·악세서리 조합으로 다양해지고 작업 이벤트 후에도 유지된다', () => {

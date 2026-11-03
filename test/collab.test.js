@@ -767,7 +767,7 @@ test('글도 도구 사용도 없이 끝난 AI 발언은 빈 발언으로 보고
 });
 
 // ───── 0C: 참여자(roster) 다자 진행 — 가짜 세 번째 AI 'x' 로 확인한다 (2명 동작은 위의 기존 테스트가 고정) ─────
-import { OWNERS, nameOf, ownerOptions, targetsOf, mentionOf, agreedText, placeholderOf } from '../src/renderer/collab/moderator.js';
+import { OWNERS, nameOf, ownerOptions, targetsOf, mentionOf, agreedText, placeholderOf, effortLevels, EFFORT_IN_MODEL } from '../src/renderer/collab/moderator.js';
 
 const room3 = (opts = {}) => room({ roster: ['claude', 'codex', 'x'], ...opts });
 
@@ -953,6 +953,25 @@ test('화면 파생값: 2명일 때 지금 화면 문자열과 같고, 3명 이�
   assert.equal(mentionOf(two, '@claudex 안녕'), null);
   assert.equal(mentionOf(two, '@x 안녕'), null);
   assert.deepEqual(mentionOf(three, '@x 해 줘'), { to: 'x', text: '해 줘' });
+  // 표시 이름이 Gemini 인 antigravity: @gemini 와 내부 id @antigravity 모두 같은 AI, 자리 표시 문구는 @gemini
+  const withGemini = ['claude', 'antigravity'];
+  assert.deepEqual(mentionOf(withGemini, '@gemini 안녕'), { to: 'antigravity', text: '안녕' });
+  assert.deepEqual(mentionOf(withGemini, '@Gemini 안녕'), { to: 'antigravity', text: '안녕' });
+  assert.deepEqual(mentionOf(withGemini, '@antigravity 안녕'), { to: 'antigravity', text: '안녕' });
+  assert.deepEqual(mentionOf(withGemini, '@claude 안녕'), { to: 'claude', text: '안녕' });
+  assert.equal(mentionOf(withGemini, '@geminix 안녕'), null);
+  assert.match(placeholderOf(withGemini), /@claude \/ @gemini 로 지정/);
+  assert.ok(!placeholderOf(withGemini).includes('@antigravity'));
+});
+
+test('effortLevels: 단계가 없는 모델(Gemini)은 빈 배열이라 화면이 단계 상자를 숨기고, 단계가 있는 모델은 그대로', () => {
+  const gemini = [{ value: 'gemini-3.8-flash-high', efforts: [] }, { value: 'gemini-3.8-flash-low', efforts: [] }];
+  assert.deepEqual(effortLevels(gemini, 'auto'), []);
+  assert.deepEqual(effortLevels(gemini, 'gemini-3.8-flash-low'), []);
+  const other = [{ value: 'a', efforts: ['low', 'high'] }, { value: 'b', efforts: ['high', 'max'] }];
+  assert.deepEqual(effortLevels(other, 'auto'), ['low', 'high', 'max']);
+  assert.deepEqual(effortLevels(other, 'b'), ['high', 'max']);
+  assert.deepEqual(effortLevels(other, '없는 모델'), []);
 });
 
 test('placeholderOf: Codex 안내는 Codex 가 참여할 때만, rosterOf: 2명 미만이면 기본 참여자', async () => {
@@ -1032,4 +1051,9 @@ test('roster [claude, muse]: Muse 의 자동 모델은 CLI 기본(모델·단계
   reply('muse', '첫 의견');
   assert.equal(sent.length, 2); assert.equal(sent[1].agent, 'muse');
   assert.match(sent[1].text, /\[사용자\] 잠깐, 보안도 고려해/);
+});
+
+test('EFFORT_IN_MODEL: Gemini(antigravity) 는 단계를 따로 고르지 않는다 — 다른 AI 는 아님', () => {
+  assert.ok(EFFORT_IN_MODEL.has('antigravity'));
+  for (const id of ['claude', 'codex', 'grok', 'muse']) assert.ok(!EFFORT_IN_MODEL.has(id), id);
 });

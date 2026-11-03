@@ -97,6 +97,16 @@ test('[claude, grok]: 추가 문장 없이 줄바꿈으로 잇고, 참여자 표
   assert.ok(!/"|%/.test(three));
 });
 
+test('[claude, antigravity]: 추가 문장 없이 줄바꿈으로 잇는다 (-p 인자는 cmd 를 거치지 않아 줄바꿈이 안전하다)', () => {
+  const agy = collabRules(['claude', 'antigravity'], 'antigravity');
+  assert.equal(agy.split('\n').length, 11, '공통 문장 11개만 (AGENT_RULES.antigravity 없음)');
+  assert.ok(agy.startsWith('당신은 Agent Office 의 협업 대화에 참여하고 있습니다. 참여자는 사용자, Claude(Claude Code), Gemini(Google Antigravity CLI) 셋이며'));
+  assert.ok(agy.includes('[Claude] [Gemini] [사용자]') && agy.includes('Claude 와 Gemini 둘 다 만족하는'));
+  assert.ok(!agy.includes('하위 에이전트'));
+  assert.ok(!/[\r\n"%]/.test(collabRules(['claude', 'antigravity'], 'claude')), 'claude 규칙(cmd.exe 경유)에는 줄바꿈·큰따옴표·% 가 없다');
+  assert.ok(!/"|%/.test(agy), 'agy 규칙에도 큰따옴표·% 는 없다');
+});
+
 test('[claude, muse]: Grok 처럼 추가 문장 없이 줄바꿈으로 잇는다', () => {
   const muse = collabRules(['claude', 'muse'], 'muse');
   assert.equal(muse.split('\n').length, 11, '공통 문장 11개만 (AGENT_RULES.muse 없음)');

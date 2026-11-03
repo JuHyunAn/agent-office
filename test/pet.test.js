@@ -707,7 +707,8 @@ test('펫 컨트롤러: 연결이 끊긴 탭의 상태가 지워지면(clearStat
 const usageRow = (extra = {}) => ({ id: 'session', label: '세션', percent: 58, resetsAt: 1000, resetsText: null, observedAt: 500, ...extra });
 
 test('sanitizeUsage: 알려진 필드만 · 줄 수·글 길이·숫자 범위를 제한한다', () => {
-  const empty = { claude: { rows: [], error: null, updatedAt: null }, codex: { rows: [], error: null, updatedAt: null }, session: null, refresh: { busy: false, nextAllowedAt: null, lastRunAt: null } };
+  const emptySec = () => ({ rows: [], error: null, updatedAt: null });
+  const empty = { claude: emptySec(), codex: emptySec(), grok: emptySec(), muse: emptySec(), antigravity: emptySec(), session: null, refresh: { busy: false, nextAllowedAt: null, lastRunAt: null } };
   for (const bad of [undefined, null, 5, 'x', []]) assert.deepEqual(sanitizeUsage(bad), empty, String(bad));
   const snap = sanitizeUsage({
     claude: { rows: Array.from({ length: 9 }, (_, i) => usageRow({ id: `model:${i}`, label: 'L'.repeat(50), percent: 150.6, resetsText: 'T'.repeat(80), extra: 'x' })), error: 'E'.repeat(200), updatedAt: 7, junk: 1 },
@@ -720,7 +721,7 @@ test('sanitizeUsage: 알려진 필드만 · 줄 수·글 길이·숫자 범위�
   assert.equal(snap.claude.rows[0].label.length, 40);
   assert.equal(snap.claude.rows[0].resetsText.length, 60);
   assert.equal(snap.claude.rows[0].percent, 100);
-  assert.deepEqual(Object.keys(snap.claude.rows[0]).sort(), ['id', 'label', 'observedAt', 'percent', 'resetsAt', 'resetsText']);
+  assert.deepEqual(Object.keys(snap.claude.rows[0]).sort(), ['id', 'label', 'observedAt', 'percent', 'resetsAt', 'resetsText', 'valueText']);
   assert.equal(snap.claude.error.length, 120);
   assert.deepEqual([snap.claude.updatedAt, snap.codex.updatedAt], [7, null]);
   assert.deepEqual(snap.codex.rows.map((r) => r.percent), [0, null, null, null, 58]);
@@ -731,6 +732,25 @@ test('sanitizeUsage: 알려진 필드만 · 줄 수·글 길이·숫자 범위�
   assert.deepEqual(sanitizeUsage({ session: { kind: 'collab', label: 'x', requests: 1 } }).session, null, '협업은 세션 줄이 없다');
   assert.deepEqual(sanitizeUsage({ session: { kind: 'claude', label: 'x', requests: -4, contextPercent: null } }).session, { kind: 'claude', label: 'x', requests: 0, contextPercent: null });
   assert.equal(sanitizeUsage({ refresh: { busy: 'yes' } }).refresh.busy, false);
+});
+
+test('sanitizeUsage: 모든 AI 칸을 정리하고 (valueText 통과·60자 자르기), 세션 줄은 어느 AI 든 허용한다', () => {
+  const row = (extra = {}) => ({ id: 'session', label: '이번 세션', percent: null, resetsAt: null, resetsText: null, valueText: '토큰 22.9k · $0.04', observedAt: 5, ...extra });
+  const snap = sanitizeUsage({
+    grok: { rows: [row(), row({ id: 'long', valueText: 'V'.repeat(90) }), row({ id: 'num', valueText: 5 })], error: '오류', updatedAt: 9 },
+    muse: { rows: [row({ id: 'muse:5h', percent: 40.4 })], error: null, updatedAt: null },
+    antigravity: { rows: [], error: '사용량 조회 명령 없음', updatedAt: null },
+  });
+  assert.equal(snap.grok.rows[0].valueText, '토큰 22.9k · $0.04');
+  assert.equal(snap.grok.rows[0].percent, null);
+  assert.equal(snap.grok.rows[1].valueText.length, 60);
+  assert.equal(snap.grok.rows[2].valueText, null, '글이 아니면 null');
+  assert.deepEqual([snap.grok.error, snap.grok.updatedAt], ['오류', 9]);
+  assert.deepEqual([snap.muse.rows[0].percent, snap.muse.rows[0].valueText], [40, '토큰 22.9k · $0.04']);
+  assert.deepEqual(snap.antigravity, { rows: [], error: '사용량 조회 명령 없음', updatedAt: null });
+  assert.deepEqual(Object.keys(snap), [...PET_KINDS, 'session', 'refresh'], 'claude·codex 뒤에 레지스트리 순서');
+  for (const kind of PET_KINDS) assert.deepEqual(sanitizeUsage({ session: { kind, label: 'x', requests: 2, contextPercent: null } }).session, { kind, label: 'x', requests: 2, contextPercent: null }, kind);
+  assert.equal(sanitizeUsage({ session: { kind: 'gemini', label: 'x', requests: 1 } }).session, null);
 });
 
 test('usageRowText: 리셋까지 24시간 안이면 남은 시간 · 넘으면 요일과 시각', () => {
@@ -756,6 +776,17 @@ test('usageRowText: 리셋까지 24시간 안이면 남은 시간 · 넘으면 �
   assert.deepEqual(usageRowText(usageRow({ resetsAt: null, resetsText: 'Nov 1, 7am (Asia/Seoul)' }), now), { pct: '58% 사용', reset: 'Nov 1, 7am (Asia/Seoul) 재설정' });
   assert.deepEqual(usageRowText(usageRow({ percent: null, resetsAt: now + 30 * min }), now), { pct: '알 수 없음', reset: '리셋 30분 후' });
   assert.deepEqual(usageRowText(undefined, now), { pct: '알 수 없음', reset: '' });
+});
+
+test('usageRowText: 한도 %가 없고 valueText 가 있으면 그 글을 보인다 (% 가 있으면 %, 리셋 규칙은 그대로)', () => {
+  const now = new Date(2026, 9, 29, 12, 0, 0).getTime();
+  const num = (extra = {}) => usageRow({ percent: null, resetsAt: null, valueText: '토큰 22.9k · $0.04', ...extra });
+  assert.deepEqual(usageRowText(num(), now), { pct: '토큰 22.9k · $0.04', reset: '' });
+  assert.equal(usageRowText(num({ percent: 12 }), now).pct, '12% 사용', '% 가 숫자면 % 가 먼저');
+  assert.equal(usageRowText(num({ valueText: '' }), now).pct, '알 수 없음');
+  assert.equal(usageRowText(num({ valueText: 5 }), now).pct, '알 수 없음');
+  assert.deepEqual(usageRowText(num({ resetsAt: now + 30 * 60000 }), now), { pct: '토큰 22.9k · $0.04', reset: '리셋 30분 후' });
+  assert.deepEqual(usageRowText(num({ resetsAt: now - 1 }), now), { pct: '리셋됨', reset: '리셋됨' });
 });
 
 test('updatedText: 방금 · n분 전 · n시간 전 · 갱신 전', () => {

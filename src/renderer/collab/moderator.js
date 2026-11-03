@@ -15,13 +15,17 @@ export const OWNERS = [
 export const ownerOptions = (roster) => [...roster.map((id) => ({ value: id, label: nameOf(id) })), { value: 'ask', label: '구현 전에 물어보기' }];
 // 받는 사람 선택지
 export const targetsOf = (roster) => [{ value: 'all', label: '모두에게' }, ...roster.map((id) => ({ value: id, label: `${nameOf(id)} 에게` }))];
-// 입력 맨 앞의 @id 로 받는 사람 지정 → { to, text }(@id 를 뗀 글), 없으면 null. roster id 는 영문 소문자라 정규식 이스케이프가 필요 없다.
+// @ 로 부르는 이름: 표시 이름의 소문자(Gemini → @gemini). 영문·숫자가 아닌 이름이면 id 그대로.
+const aliasOf = (id) => { const n = nameOf(id).toLowerCase(); return /^[a-z0-9]+$/.test(n) ? n : id; };
+// 입력 맨 앞의 @이름 으로 받는 사람 지정 → { to: id, text }(@이름을 뗀 글), 없으면 null. 내부 id(@antigravity)도 계속 받는다. id·이름은 영문 소문자·숫자라 정규식 이스케이프가 필요 없다.
 export function mentionOf(roster, text) {
-  const m = String(text || '').match(new RegExp(`^@(${roster.join('|')})\\b\\s*`, 'i'));
-  return m ? { to: m[1].toLowerCase(), text: text.slice(m[0].length) || text } : null;
+  const m = String(text || '').match(new RegExp(`^@(${[...roster, ...roster.map(aliasOf)].join('|')})\\b\\s*`, 'i'));
+  if (!m) return null;
+  const said = m[1].toLowerCase();
+  return { to: roster.find((id) => id === said || aliasOf(id) === said), text: text.slice(m[0].length) || text };
 }
 export const agreedText = (roster) => `${roster.length === 2 ? '두 AI' : '참여 AI 모두'} 합의 완료 — 최종 답변 표시를 확인하세요`;
-export const placeholderOf = (roster) => `메시지 입력 · Enter 보내기 · Shift+Enter 줄바꿈 · Esc 중단 · ${roster.map((id) => `@${id}`).join(' / ')} 로 지정 · 답변 중에 보내면 지금 답변에 반영해요${roster.includes('codex') ? ' (Codex 는 하던 작업이 끝난 지점에서)' : ''}`;
+export const placeholderOf = (roster) => `메시지 입력 · Enter 보내기 · Shift+Enter 줄바꿈 · Esc 중단 · ${roster.map((id) => `@${aliasOf(id)}`).join(' / ')} 로 지정 · 답변 중에 보내면 지금 답변에 반영해요${roster.includes('codex') ? ' (Codex 는 하던 작업이 끝난 지점에서)' : ''}`;
 // 탭에 저장된 참여 AI: 2명 이상이면 그대로, 아니면 기본(Claude·Codex)
 export const rosterOf = (agents) => (Array.isArray(agents) && agents.length >= 2 ? agents : ['claude', 'codex']);
 // CLI 에서 목록을 받아오지 못했을 때 쓰는 기본 선택지 (받아오면 화면이 CLI 목록으로 바꾼다).
@@ -33,7 +37,11 @@ export const MODEL_OPTIONS = {
   muse: [{ value: 'auto', label: '자동' }, { value: 'muse-spark-1.3', label: 'Muse Spark 1.3' }, { value: 'muse-spark-1.2', label: 'Muse Spark 1.2' }, { value: 'muse-wonder-1.0', label: 'Muse Wonder 1.0' }],
 };
 export const EFFORT_LABEL = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max', ultra: 'Ultra' };
+// 모델 목록에서 고를 수 있는 추론 단계: 모델이 자동이면 전체 합집합, 아니면 그 모델의 것. 단계가 없으면 [] (Gemini 는 단계가 모델 이름에 들어 있다 — 화면이 단계 상자를 숨긴다).
+export const effortLevels = (list, model) => (model === 'auto' ? [...new Set(list.flatMap((m) => m.efforts))] : list.find((m) => m.value === model)?.efforts || []);
 export const EFFORT_OPTIONS = [{ value: 'auto', label: '자동' }, { value: 'high', label: 'High' }, { value: 'xhigh', label: 'Extra High' }];
+// 단계를 따로 고르지 않는 AI (Gemini — 단계가 모델 이름에 들어 있다): 모델 목록을 받기 전에도 단계 상자는 「자동」 하나라 숨긴다.
+export const EFFORT_IN_MODEL = new Set(['antigravity']);
 export const MODEL_LABEL = Object.fromEntries(Object.values(MODEL_OPTIONS).flat().map((o) => [o.value, o.label]));
 
 // [질문] 줄: 앞의 불릿(-, *, •)과 굵게(**, __) 꾸밈도 허용한다. 인용(>)은 상대 질문을 옮겨 적은 것이라 제외.

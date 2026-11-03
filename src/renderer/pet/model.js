@@ -136,6 +136,7 @@ export function usageRowText(row, now) {
   let pct = '알 수 없음';
   if (gone) pct = '리셋됨';
   else if (Number.isFinite(row?.percent)) pct = `${row.percent}% 사용`;
+  else if (typeof row?.valueText === 'string' && row.valueText) pct = row.valueText; // 한도가 아닌 수치 줄 (「토큰 22.9k · $0.04」)
   return { pct, reset };
 }
 

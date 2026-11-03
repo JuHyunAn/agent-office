@@ -1,6 +1,6 @@
 import { agentById } from '../../../shared/agents.js';
 
-// AI 별 임시 사무실 캐릭터 색: codex-sprite 모양(구름 머리 로봇)에 색과 가슴 표식만 바꿔 쓴다 (0D 임시 — 그림은 나중에 따로).
+// 공통 로봇의 색·표식 표. 새 세 캐릭터의 사무실 전용 외형은 companion-sprite에서 먼저 그린다.
 // 키는 AI id. 표에 없는 등록된 AI 는 레지스트리 색(color)에서 만든다. Claude 는 기존 그림이라 여기 없다.
 export const AGENT_LOOKS = Object.freeze({
   codex: Object.freeze({ body: '#5887d8', light: '#80a9ee', shade: '#3c62aa', ink: '#25385f', eye: '#b4eee9', mark: 'dots' }),

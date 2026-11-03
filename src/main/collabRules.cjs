@@ -9,8 +9,8 @@ const AGENT_RULES = {
   claude: '하위 에이전트를 적극 활용합니다. 어려운 추론·설계 검토는 model fable, 설계가 끝난 단순 코딩·주석·문법 수정은 model sonnet 에게 맡기고, 노력 단계는 high 또는 xhigh 만 씁니다.',
   codex: '하위 에이전트를 쓸 때 어려운 추론은 gpt-6-astra, 그 외는 gpt-6.1-sol 을 쓰고, 추론 단계는 high 또는 xhigh 만 씁니다.',
 };
-// 문장 이음 문자 (claude ' ', codex·grok·muse '\n' — 표준 입력/프롬프트 파일로 가서 줄바꿈이 안전하다, 표에 없는 AI 는 ' ')
-const JOIN = { claude: ' ', codex: '\n', grok: '\n', muse: '\n' };
+// 문장 이음 문자 (claude ' ', codex·grok·muse·antigravity '\n' — 표준 입력/프롬프트 파일/-p 인자(cmd 를 거치지 않음)로 가서 줄바꿈이 안전하다, 표에 없는 AI 는 ' ')
+const JOIN = { claude: ' ', codex: '\n', grok: '\n', muse: '\n', antigravity: '\n' };
 
 // 참여자 수(사용자 포함) 읽기: 셋·넷·다섯, 그 밖은 n명
 const COUNT_WORD = { 3: '셋', 4: '넷', 5: '다섯' };

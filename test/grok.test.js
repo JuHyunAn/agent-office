@@ -8,7 +8,7 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const { normalizeGrok, toEvent, startHookServer } = require('../src/main/hookServer.cjs');
 const grokHooks = require('../src/main/grokHooks.cjs');
-const { GROK_TOOL_NAMES, pickGrokInput, trackGrokSession, attachGrokRoom, dropGrokRoom } = require('../src/main/grokTools.cjs');
+const { GROK_TOOL_NAMES, pickGrokInput, trackGrokSession, trackGrokTab, attachGrokRoom, dropGrokRoom } = require('../src/main/grokTools.cjs');
 const agentCli = require('../src/main/agentCli.cjs');
 
 // grok 1.0.70 실측 본문 모양 (camelCase + Claude 호환 snake_case, tool_input·tool_response 는 JSON 문자열)
@@ -124,6 +124,24 @@ test('grok 세션 → 협업 방: session 이벤트로 연결하고, hook 이벤
   dropGrokRoom(rooms, 'room-1');
   assert.deepEqual([...rooms], [['g3', 'room-2']]);
   assert.equal(attachGrokRoom(rooms, { _cli: 'grok', _tab: null, session_id: 'g1' })._tab, null);
+});
+
+test('앱 Grok 탭: 미리 정한 세션 ID 를 탭 ID 로 등록하면 hook 이벤트에 _tab 이 붙고, 탭을 닫으면 붙지 않는다', () => {
+  const rooms = new Map();
+  trackGrokTab(rooms, 'tab-1', 'g1');
+  trackGrokTab(rooms, 'tab-2', 'g2');
+  trackGrokSession(rooms, 'room-1', { type: 'session', sessionId: 'g3' }); // 협업 방과 같은 표를 쓴다
+  trackGrokTab(rooms, 'tab-3', null); // 세션 ID 가 없는 AI·잘못된 값은 무시
+  trackGrokTab(rooms, '', 'g9');
+  assert.equal(rooms.size, 3);
+  assert.equal(attachGrokRoom(rooms, { _cli: 'grok', _tab: null, session_id: 'g1' })._tab, 'tab-1');
+  assert.equal(attachGrokRoom(rooms, { _cli: 'grok', _tab: null, session_id: 'g3' })._tab, 'room-1');
+  trackGrokTab(rooms, 'tab-1', 'g1b'); // 같은 탭에 다시 만들면 앞 세션 연결은 지운다
+  assert.equal(attachGrokRoom(rooms, { _cli: 'grok', _tab: null, session_id: 'g1' })._tab, null);
+  assert.equal(attachGrokRoom(rooms, { _cli: 'grok', _tab: null, session_id: 'g1b' })._tab, 'tab-1');
+  dropGrokRoom(rooms, 'tab-1'); // 탭 종료·삭제
+  assert.equal(attachGrokRoom(rooms, { _cli: 'grok', _tab: null, session_id: 'g1b' })._tab, null);
+  assert.equal(attachGrokRoom(rooms, { _cli: 'grok', _tab: null, session_id: 'g2' })._tab, 'tab-2', '다른 탭은 그대로');
 });
 
 test('GROK_TOOL_NAMES·pickGrokInput', () => {

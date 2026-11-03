@@ -1,7 +1,7 @@
 import { drawDrinkImage } from './drink-images.js';
 import { drawAgentCharacter } from './codex-sprite.js';
 import { lookOf } from './agent-looks.js';
-import { drawResidentCharacter } from './resident-sprite.js';
+import { drawOfficeCompanion } from './companion-sprite.js';
 
 const ORANGE = '#d77b57';
 const SHADE = '#b85e43';
@@ -14,7 +14,7 @@ export const usesAgentSprite = (cli) => !!lookOf(cli);
 // All coordinates are integer pixels. Each frame keeps the reference silhouette:
 // one wide body, short side arms, two rectangular eyes, four short legs.
 export function drawCharacter(ctx, a, t, x, y) {
-  if (drawResidentCharacter(ctx, a, t, x, y)) return;
+  if (drawOfficeCompanion(ctx, a, t, x, y)) return;
   const look = lookOf(a.cli);
   if (look) return drawAgentCharacter(ctx, a, t, x, y, look);
   const tick = Math.floor(t / 130);

@@ -2,7 +2,7 @@
 // DOM·Canvas 를 쓰지 않는다. 그림은 테마(themes/*)가 snapshot() 결과를 받아 그린다.
 
 import { roleOf, displayType } from './roles.js';
-import { toolPhrase, toolPose, clip, baseName, activitySummary } from './phrases.js';
+import { toolPhrase, toolPose, clip, baseName, activitySummary, workBrief } from './phrases.js';
 import { Navigation } from './navigation.js';
 import { createAppearance } from './appearance.js';
 import { AGENT_IDS, normAgent } from '../../shared/agents.js';
@@ -10,15 +10,19 @@ import { AGENT_IDS, normAgent } from '../../shared/agents.js';
 export const TIMING = {
   speed: 150, // 논리 좌표 px/초
   handoffWindowMs: 30000, // 이 시간 안에 다음 에이전트가 시작하면 「결과 공유」로 연출 (추정)
-  idleLeaveMs: 20 * 60000, // 작업 중이 아닌 상태가 이만큼 이어지면 퇴근
-  sessionEndGraceMs: 5 * 60000, // 세션이 끝나면 휴게실에 모였다가 이만큼 뒤 다 같이 퇴근
+  idleLeaveMs: 3 * 60000, // 팀장: 작업 중이 아닌 상태가 이만큼 이어지면 퇴근 (D-068 — 예전 20분)
+  subIdleLeaveMs: 60000, // 하위 에이전트: 일을 마친 뒤 이만큼이면 퇴근 (D-068)
+  sessionEndGraceMs: 60000, // 세션이 끝나면 휴게실에 모였다가 이만큼 뒤 다 같이 퇴근 (D-068 — 예전 5분)
   leadIdleToRestMs: 150000, // 팀장이 이만큼 한가하면 휴게실로
   bubbleMs: 4500,
   idleMinMs: 5000,
   idleMaxMs: 12000,
   maxShares: 3,
   externalSessionIdleMs: 30 * 60000, // 앱 탭이 아닌 세션이 이만큼 조용하면 끝난 것으로 본다 (강제 종료·크래시 대비)
-  silentWorkMs: 20 * 60000, // 작업 중인데 이벤트가 이만큼 없으면 휴게실로 (Stop 누락 대비) — 그 뒤 idleLeaveMs 가 지나면 퇴근
+  silentWorkMs: 20 * 60000, // 작업 중인데 이벤트가 이만큼 없으면 휴게실로 (Stop 누락 대비) — 휴게실에 간 뒤 idleLeaveMs(팀장) 가 지나면 퇴근
+  subSilentWorkMs: 5 * 60000, // 하위 에이전트가 작업 중인데 이벤트가 이만큼 없으면 휴게실로 (끝 신호 누락·중단 대비, 팀장은 silentWorkMs) — 그 뒤 subIdleLeaveMs 가 지나면 퇴근
+  briefBubbleMs: 3000, // 작업 말풍선은 내용이 바뀐 뒤 이만큼만 두 줄로, 그 뒤 한 줄 요약
+  promptKeepMs: 10000, // 새 요청 때 이 안에 신호를 보낸 앞쪽 하위 에이전트는 아직 일하는 것으로 본다 (답하는 중 보낸 메시지)
 };
 
 const ENDED_TASK = '세션 종료 · 퇴근 대기';
@@ -80,7 +84,11 @@ export class OfficeEngine {
     s.lastEventAt = this.time;
     this.dispatch(s, ev);
     const sub = ev.agent_id && this.agents.get(`${sid}:${ev.agent_id}`);
-    if (sub) sub.lastEventAt = this.time;
+    if (sub) {
+      sub.lastEventAt = this.time;
+      // 턴이 끝난 뒤에도 일하는 하위 에이전트(턴 중 백그라운드로 넘긴 것·팀 동료)는 다음 Stop 에 정리하지 않는다.
+      if (ev.hook_event_name !== 'SubagentStop' && !this.turnActive(s)) sub.background = true;
+    }
     // 팀장은 세션 안의 누가 일하든 자리를 지킨다 (백그라운드 에이전트 포함).
     const lead = this.agents.get(`${sid}:lead`);
     if (lead) lead.lastEventAt = this.time;
@@ -188,14 +196,16 @@ export class OfficeEngine {
       if (this.waitingOnUser(a)) continue;
       // 하위 에이전트가 사용자 확인을 기다리는 동안 팀장도 자리를 지킨다.
       if (a.isLead && [...this.agents.values()].some((b) => b.sessionId === a.sessionId && this.waitingOnUser(b))) continue;
+      // 하위 에이전트가 아직 일하는(보고·공유 포함) 동안 팀장은 퇴근하지 않는다 — 긴 도구 하나를 실행하는 동안은 신호가 없다 (도구 종료 hook 없음).
+      if (a.isLead && a.status !== 'working' && [...this.agents.values()].some((b) => b.sessionId === a.sessionId && !b.isLead && ['working', 'reporting', 'sharing'].includes(b.status))) continue;
       if (a.status === 'working') {
-        if (a.path.length || a.queue.length || this.time - a.lastEventAt <= t.silentWorkMs) continue;
+        if (a.path.length || a.queue.length || this.time - a.lastEventAt <= (a.isLead ? t.silentWorkMs : t.subSilentWorkMs)) continue;
         a.task = '응답 없음 · 휴식';
         a.skill = null;
-        a.idleSince = this.time; // 휴게실에 간 때부터 다시 idleLeaveMs 를 잰다 (합계 40분)
-        this.rest(a);
+        this.rest(a); // rest() 가 휴게실에 간 때(idleSince)부터 다시 퇴근 시간(하위 subIdleLeaveMs · 팀장 idleLeaveMs)을 잰다
       } else if (a.status === 'idle' || a.status === 'resting' || a.status === 'away') {
-        if (this.time - Math.max(a.lastEventAt, a.idleSince ?? 0) >= t.idleLeaveMs) this.goHome(a);
+        const leave = a.isLead ? t.idleLeaveMs : t.subIdleLeaveMs;
+        if (this.time - Math.max(a.lastEventAt, a.idleSince ?? 0) >= leave) this.goHome(a);
       }
     }
   }
@@ -205,6 +215,7 @@ export class OfficeEngine {
     const status = a.isLead ? 'away' : 'resting';
     a.queue.push({ op: 'goSeat', room: 'rest' }, { op: 'status', status });
     a.status = status;
+    a.idleSince = this.time; // 휴게실에 간 때부터 퇴근 시간을 잰다 (앞쪽 하위 정리·중단 뒤 바로 퇴근하지 않게)
     a.restSince = this.time;
     a.nextIdleAt = this.time + this.idleDelay();
   }
@@ -256,7 +267,9 @@ export class OfficeEngine {
       if (a.assignment) lines.push(clip(a.assignment, 28));
       const activity = a.activity || (a.skill ? `${a.skill} 스킬 작업 중` : '맡은 작업 준비 중');
       if (!lines.length || lines[0] !== activity) lines.push(clip(activity, 36));
-      return { text: lines.join('\n'), kind: 'work', summary: true };
+      // 내용이 바뀐 직후에만 두 줄, 조금 지나면 한 줄 요약으로 줄여 말풍선이 계속 커지지 않게 한다.
+      const fresh = a.briefSince == null || !a.brief || this.time - a.briefSince < this.timing.briefBubbleMs;
+      return fresh ? { text: lines.join('\n'), kind: 'work', summary: true } : { text: a.brief, kind: 'work', summary: true, brief: true };
     }
     return a.bubble ? { text: a.bubble.text, kind: a.bubble.kind } : null;
   }
@@ -282,7 +295,7 @@ export class OfficeEngine {
     let s = this.sessions.get(sid);
     const label = meta.label || (ev.cwd ? `외부 · ${baseName(ev.cwd)}` : '외부 세션');
     if (!s) {
-      s = { id: sid, label, cli: normAgent(ev._cli), external: !meta.label, pending: [], typeCounts: {}, lastEventAt: this.time };
+      s = { id: sid, label, cli: normAgent(ev._cli), external: !meta.label, pending: [], typeCounts: {}, subLooks: new Map(), lastEventAt: this.time };
       this.sessions.set(sid, s);
     } else if (meta.label && s.label !== meta.label) {
       s.label = meta.label;
@@ -321,11 +334,17 @@ export class OfficeEngine {
     if (a && a.status !== 'leaving') return a;
     if (a) { this.agents.delete(key); this.releaseSeat(a); }
     const dt = displayType(type) || 'agent';
-    s.typeCounts[dt] = (s.typeCounts[dt] || 0) + 1;
-    const label = s.typeCounts[dt] > 1 ? `${dt} #${s.typeCounts[dt]}` : dt;
+    // 퇴근했다 같은 agent_id 로 다시 일하면 같은 이름·외형으로 다시 출근한다 (새 번호를 매기지 않는다).
+    const look = s.subLooks.get(agentId);
+    if (!look) s.typeCounts[dt] = (s.typeCounts[dt] || 0) + 1;
+    const label = look ? look.label : (s.typeCounts[dt] > 1 ? `${dt} #${s.typeCounts[dt]}` : dt);
     a = this.newAgent({ key, sessionId: s.id, cli: s.cli, isLead: false, type: type || 'agent', label, role: roleOf(type, this.roleOverrides) });
     a.name = dt;
+    if (look) { a.appearance = look.appearance; a.colorIndex = look.colorIndex; }
+    s.subLooks.delete(agentId); // 다시 출근하면 최근 기록으로 옮긴다 (leadLooks 와 같은 방식)
+    remember(s.subLooks, agentId, { label, appearance: a.appearance, colorIndex: a.colorIndex });
     a.status = 'working';
+    a.background = !this.turnActive(s); // onSubStart 가 Agent 호출 기록(pending)으로 다시 정한다
     a.lastEventAt = this.time;
     this.allocSeat(a, a.role); // 결과 공유가 곧바로 이 자리를 목적지로 쓸 수 있게 미리 잡는다
     a.queue.push({ op: 'goSeat', room: a.role });
@@ -348,6 +367,8 @@ export class OfficeEngine {
       task: '',
       bubble: null,
       finishedAt: null,
+      brief: null, // 말풍선 한 줄 요약
+      briefSince: null, // 지금 내용이 시작된 시각
       lastEventAt: this.time,
       idleSince: null,
       restSince: null,
@@ -364,14 +385,18 @@ export class OfficeEngine {
   }
 
   onPrompt(s, ev) {
+    this.finishForeground(s, { clearAlerts: true, keepRecent: true });
+    s.pending = []; // 거부·실패한 Agent 호출 기록이 다음 SubagentStart 에 잘못 붙지 않게
     const lead = this.ensureLead(s);
     this.finishSkill(lead);
     this.wake(lead);
-    lead.status = 'working';
+    // 결과 공유 연출 중이면 끝난 뒤 「작업 중」으로 돌아오게 예약만 한다 (앞 턴 Stop 이 남긴 「대기」 복귀가 새 턴을 덮지 않게).
+    if (lead.status === 'sharing') lead.returnStatus = 'working'; else lead.status = 'working';
     lead.workPose = 'type';
     lead.task = clip(ev.prompt, 60);
     lead.assignment = clip(ev.prompt, 28);
     lead.activity = '요청 내용을 확인 중';
+    this.setBrief(lead, '📥 요청 검토 중', true);
     this.say(lead, `📥 업무 접수: ${clip(ev.prompt, 18)}`, 'info', 5000);
     this.pushFeed(`${s.label}: 새 요청 — ${clip(ev.prompt, 40)}`);
   }
@@ -380,8 +405,11 @@ export class OfficeEngine {
     const tool = ev.tool_name;
     const input = ev.tool_input || {};
     const actor = ev.agent_id ? this.ensureSub(s, ev.agent_id, ev.agent_type) : this.ensureLead(s);
+    const wasWorking = actor.status === 'working';
     this.wake(actor);
     actor.activity = activitySummary(tool, input);
+    // 일하던 중이 아니었다면(대기 중이던 팀장 등) 새 업무처럼 다시 두 줄부터 보여 준다.
+    this.setBrief(actor, workBrief(tool, input), !wasWorking);
 
     if (tool === 'Skill' && input.skill && this.layout.rooms.skills) {
       this.interrupt(actor);
@@ -397,7 +425,7 @@ export class OfficeEngine {
     }
 
     if (!ev.agent_id && (tool === 'Agent' || tool === 'Task')) {
-      s.pending.push({ type: input.subagent_type || '', desc: input.description || '' });
+      s.pending.push({ type: input.subagent_type || '', desc: input.description || '', background: input.run_in_background === true || input.run_in_background === 'true' });
       if (s.pending.length > 20) s.pending.shift();
       actor.status = 'working';
       actor.workPose = 'talk';
@@ -425,6 +453,8 @@ export class OfficeEngine {
     a.task = p && p.desc ? clip(p.desc, 60) : `${dt || '에이전트'} 작업`;
     a.assignment = p && p.desc ? clip(p.desc, 28) : '';
     a.activity = '맡은 작업 준비 중';
+    this.setBrief(a, '🚶 작업 준비 중', true);
+    a.background = p ? !!p.background : !this.turnActive(s);
     a.status = 'working';
     this.say(a, `🚶 출근 · ${clip(a.task, 16)}`, 'info', 4000);
     this.pushFeed(`${s.label}: ${a.label} 시작 — ${a.task}`);
@@ -451,7 +481,7 @@ export class OfficeEngine {
     this.say(a, '📋 보고 중...', 'report', Infinity);
     a.queue.push(
       { op: 'goNear', key: lead.key, dx: 30, dy: 12 },
-      { op: 'say', text: '✔ 보고 완료', kind: 'done', ms: 2000 },
+      { op: 'say', text: '✅ 보고 완료', kind: 'done', ms: 2000 },
       { op: 'sayOther', key: lead.key, text: '👍 수고했어요', kind: 'info', ms: 2200 },
       { op: 'wait', ms: 1400 },
       { op: 'goSeat', room: 'rest' },
@@ -475,12 +505,31 @@ export class OfficeEngine {
       if (actor) this.finishSkill(actor);
       return;
     }
+    this.finishTurn(s, '✅ 답변 완료');
+  }
+
+  // 협업 중 AI 가 오류·중단으로 끝나면 Stop hook 이 오지 않는다 — app.js 가 알려 주면 Stop 과 똑같이 작업을 끝낸다 (말풍선만 text).
+  // 살아 있는 세션의 팀장이 있을 때만 한다 (퇴근했거나 끝난 세션이면 무시).
+  settle(sessionId, text) {
+    this.sync(); // app.js 가 직접 부르므로 창이 멈춰 있던 동안의 시간도 반영한다
+    if (!this.isLive(sessionId)) return;
+    const s = this.sessions.get(sessionId);
+    const lead = this.agents.get(`${sessionId}:lead`);
+    if (!lead || lead.status === 'leaving') { this.finishForeground(s); return; } // 팀장이 이미 떠났어도 앞쪽 하위는 정리한다
+    this.finishTurn(s, text);
+  }
+
+  // 메인 턴을 끝낸다 (Stop · settle 공통): 앞쪽 하위 정리, 팀장은 대기로. 퇴근 시간은 지금부터 잰다.
+  finishTurn(s, text) {
+    s.lastEventAt = this.time;
+    this.finishForeground(s);
     const lead = this.ensureLead(s);
+    lead.lastEventAt = this.time;
     this.finishSkill(lead);
     // 결과 공유 연출 중이면 끝난 뒤 「대기」로 돌아가게 예약한다.
     if (lead.status === 'sharing') lead.returnStatus = 'idle'; else lead.status = 'idle';
     lead.task = '다음 요청 대기 중';
-    this.say(lead, '✅ 답변 완료', 'done', 6000);
+    this.say(lead, text, 'done', 6000);
   }
 
   finishSkill(a) {
@@ -494,6 +543,43 @@ export class OfficeEngine {
     const room = a.isLead ? 'lead' : a.role;
     this.allocSeat(a, room);
     a.queue.push({ op: 'goSeat', room });
+  }
+
+  // 팀장의 턴이 진행 중인가 — 이때 시작한 하위 에이전트는 앞쪽(포그라운드), 턴이 끝난 뒤에 시작·활동하면 백그라운드로 본다.
+  turnActive(s) {
+    const lead = this.agents.get(`${s.id}:lead`);
+    if (!lead) return false;
+    if (lead.status === 'sharing') return lead.returnStatus !== 'idle'; // 턴이 끝난 뒤(Stop) 공유 연출 중이면 아니다
+    return lead.status === 'working';
+  }
+
+  // 메인 턴이 끝났는데(Stop) 또는 새 요청이 왔는데 SubagentStop 을 못 받은 앞쪽(포그라운드) 하위 에이전트를 휴게실로 보낸다.
+  // 사용자 중단(Esc)이면 Claude 는 Stop 도 보내지 않으므로 다음 요청에서 정리한다 (clearAlerts: 중단된 확인 요청 말풍선도 지운다).
+  // keepRecent: 새 요청 때 방금까지 신호를 보내던(promptKeepMs 안) 하위는 답하는 중 보낸 메시지일 수 있어 그대로 둔다 (확인 요청이 떠 있었다면 중단으로 본다).
+  finishForeground(s, { clearAlerts = false, keepRecent = false } = {}) {
+    for (const a of this.agents.values()) {
+      if (a.sessionId !== s.id || a.isLead || a.background === true) continue;
+      if (a.status === 'sharing' && a.finishedAt == null) {
+        // 결과 공유 연출은 끝까지 보여 주고, 돌아올 때 자리 대신 휴게실로 보낸다.
+        a.returnStatus = 'resting';
+        a.skill = null;
+        a.task = '작업 종료 · 휴식';
+        for (const op of a.queue) if (op.op === 'goSeat') op.room = 'rest';
+      } else if (a.status === 'working') {
+        const alerting = !!(a.bubble && a.bubble.kind === 'alert');
+        if (keepRecent && !alerting && this.time - a.lastEventAt < this.timing.promptKeepMs) continue;
+        if (clearAlerts && alerting) a.bubble = null;
+        if (this.waitingOnUser(a)) continue;
+        if (a.bubble && a.bubble.kind === 'alert') a.bubble = null; // 정리되는 하위의 비차단 알림 말풍선은 남기지 않는다
+        this.interrupt(a);
+        a.skill = null;
+        a.finishedAt = null; // 「결과 공유」 연출의 donor 가 되지 않게
+        a.task = '작업 종료 · 휴식';
+        a.activity = '';
+        a.brief = null;
+        this.rest(a);
+      }
+    }
   }
 
   findByName(s, name, except) {
@@ -535,6 +621,7 @@ export class OfficeEngine {
       a.queue.push({ op: 'goSeat', room: home });
       a.status = status;
       a.finishedAt = null;
+      a.brief = null; // 돌아오면 다시 두 줄로 시작
       return;
     }
     if (a.bubble && a.bubble.kind === 'alert') a.bubble = null;
@@ -544,6 +631,12 @@ export class OfficeEngine {
     a.path = [];
     a.queue = [];
     a.waitUntil = 0;
+  }
+
+  // 작업 말풍선의 한 줄 요약(종류)이 바뀌거나 새 업무를 받으면(force) 다시 두 줄로 펼친다.
+  // 같은 종류 도구를 연달아 써도(파일만 바뀜) 펼치지 않는다 — 말풍선이 계속 커지는 것을 막으려는 것.
+  setBrief(a, brief, force = false) {
+    if (force || a.brief !== brief) { a.brief = brief; a.briefSince = this.time; }
   }
 
   say(a, text, kind = 'info', ms = this.timing.bubbleMs) {
@@ -655,7 +748,11 @@ export class OfficeEngine {
       }
       case 'wait': a.waitUntil = this.time + op.ms; break;
       case 'status':
-        if (op.status === '@return') { a.status = a.returnStatus || 'working'; a.returnStatus = null; break; }
+        if (op.status === '@return') {
+          a.status = a.returnStatus || 'working'; a.returnStatus = null;
+          if (a.status === 'resting') { a.restSince = this.time; a.nextIdleAt = this.time + this.idleDelay(); } // rest() 와 같은 값
+          break;
+        }
         a.status = op.status;
         if (op.status === 'resting') { a.restSince = this.time; a.nextIdleAt = this.time + this.idleDelay(); }
         break;

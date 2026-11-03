@@ -14,6 +14,8 @@ export function patchFile(input) {
   return input.file_path || String(input.command || '').match(/\*\*\* (?:Update|Add|Delete) File: (.+)/)?.[1]?.trim() || '';
 }
 
+const TEST_COMMAND = /\b(npm (run )?test|pytest|gradlew?\S* .*test|dotnet test|node --test)\b/i;
+
 // A short, deterministic summary from observed tool metadata; no extra model call.
 export function activitySummary(name, input = {}) {
   const file = clip(baseName(name === 'apply_patch' ? patchFile(input) : input.file_path || input.notebook_path), 22);
@@ -29,12 +31,30 @@ export function activitySummary(name, input = {}) {
     case 'SendMessage': return `${clip(input.to || '동료', 18)}에게 결과 공유 중`;
     case 'Bash': case 'PowerShell':
       if (input.description) return clip(input.description, 36);
-      if (/\b(npm (run )?test|pytest|gradlew?\S* .*test|dotnet test|node --test)\b/i.test(input.command || '')) return '테스트 실행 중';
+      if (TEST_COMMAND.test(input.command || '')) return '테스트 실행 중';
       if (/\bgit\s+(status|diff|log)\b/.test(input.command || '')) return '변경 내역 확인 중';
       return `${clip(input.command || '명령', 27)} 실행 중`;
     case 'TodoWrite': case 'TaskCreate': case 'TaskUpdate': return '작업 순서와 진행 상황 정리 중';
     case 'AskUserQuestion': return '사용자에게 확인할 내용 정리 중';
     default: return `${clip(String(name || '도구').split('__').pop(), 25)} 사용 중`;
+  }
+}
+
+// 말풍선을 한 줄로 줄일 때 쓰는 도구 종류별 요약 (파일명·명령은 빼고 무슨 일인지만).
+export function workBrief(name, input = {}) {
+  switch (name) {
+    case 'Read': return '📖 자료 검토 중';
+    case 'Grep': case 'Glob': case 'LS': return '🔍 코드 찾는 중';
+    case 'WebSearch': case 'WebFetch': return '🌐 자료 조사 중';
+    case 'Edit': case 'MultiEdit': case 'apply_patch': case 'NotebookEdit': return '⌨ 코드 수정 중';
+    case 'Write': return '📝 파일 작성 중';
+    case 'Bash': case 'PowerShell': return TEST_COMMAND.test(input?.command || '') ? '🧪 테스트 실행 중' : '명령 실행 중 ▶️';
+    case 'Skill': return '🧩 스킬 작업 중';
+    case 'Agent': case 'Task': return '📣 업무 지시 중';
+    case 'SendMessage': return '💬 결과 공유 중';
+    case 'TodoWrite': case 'TaskCreate': case 'TaskUpdate': return '🗒 작업 정리 중';
+    case 'AskUserQuestion': return '❓ 확인 요청 중';
+    default: return typeof name === 'string' && name.startsWith('mcp__') ? '🔌 도구 사용 중' : '⚙ 작업 중';
   }
 }
 

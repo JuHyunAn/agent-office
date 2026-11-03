@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
@@ -9,14 +9,20 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const { flatten, parseUsage, resetToEpoch, projectDirName, deleteSessionFile } = require('../src/main/claudeUsage.cjs');
-const { createUsageService, readRolloutTail } = require('../src/main/usage.cjs');
+const { createUsageService, createUsageLocator, readRolloutTail, parseGrokUsage, parseMuseUsage, fmtTokens } = require('../src/main/usage.cjs');
 const codexCli = require('../src/main/codexCli.cjs');
 const claudeCli = require('../src/main/claudeCli.cjs');
 const { startHookServer } = require('../src/main/hookServer.cjs');
 
 const SEOUL = 'Asia/Seoul';
 const local = (y, m, d, h = 0, min = 0) => new Date(y, m - 1, d, h, min, 0, 0).getTime();
-const tmp = (name) => fs.mkdtempSync(path.join(os.tmpdir(), `ao-usage-${name}-`));
+const made = []; // tmp() 가 만든 폴더 — 파일 끝에서 모두 지운다
+const tmp = (name) => { const dir = fs.mkdtempSync(path.join(os.tmpdir(), `ao-usage-${name}-`)); made.push(dir); return dir; };
+after(() => {
+  for (const dir of made) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* Windows 에서 잠겨 있으면(EBUSY·EPERM) 다음 정리에 맡긴다 */ }
+  }
+});
 
 // ---------------------------------------------------------------------------------------------
 // 화면 읽기 (순수 함수)
@@ -921,4 +927,371 @@ test('상태 표시줄 중계: 앱 서버가 없거나 토큰이 틀려도 사�
   } finally {
     server.close();
   }
+});
+
+// ---------------------------------------------------------------------------------------------
+// 모든 AI 사용량 (Grok·Muse·Antigravity) — 실제 CLI 는 실행하지 않고 가짜 runCli·locate 를 넣는다
+
+const GROK_SID = '0198a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b';
+const GROK_SID2 = '0198a1b2-c3d4-7e5f-8a9b-ffffffffffff';
+const tick = () => new Promise((r) => setImmediate(r));
+// 실측한 모양(session 필드)의 `grok usage` 출력: 22864 토큰 · 433600000 ticks
+const grokJson = (over = {}) => JSON.stringify({
+  sessionId: GROK_SID, updatedAt: '2026-11-03T00:00:00Z',
+  session: { inputTokens: 20000, outputTokens: 2864, cachedReadTokens: 0, totalTokens: 22864, modelCalls: 3, costUsdTicks: 433600000, turnCount: 2, primaryModelId: 'grok-build', modelUsage: {}, ...over },
+  turns: [],
+});
+const grokStop = (sid = GROK_SID, extra = {}) => ({ session_id: sid, hook_event_name: 'Stop', _cli: 'grok', _tab: 'tab5', ...extra });
+// reply(args, loc) → { code, stdout, stderr } 로 답하는 가짜 runCli. cli 에 호출 기록이 쌓인다.
+function cliStub(reply) {
+  const cli = [];
+  return { cli, runCli: async (loc, args, ms) => { cli.push({ loc, args, ms }); return reply(args, loc); } };
+}
+const ok = (stdout) => ({ code: 0, stdout, stderr: '' });
+const fire1s = (live) => live().find((x) => x.ms === 1000).fn();
+
+test('스냅샷: grok·muse·antigravity 칸이 claude·codex 뒤에 있고, 가짜 옵션이 없으면 비어 있다', async () => {
+  const { svc } = makeService();
+  const s = svc.snapshot();
+  assert.deepEqual(Object.keys(s), ['claude', 'codex', 'grok', 'muse', 'antigravity', 'session', 'refresh']);
+  for (const k of ['grok', 'muse', 'antigravity']) assert.deepEqual(s[k], { rows: [], error: null, updatedAt: null }, k);
+  await svc.refresh({ manual: true }); // locate 옵션이 없으면 읽지 않고 칸도 비어 있다
+  for (const k of ['grok', 'muse', 'antigravity']) assert.deepEqual(svc.snapshot()[k], { rows: [], error: null, updatedAt: null }, k);
+});
+
+test('Grok: 앱 탭의 Stop 을 1초 디바운스해 `grok usage <세션>` 을 읽고 토큰·비용 줄을 만든다', async () => {
+  const { cli, runCli } = cliStub(() => ok(grokJson()));
+  const { svc, clock, live } = makeService({ locateGrok: () => ({ file: 'grok' }), runCli });
+  svc.onHookEvent(grokStop());
+  svc.onHookEvent(grokStop());
+  assert.equal(live().filter((x) => x.ms === 1000).length, 1, '디바운스 — 마지막 이벤트 하나만 남는다');
+  assert.equal(cli.length, 0);
+  const stopAt = clock.t;
+  clock.t += 5000;
+  fire1s(live);
+  await tick();
+  assert.deepEqual(cli.map((c) => [c.loc.file, c.args, c.ms]), [['grok', ['usage', GROK_SID], 15000]]);
+  const g = svc.snapshot().grok;
+  assert.deepEqual(g.rows.map((r) => [r.id, r.label, r.percent, r.valueText, r.observedAt]), [
+    ['session', '이번 세션', null, '토큰 22.9k · $0.04', stopAt], ['calls', '모델 호출', null, '3회 · 2턴', stopAt]]);
+  assert.ok(g.rows.every((r) => r.resetsAt === null && r.resetsText === null && !('source' in r)));
+  assert.equal(g.error, null);
+  assert.equal(g.updatedAt, stopAt, '갱신 시각은 Stop 을 받은 시각');
+  assert.deepEqual(svc.snapshot().claude.rows, [], 'Claude 칸은 건드리지 않는다');
+});
+
+test('Grok: 앱 밖 세션(_tab 없음)·잘못된 세션 ID·Stop 이 아닌 이벤트는 읽지 않는다', async () => {
+  const { cli, runCli } = cliStub(() => ok(grokJson()));
+  const { svc, live } = makeService({ locateGrok: () => ({ file: 'grok' }), runCli });
+  svc.onHookEvent(grokStop(GROK_SID, { _tab: undefined })); // 앱 밖 Grok 세션
+  svc.onHookEvent(grokStop('not-a-uuid'));
+  svc.onHookEvent(grokStop('../../etc/passwd-0000000000000000000'));
+  svc.onHookEvent(grokStop(GROK_SID, { hook_event_name: 'UserPromptSubmit' }));
+  svc.onHookEvent(grokStop(GROK_SID, { hook_event_name: 'PreToolUse' }));
+  assert.equal(live().filter((x) => x.ms === 1000).length, 0);
+  await tick();
+  assert.equal(cli.length, 0);
+});
+
+test('Grok: 늦게 끝난 옛 읽기가 새 값을 덮지 않는다 (Stop 시각이 관측 시각)', async () => {
+  const gates = {};
+  const { svc, clock, live } = makeService({
+    locateGrok: () => ({ file: 'grok' }),
+    runCli: (loc, args) => new Promise((resolve) => { gates[args[1]] = resolve; }),
+  });
+  svc.onHookEvent(grokStop(GROK_SID)); // 옛 Stop
+  fire1s(live);
+  await tick();
+  clock.t += 5000;
+  svc.onHookEvent(grokStop(GROK_SID2)); // 새 Stop
+  fire1s(live);
+  await tick();
+  gates[GROK_SID2](ok(grokJson({ totalTokens: 2000 })));
+  await tick();
+  assert.equal(svc.snapshot().grok.rows[0].valueText, '토큰 2.0k · $0.04');
+  gates[GROK_SID](ok(grokJson({ totalTokens: 1000 }))); // 옛 읽기가 나중에 끝남
+  await tick();
+  assert.equal(svc.snapshot().grok.rows[0].valueText, '토큰 2.0k · $0.04', '옛 값은 덮지 못한다');
+});
+
+test('Grok: 읽기 실패(설치 없음·종료 코드·JSON 아님·형식 다름)는 오류만 채우고 기존 값은 유지, 다음 성공이 오류를 지운다', async () => {
+  let mode = 'ok';
+  const { runCli } = cliStub(() => (mode === 'ok' ? ok(grokJson()) : mode === 'exit' ? { code: 1, stdout: '', stderr: 'boom' } : mode === 'text' ? ok('no json') : mode === 'shape' ? ok('{"session":{}}') : mode === 'throw' ? Promise.reject(new Error('x')) : ok('')));
+  let located = true;
+  const { svc, clock, live } = makeService({ locateGrok: () => (located ? { file: 'grok' } : null), runCli });
+  const stopAndRead = async () => { clock.t += 1000; svc.onHookEvent(grokStop()); fire1s(live); await tick(); };
+  await stopAndRead();
+  assert.equal(svc.snapshot().grok.error, null);
+  for (const m of ['exit', 'text', 'shape', 'throw']) {
+    mode = m;
+    await stopAndRead();
+    const g = svc.snapshot().grok;
+    assert.equal(g.error, 'Grok 사용량을 읽지 못했습니다', m);
+    assert.equal(g.rows[0].valueText, '토큰 22.9k · $0.04', `${m}: 기존 값 유지`);
+  }
+  located = false;
+  await stopAndRead();
+  assert.equal(svc.snapshot().grok.error, 'Grok 사용량을 읽지 못했습니다', '설치 없음');
+  located = true;
+  mode = 'ok';
+  await stopAndRead();
+  assert.equal(svc.snapshot().grok.error, null);
+});
+
+test('Grok: SessionEnd 는 그 세션의 대기 중인 읽기를 지우고, dispose 뒤 늦게 온 결과는 버린다', async () => {
+  let gate;
+  const { svc, live, changes } = makeService({ locateGrok: () => ({ file: 'grok' }), runCli: () => new Promise((r) => { gate = r; }) });
+  svc.onHookEvent(grokStop());
+  assert.equal(live().filter((x) => x.ms === 1000).length, 1);
+  svc.onHookEvent({ session_id: GROK_SID, hook_event_name: 'SessionEnd', _cli: 'grok', _tab: 'tab5' });
+  assert.equal(live().filter((x) => x.ms === 1000).length, 0, 'SessionEnd 가 디바운스 타이머를 지운다');
+  svc.onHookEvent(grokStop(GROK_SID2));
+  fire1s(live);
+  await tick();
+  const n = changes.length;
+  svc.dispose();
+  gate(ok(grokJson()));
+  await tick();
+  assert.deepEqual(svc.snapshot().grok.rows, []);
+  assert.equal(changes.length, n, 'dispose 뒤에는 알리지 않는다');
+  const again = makeService({ locateGrok: () => ({ file: 'grok' }), runCli: async () => ok(grokJson()) });
+  again.svc.onHookEvent(grokStop());
+  again.svc.dispose();
+  assert.ok(again.timers.every((t) => t.cancelled), 'dispose 가 Grok 디바운스 타이머도 취소');
+});
+
+test('Muse: 로그인이 안 됐으면 줄을 비우고 안내, 그 밖의 실패는 값을 유지한 채 오류', async () => {
+  let reply = ok(JSON.stringify({ windows: [{ name: '5시간', used_percent: 30 }] }));
+  const { cli, runCli } = cliStub(() => reply);
+  const { svc, clock } = makeService({ locateMuse: () => ({ file: 'muse' }), runCli });
+  await svc.refresh({ manual: true });
+  assert.deepEqual(cli.map((c) => [c.args, c.ms]), [[['usage', '--json'], 15000]]);
+  assert.equal(svc.snapshot().muse.rows.length, 1);
+  clock.t += 6 * 60 * 1000;
+  reply = { code: 1, stdout: '', stderr: 'not logged in: run `muse login` first' };
+  await svc.refresh({ manual: true });
+  assert.deepEqual(svc.snapshot().muse, { rows: [], error: 'Muse 로그인 필요 (구독 계정)', updatedAt: null });
+  reply = ok(JSON.stringify({ windows: [{ name: '5시간', used_percent: 30 }] }));
+  clock.t += 6 * 60 * 1000;
+  await svc.refresh({ manual: true });
+  assert.equal(svc.snapshot().muse.error, null);
+  clock.t += 6 * 60 * 1000;
+  reply = { code: 2, stdout: '', stderr: 'unexpected failure' };
+  await svc.refresh({ manual: true });
+  assert.equal(svc.snapshot().muse.error, 'Muse 사용량을 읽지 못했습니다');
+  assert.equal(svc.snapshot().muse.rows.length, 1, '값 유지');
+  clock.t += 6 * 60 * 1000;
+  reply = { code: 1, stdout: 'Subscribe to a plan', stderr: '' }; // stdout 쪽 문구도 본다
+  await svc.refresh({ manual: true });
+  assert.equal(svc.snapshot().muse.error, 'Muse 로그인 필요 (구독 계정)');
+  clock.t += 6 * 60 * 1000;
+  reply = ok('not json');
+  await svc.refresh({ manual: true });
+  assert.equal(svc.snapshot().muse.error, 'Muse 사용량 형식을 읽지 못했습니다');
+  clock.t += 6 * 60 * 1000;
+  reply = ok('{"hello":"world"}');
+  await svc.refresh({ manual: true });
+  assert.equal(svc.snapshot().muse.error, 'Muse 사용량 형식을 읽지 못했습니다', 'JSON 이지만 사용률을 못 찾음');
+  clock.t += 6 * 60 * 1000;
+  reply = ok(JSON.stringify({ windows: [{ name: 'subscribe', percent: 10 }] })); // 정상 JSON 이면 문구가 들어 있어도 로그인 검사를 하지 않는다
+  await svc.refresh({ manual: true });
+  assert.deepEqual([svc.snapshot().muse.error, svc.snapshot().muse.rows.length], [null, 1]);
+});
+
+test('Muse: 사용률 키(초 단위 리셋)와 used·limit 쌍, 두 가지 JSON 형태를 줄로 만든다', async () => {
+  const future = Math.floor(local(2026, 10, 29, 18, 0) / 1000);
+  const shapes = [
+    { windows: [{ name: '5h', used_percent: 42.4, resets_at: future }], weekly: { percent: 0.5, resetsAt: '2026-11-01T00:00:00Z' } },
+    { allowance: { used: 30, limit: 120 } },
+  ];
+  let i = 0;
+  const { runCli } = cliStub(() => ok(JSON.stringify(shapes[i])));
+  const { svc, clock } = makeService({ locateMuse: () => ({ file: 'muse' }), runCli });
+  await svc.refresh({ manual: true });
+  const rows = Object.fromEntries(svc.snapshot().muse.rows.map((r) => [r.id, r]));
+  assert.deepEqual(Object.keys(rows).sort(), ['muse:5h', 'muse:weekly']);
+  assert.deepEqual([rows['muse:5h'].label, rows['muse:5h'].percent, rows['muse:5h'].resetsAt], ['5h', 42, future * 1000]);
+  assert.deepEqual([rows['muse:weekly'].label, rows['muse:weekly'].percent, rows['muse:weekly'].resetsAt], ['weekly', 50, Date.parse('2026-11-01T00:00:00Z')]);
+  assert.equal(svc.snapshot().muse.updatedAt, clock.t);
+  i = 1;
+  clock.t += 6 * 60 * 1000;
+  await svc.refresh({ manual: true });
+  assert.deepEqual(svc.snapshot().muse.rows.map((r) => [r.id, r.label, r.percent]), [['muse:allowance', 'allowance', 25]], '예전 줄은 남기지 않는다');
+});
+
+test('Muse: 자동 갱신은 직전 실행 뒤 Muse 활동이 있었을 때만, 수동은 설치돼 있으면 항상', async () => {
+  const { cli, runCli } = cliStub(() => ok(JSON.stringify({ windows: [{ name: '5h', percent: 10 }] })));
+  const { svc, clock, live } = makeService({ locateMuse: () => ({ file: 'muse' }), runCli });
+  await live()[0].fn();
+  assert.equal(cli.length, 0, 'Muse 를 쓴 적이 없으면 첫 자동 갱신에도 읽지 않는다');
+  svc.onHookEvent({ session_id: 'm1', hook_event_name: 'UserPromptSubmit', _cli: 'muse', _tab: 'tab6' });
+  clock.t += 3600000;
+  await live()[0].fn();
+  assert.equal(cli.length, 1, 'Muse 활동 뒤에는 읽는다');
+  clock.t += 3600000;
+  await live()[0].fn();
+  assert.equal(cli.length, 1, '그 뒤 활동이 없으면 다음 주기엔 읽지 않는다');
+  clock.t += 1000;
+  svc.onHookEvent({ session_id: 'm1', hook_event_name: 'PreToolUse', _cli: 'muse', _tab: 'tab6' });
+  clock.t += 3600000;
+  await live()[0].fn();
+  assert.equal(cli.length, 2);
+  clock.t += 3600000;
+  await svc.refresh({ manual: true });
+  assert.equal(cli.length, 3, '수동은 활동과 무관');
+  const none = makeService({ locateMuse: () => null, runCli });
+  await none.svc.refresh({ manual: true });
+  assert.deepEqual(none.svc.snapshot().muse, { rows: [], error: null, updatedAt: null }, '설치 안 됨 — 칸을 숨긴다');
+  assert.equal(cli.length, 3);
+});
+
+test('Antigravity: 협업 턴 usage 를 누적해 한 줄로 보이고, 설치만 됐을 때는 안내 문구', async () => {
+  const { svc, clock, changes } = makeService({ locateAntigravity: () => ({ file: 'agy' }) });
+  await svc.refresh({ manual: true });
+  assert.deepEqual(svc.snapshot().antigravity, { rows: [], error: '사용량 조회 명령 없음 · 협업 대화 토큰만 표시', updatedAt: null });
+  svc.addTurnUsage('antigravity', { input_tokens: 900, output_tokens: 200, thinking_tokens: 100, cache_read_tokens: 50, total_tokens: 1200 });
+  svc.addTurnUsage('antigravity', { total_tokens: 800 });
+  let a = svc.snapshot().antigravity;
+  assert.deepEqual(a.rows.map((r) => [r.id, r.label, r.percent, r.valueText]), [['collab', '협업 대화', null, '토큰 2.0k · 2턴']]);
+  assert.equal(a.error, null, '누적이 생기면 안내를 지운다');
+  assert.equal(a.updatedAt, clock.t);
+  svc.addTurnUsage('antigravity', { input_tokens: 10, output_tokens: 5, thinking_tokens: 5 }); // total_tokens 가 없으면 세 값의 합
+  assert.equal(svc.snapshot().antigravity.rows[0].valueText, '토큰 2.0k · 3턴');
+  svc.addTurnUsage('antigravity', { total_tokens: 998000 });
+  assert.equal(svc.snapshot().antigravity.rows[0].valueText, '토큰 1.0M · 4턴');
+  const n = changes.length;
+  svc.addTurnUsage('claude', { total_tokens: 5 }); // 다른 AI·이상한 값은 무시
+  svc.addTurnUsage('antigravity', null);
+  svc.addTurnUsage('antigravity', 'x');
+  assert.equal(changes.length, n);
+  clock.t += 6 * 60 * 1000;
+  await svc.refresh({ manual: true });
+  assert.equal(svc.snapshot().antigravity.error, null, '누적이 있으면 갱신해도 안내가 돌아오지 않는다');
+  const none = makeService({ locateAntigravity: () => null });
+  await none.svc.refresh({ manual: true });
+  assert.deepEqual(none.svc.snapshot().antigravity, { rows: [], error: null, updatedAt: null }, '설치 안 됨 — 칸을 숨긴다');
+  const disposed = makeService();
+  disposed.svc.dispose();
+  disposed.svc.addTurnUsage('antigravity', { total_tokens: 5 });
+  assert.deepEqual(disposed.svc.snapshot().antigravity.rows, []);
+});
+
+test('hook: UserPromptSubmit 이 모든 AI 의 세션 요청 수를 세고, focus kind 가 AI 면 세션 줄 (컨텍스트는 모름)', () => {
+  const { svc } = makeService();
+  for (const cli of ['grok', 'muse', 'antigravity', 'claude', 'codex']) {
+    const tab = `tab-${cli}`;
+    svc.setFocus({ tabId: tab, kind: cli, label: `${cli} 작업` });
+    assert.equal(svc.snapshot().session, null, `${cli}: 세션이 아직 없음`);
+    const ev = (name) => ({ session_id: `s-${cli}`, hook_event_name: name, _cli: cli, _tab: tab });
+    svc.onHookEvent(ev('SessionStart'));
+    svc.onHookEvent(ev('UserPromptSubmit'));
+    svc.onHookEvent(ev('PreToolUse'));
+    svc.onHookEvent(ev('UserPromptSubmit'));
+    assert.deepEqual(svc.snapshot().session, { kind: cli, label: `${cli} 작업`, requests: 2, contextPercent: null }, cli);
+  }
+  svc.setFocus({ tabId: 'tab-grok', kind: 'collab', label: '협업' });
+  assert.equal(svc.snapshot().session, null, '협업 탭');
+  svc.setFocus({ tabId: 'tab-grok', kind: 'gemini', label: '모르는 AI' });
+  assert.equal(svc.snapshot().session, null, '모르는 종류');
+  svc.onHookEvent({ session_id: 'x1', hook_event_name: 'UserPromptSubmit', _cli: 'gemini', _tab: 'tab-x' });
+  svc.setFocus({ tabId: 'tab-x', kind: 'claude', label: 'X' });
+  assert.equal(svc.snapshot().session, null, '모르는 AI 의 활동은 세션으로 세지 않는다');
+});
+
+test('hook: Grok·Muse 활동은 Claude 자동 /usage 읽기와 Codex 롤아웃 읽기를 부르지 않는다', async () => {
+  const { svc, clock, live, calls } = makeService();
+  await live()[0].fn();
+  assert.equal(calls.claude.length, 1);
+  clock.t += 3600000;
+  svc.onHookEvent({ session_id: GROK_SID, hook_event_name: 'UserPromptSubmit', _cli: 'grok', _tab: 'tab5' });
+  svc.onHookEvent({ session_id: 'm1', hook_event_name: 'Stop', _cli: 'muse', _tab: 'tab6' }, { transcriptPath: 'C:\\m.jsonl' });
+  svc.onHookEvent({ session_id: 'a1', hook_event_name: 'Stop', _cli: 'antigravity', _tab: 'tab7' }, { transcriptPath: 'C:\\a.jsonl' });
+  assert.equal(live().filter((x) => x.ms === 1000).length, 0, '롤아웃 디바운스는 Codex 만');
+  await live()[0].fn();
+  assert.equal(calls.claude.length, 1, 'Claude 활동이 아니다');
+  assert.equal(calls.rollout.length, 0);
+});
+
+test('fmtTokens: 1000 미만은 정수, k·M 은 소수 한 자리 (경계: 999 → 999, 1000 → 1.0k, 999999 → 1.0M)', () => {
+  const t = [[0, '0'], [7, '7'], [999, '999'], [1000, '1.0k'], [1234, '1.2k'], [22864, '22.9k'], [999949, '999.9k'], [999950, '1.0M'], [999999, '1.0M'], [1e6, '1.0M'], [1234567, '1.2M']];
+  for (const [n, want] of t) assert.equal(fmtTokens(n), want, String(n));
+  for (const bad of [NaN, -5, Infinity, undefined, null, '12']) assert.equal(fmtTokens(bad), '0', String(bad));
+});
+
+test('parseGrokUsage: 세션 토큰·비용과 호출·턴 줄, 비용은 ticks/1e10 의 소수 둘째 자리(0.005 미만은 <0.01), 형식이 다르면 null', () => {
+  const rows = parseGrokUsage(JSON.parse(grokJson()), 42);
+  assert.deepEqual(rows, [
+    { id: 'session', label: '이번 세션', percent: null, resetsAt: null, resetsText: null, valueText: '토큰 22.9k · $0.04', observedAt: 42 },
+    { id: 'calls', label: '모델 호출', percent: null, resetsAt: null, resetsText: null, valueText: '3회 · 2턴', observedAt: 42 }]);
+  const text = (over) => parseGrokUsage(JSON.parse(grokJson(over)), 1)[0].valueText;
+  assert.equal(text({ costUsdTicks: 12345 }), '토큰 22.9k · $<0.01');
+  assert.equal(text({ costUsdTicks: 5e7 }), '토큰 22.9k · $0.01', '0.005 는 올림');
+  assert.equal(text({ costUsdTicks: 12.5e10 }), '토큰 22.9k · $12.50');
+  assert.equal(text({ costUsdTicks: undefined }), '토큰 22.9k', '비용을 모르면 생략');
+  assert.equal(text({ costUsdTicks: 'x' }), '토큰 22.9k');
+  assert.equal(parseGrokUsage(JSON.parse(grokJson({ modelCalls: undefined, turnCount: undefined })), 1)[1].valueText, '0회 · 0턴');
+  for (const bad of [null, undefined, 5, 'x', [], {}, { session: null }, { session: {} }, { session: { totalTokens: '5' } }]) assert.equal(parseGrokUsage(bad, 1), null, JSON.stringify(bad));
+});
+
+test('parseMuseUsage: 사용률 키·이름 키·리셋 키 변형, 0~1 비율, 중첩(깊이 4)·배열, 최대 6줄, 쌍 계산은 사용률 키가 없을 때만', () => {
+  const sec = 1793000000;
+  const one = (o) => parseMuseUsage(o, 9);
+  for (const key of ['used_percent', 'usage_percent', 'percent_used', 'percent', 'utilization', 'usedPercent', 'usagePercent']) {
+    assert.equal(one({ plan: { [key]: 33.4 } })[0].percent, 33, key);
+  }
+  assert.deepEqual(one({ a: { percent: 1 } })[0].percent, 100, '1 이하는 비율');
+  assert.deepEqual(one({ a: { percent: 0.375 } })[0].percent, 38);
+  assert.deepEqual(one({ a: { percent: 150 } })[0].percent, 100, '범위를 넘으면 100');
+  for (const key of ['name', 'label', 'window', 'period', 'type']) assert.equal(one({ x: { [key]: '주간 한도', percent: 5 } })[0].label, '주간 한도', key);
+  assert.equal(one({ x: { percent: 5 } })[0].label, 'x', '이름이 없으면 키 이름');
+  assert.equal(one({ percent: 5 })[0].label, 'Muse', '키도 없으면 Muse');
+  assert.equal(one([{ percent: 5 }])[0].label, 'Muse', '배열 칸 번호는 이름이 아니다');
+  assert.equal(one({ x: { percent: 5 } })[0].id, 'muse:x');
+  assert.equal(one({ x: { name: 'Weekly Limit', percent: 5 } })[0].id, 'muse:weekly limit', '소문자');
+  const reset = (extra) => one({ x: { percent: 5, ...extra } })[0].resetsAt;
+  for (const key of ['resets_at', 'reset_at', 'resetsAt', 'resetAt']) assert.equal(reset({ [key]: sec }), sec * 1000, key);
+  assert.equal(reset({ resets_at: sec * 1000 }), sec * 1000, '밀리초');
+  assert.equal(reset({ resets_at: String(sec) }), sec * 1000, '문자열 숫자');
+  assert.equal(reset({ resets_at: '2026-11-01T00:00:00Z' }), Date.parse('2026-11-01T00:00:00Z'), 'ISO');
+  assert.equal(reset({ resets_at: 'soon' }), null);
+  assert.equal(reset({}), null);
+  assert.deepEqual(one({ a: { b: { c: { d: { percent: 5 } } } } }).length, 1, '깊이 4');
+  assert.deepEqual(one({ a: { b: { c: { d: { e: { percent: 5 } } } } } }), [], '깊이 5 는 보지 않는다');
+  assert.equal(parseMuseUsage({ rows: Array.from({ length: 9 }, (_, i) => ({ name: `n${i}`, percent: i })) }, 9).length, 6, '최대 6줄');
+  assert.deepEqual(one({ a: { used: 5, limit: 20 }, b: { usage: 1, allowance: 4 }, c: { used: 1, limit: 0 } }).map((r) => [r.label, r.percent]), [['a', 25], ['b', 25]], 'limit 0 은 계산하지 않는다');
+  assert.deepEqual(one({ a: { used: 5, limit: 20 }, b: { percent: 70 } }).map((r) => [r.label, r.percent]), [['b', 70]], '사용률 키가 있으면 쌍은 보지 않는다');
+  for (const bad of [null, undefined, 5, 'x', [], {}, { a: { percent: 'x' } }]) assert.deepEqual(one(bad), [], JSON.stringify(bad));
+});
+
+test('createUsageLocator: 설치되지 않은 결과는 5분 기억해 다시 찾지 않고, 탭이 위치를 알려 주면 그 값을 먼저 쓴다', async () => {
+  const locs = new Map(); let t = 0; let finds = 0; let installed = null;
+  const locate = createUsageLocator({
+    get: (id) => locs.get(id) || null, set: (id, v) => locs.set(id, v), exists: (f) => f !== 'gone.exe', now: () => t,
+    locate: async () => { finds++; return installed; },
+  });
+  assert.equal(await locate('grok'), null);
+  assert.equal(finds, 1);
+  t = 4 * 60000;
+  assert.equal(await locate('grok'), null);
+  assert.equal(finds, 1, '5분 안에는 다시 찾지 않는다');
+  assert.equal(await locate('muse'), null);
+  assert.equal(finds, 2, '다른 AI 는 따로 센다');
+  locs.set('grok', { file: 'grok.exe' }); // 그 사이 탭을 열어 위치가 생김
+  assert.deepEqual(await locate('grok'), { file: 'grok.exe' });
+  assert.equal(finds, 2);
+  locs.delete('grok');
+  t = 5 * 60000 + 1;
+  installed = { file: 'grok2.exe' };
+  assert.deepEqual(await locate('grok'), { file: 'grok2.exe' }, '5분이 지나면 다시 찾는다');
+  assert.equal(finds, 3);
+  assert.deepEqual(await locate('grok'), { file: 'grok2.exe' });
+  assert.equal(finds, 3, '찾았으면 기억한 위치를 그대로');
+  locs.set('grok', { file: 'gone.exe' }); // 기억한 파일이 지워지면 다시 찾는다
+  installed = null;
+  assert.equal(await locate('grok'), null);
+  assert.equal(finds, 4);
+  assert.equal(await locate('grok'), null);
+  assert.equal(finds, 4, '지워진 뒤 못 찾은 결과도 5분 기억');
+  locs.set('muse', { file: 'shim.cmd', cmdShim: true });
+  assert.equal((await locate('muse')).cmdShim, true, 'cmd 경유 위치는 파일 확인 없이 그대로');
 });

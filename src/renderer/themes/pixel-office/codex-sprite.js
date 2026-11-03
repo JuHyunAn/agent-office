@@ -14,7 +14,7 @@ function drawMark(r, mark, c) {
 }
 
 // 승인된 85% 시안. 축소 좌표를 정수 격자로 맞춰 흐릿한 가장자리를 만들지 않는다.
-// 구름 머리 로봇을 look(색 다섯 개와 가슴 표식)대로 그린다. Codex 와 새 AI 가 같은 모양을 쓴다.
+// Codex와 전용 외형이 없는 AI의 구름 머리 로봇을 look(색 다섯 개와 가슴 표식)대로 그린다.
 export function drawAgentCharacter(ctx, a, t, x, y, look) {
   const tick = Math.floor(t / 130), walking = a.pose === 'walk';
   // 뒤로 이동할 때만 뒷모습을 사용한다. 정지·착석 중에는 얼굴을 카메라 쪽으로 돌린다.

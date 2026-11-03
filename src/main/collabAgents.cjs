@@ -1,10 +1,11 @@
 'use strict';
 
-// 협업 대화: 화면 없는 공식 실행 방식으로 Claude·Codex·Grok·Muse 와 대화한다.
+// 협업 대화: 화면 없는 공식 실행 방식으로 Claude·Codex·Grok·Muse·Antigravity 와 대화한다.
 //  - Claude: claude -p --input-format/--output-format stream-json — 한 프로세스에서 여러 턴, 글자 단위 실시간 출력 (2.1.312 실측)
 //  - Codex : codex exec --json — 턴마다 실행하고 exec resume 으로 같은 세션을 이어 간다 (0.163 실측)
 //  - Grok  : grok --prompt-file … --output-format streaming-json — 턴마다 실행하고 -r 로 같은 세션을 이어 간다 (1.0.70 실측)
 //  - Muse  : muse exec --json --prompt-file … --session-id — 턴마다 실행하고 같은 --session-id 로 대화를 이어 간다 (1.4.14 실측, museCli.cjs)
+//  - Antigravity: agy -p <프롬프트> --output-format stream-json — 턴마다 실행하고 --conversation 으로 같은 대화를 이어 간다 (1.4.12 실측)
 // 이 모듈은 실행·해석만 맡고, 누가 말할 차례인지는 화면 쪽 진행자(collab/moderator.js)가 정한다.
 
 const crypto = require('node:crypto');
@@ -16,6 +17,7 @@ const { spawn: nodeSpawn, execFile } = require('node:child_process');
 const claudeCli = require('./claudeCli.cjs');
 const codexCli = require('./codexCli.cjs');
 const { GROK_TOOL_NAMES, pickGrokInput } = require('./grokTools.cjs');
+const { AGY_TOOL_NAMES, pickAgyInput } = require('./agyTools.cjs');
 const museCli = require('./museCli.cjs');
 
 const SAFE = /^[A-Za-z0-9._:-]{1,80}$/;
@@ -411,15 +413,16 @@ class CodexChat {
   }
 }
 
-// 프롬프트 파일을 쓰고 턴마다 프로세스를 띄우는 협업 실행기의 공통 골격 (Grok·Muse).
+// 프롬프트 파일을 쓰고 턴마다 프로세스를 띄우는 협업 실행기의 공통 골격 (Grok·Muse·Antigravity).
 //  - 프롬프트는 --prompt-file 로 넘긴다 (stdin 은 읽지 않음 — 한글·큰따옴표·% 가 셸을 거치지 않아 깨지지 않는다). 파일은 프로세스가 끝나면 반드시 지운다.
+//    (Antigravity 는 프롬프트 파일 옵션이 없어 -p 인자로 넘기고, 긴 프롬프트만 이 파일을 읽게 한다.)
 //  - 출력 줄마다 하위 클래스의 parse 가 이벤트로 바꾼다. 'end' 이벤트는 턴이 끝났다는 내부 표시라 대화창에 내보내지 않는다.
 //  - 하위 클래스가 채울 것: subj·obj(오류 문구의 AI 이름과 조사)·filePrefix(프롬프트 파일 이름) · buildArgs({ file, resume, model, effort }) · parse(j) · failText(tail, errText)
 const GROK_EFFORT_RE = /^(low|medium|high|xhigh)$/;
 const GROK_EXIT_WAIT_MS = 300; // exit 가 stdout 의 마지막 줄(end)보다 먼저 올 수 있어 close 를 이만큼 기다린 뒤 끝낸다
 const GROK_END_GRACE_MS = 3000; // end 줄을 받은 뒤 프로세스가 이 안에 끝나지 않으면 정상으로 끝내고 프로세스를 죽인다
 const GROK_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/; // 첫 글자는 영숫자 (-로 시작하면 CLI 옵션으로 읽힐 수 있다)
-const PROMPT_FILE_RE = /^ao-(?:grok|muse)-\d+-\d+\.txt$/; // 이 앱이 만드는 프롬프트 파일 이름 규칙 (FileTurnChat.send)
+const PROMPT_FILE_RE = /^ao-(?:grok|muse|agy)-\d+-\d+\.txt$/; // 이 앱이 만드는 프롬프트 파일 이름 규칙 (FileTurnChat.send)
 let promptSeq = 0;
 
 // 앱이 비정상 종료해 남은 프롬프트 파일 중 오래된 것만 지운다 (앱 시작 때). 이 앱의 이름 규칙에 맞는 파일만 대상이다.
@@ -453,6 +456,9 @@ class FileTurnChat {
 
   get busy() { return !!this.run && !this.run.finished; }
 
+  // 실행 직전에 세션 ID 를 알린다 (앱이 ID 를 정하는 Grok·Muse). 대화 ID 를 CLI 가 정하는 AI 는 끄고 출력에서 받은 뒤 알린다.
+  get announceOnSpawn() { return true; }
+
   send(text, { model, effort } = {}, turn = null) {
     if (this.closed || this.busy) return;
     const run = { p: null, file: path.join(this.tmpDir, `ao-${this.filePrefix}-${process.pid}-${++promptSeq}.txt`), turn, finished: false, stopped: false, ended: false, endOk: true, error: '', errText: '', timer: null, endTimer: null, wrote: false, sawText: false };
@@ -482,7 +488,7 @@ class FileTurnChat {
       run.error = `${this.obj} 실행하지 못했습니다: ${e.message}`; finish(); return;
     }
     const p = run.p;
-    if (this.announcedId !== this.sessionId) { this.announcedId = this.sessionId; emit({ type: 'session', sessionId: this.sessionId }); }
+    if (this.announceOnSpawn && this.announcedId !== this.sessionId) { this.announcedId = this.sessionId; emit({ type: 'session', sessionId: this.sessionId }); }
     p.stdout.on('data', lineReader((j) => {
       if (run.finished) return; // 중단했거나 끝난 실행의 늦은 출력
       const ev = this.parse(j);
@@ -599,4 +605,118 @@ class MuseChat extends FileTurnChat {
   }
 }
 
-module.exports = { claudeChatArgs, claudeUserLine, replayText, parseClaudeLine, parseClaudeModels, claudeModels, parseCodexLine, grokChatArgs, parseGrokLine, cleanStalePromptFiles, lineReader, killTree, spawnCli, ClaudeChat, CodexChat, GrokChat, MuseChat };
+// Antigravity(agy) 협업: 턴마다 `agy -p` 를 실행하고 --conversation 으로 같은 대화를 이어 간다 (agy 1.4.12 실측).
+//  - 프롬프트는 -p 인자 (Node spawn 인자로 넘긴 한글·따옴표·%PATH%·개행이 그대로 전달된다 — cmd 를 거치지 않는 agy.exe 직접 실행이 전제).
+//    명령줄 길이 제한(Windows 32767자)에 걸리지 않게, 이스케이프 후 AGY_ARG_MAX 를 넘는 프롬프트는 FileTurnChat 이 쓴 프롬프트 파일을 읽게 하는 안내 문장을 넘긴다.
+//  - 승인 없이 실행: 공식 --dangerously-skip-permissions (이것 없이 비대화 모드는 명령 실행을 자동 거부한다 — 실측)
+//  - agy 에는 --cwd 가 없어 작업 폴더는 spawn 의 cwd 다.
+//  - 출력 --output-format stream-json: 줄마다 JSON ({event:'init'|'step_update'|'result'})
+const AGY_ARG_MAX = 24000;
+const AGY_MODEL_RE = GROK_MODEL_RE;
+
+// --effort 는 쓰지 않는다: Gemini 는 단계가 모델 이름(gemini-3.8-flash-high 등 High·Medium·Low)에 들어 있다 (모델 목록을 못 받았을 때도 — 확인 안 된 조합을 만들지 않게).
+function agyChatArgs({ prompt, conversationId, resume, model }) {
+  return ['-p', prompt, '--output-format', 'stream-json', '--dangerously-skip-permissions',
+    ...(resume && conversationId ? ['--conversation', conversationId] : []),
+    ...(model && model !== 'auto' && AGY_MODEL_RE.test(String(model)) ? ['--model', model] : [])];
+}
+
+// 대화 ID: init 줄은 최상위(`{"event":"init","conversation_id":"…","init":{…}}` — 1.4.12 실측), step_update·result 는 같은 이름의 객체 안쪽에 있다.
+function agyConversationId(j) {
+  const id = j?.conversation_id ?? j?.[j?.event]?.conversation_id;
+  return typeof id === 'string' && id ? id : null;
+}
+
+// 한 줄 → 이벤트 (순수 함수). 대화 ID 갱신·단락 구분·도구 중복 거르기는 AgyChat.parse 가 맡는다.
+function parseAgyLine(j) {
+  if (!j || typeof j !== 'object') return null;
+  if (j.event === 'init') { const id = agyConversationId(j); return id ? { type: 'session', sessionId: id } : null; }
+  if (j.event === 'result') {
+    const r = j.result || {};
+    const ok = r.status === 'SUCCESS';
+    return { type: 'end', ok, text: typeof r.response === 'string' ? r.response : '', reason: ok ? '' : String(r.response || r.status || '') };
+  }
+  const s = j.event === 'step_update' ? j.step_update : null;
+  if (!s || typeof s !== 'object') return null;
+  if (s.step_type === 'agent_response') return typeof s.text_delta === 'string' && s.text_delta ? { type: 'text', text: s.text_delta } : null;
+  // 도구 오류(state ERROR)는 모델이 스스로 다룬다 — 대화창에 오류로 띄우지 않는다
+  if (s.step_type === 'tool' && s.state === 'ACTIVE' && s.tool_name) return { type: 'tool', name: AGY_TOOL_NAMES[s.tool_name] || String(s.tool_name).slice(0, 80), input: pick(pickAgyInput(s.tool_info?.parameters)) };
+  return null;
+}
+
+const AGY_ERROR_RE = /"short_error":"((?:[^"\\]|\\.)*)"/;
+const AGY_LOGIN_RE = /please sign in|not signed in|sign in to|authenticat/i;
+
+class AgyChat extends FileTurnChat {
+  // onUsage(usage): 턴이 끝날 때 result.usage 객체를 받는다 (사용량 단계에서 연결)
+  // cmd.exe 경유(cmdShim) 위치는 프롬프트 인자(개행·따옴표)가 깨지므로 만들 때 거절한다.
+  constructor(opts) {
+    if (opts?.loc?.cmdShim) throw new Error('Antigravity CLI 실행 파일(agy.exe)을 찾지 못했습니다');
+    super(opts);
+    this.onUsage = opts.onUsage;
+    this.agyId = null; // agy 가 정한 대화 ID — 이것이 있고 첫 턴이 성공했을 때만 --conversation 으로 이어 간다
+    this.promptText = '';
+  }
+
+  // 대화 ID 는 agy 가 정한다 — 실행 전 임시 ID 는 알리지 않고, 출력에서 받은 ID 만 알린다.
+  get announceOnSpawn() { return false; }
+
+  // FileTurnChat.send 는 buildArgs 를 파일을 쓰기 전에 부르고 글을 넘기지 않으므로, 프롬프트(첫 턴은 규칙 포함)를 미리 기억해 둔다.
+  // 도구·단락 표는 턴마다 새로 시작한다 (이미 실행 중이면 send 는 무시되므로 표도 건드리지 않는다).
+  send(text, opts, turn = null) {
+    if (this.closed || this.busy) return;
+    this.promptText = this.started || !this.systemPrompt ? String(text) : `${this.systemPrompt}\n\n${text}`;
+    if (!this.started) this.agyId = null; // 실패한 첫 턴의 ID 는 이어받지 않는다
+    this.seenTools = new Set(); this.textStep = null;
+    super.send(text, opts, turn);
+  }
+
+  get subj() { return 'Gemini 가'; }
+
+  get obj() { return 'Gemini 를'; }
+
+  get filePrefix() { return 'agy'; }
+
+  // 길이는 JSON 이스케이프 후로 센다 (따옴표·역슬래시가 많으면 실제 명령줄이 더 길어진다).
+  buildArgs({ file, resume, model, effort }) {
+    const prompt = JSON.stringify(this.promptText).length > AGY_ARG_MAX
+      ? `다음 파일의 내용을 그대로 읽고, 그 안의 지시에 따라 답하세요: ${file}` : this.promptText;
+    return agyChatArgs({ prompt, conversationId: this.agyId, resume: resume && !!this.agyId, model, effort });
+  }
+
+  parse(j) {
+    const id = agyConversationId(j);
+    if (id) {
+      this.agyId = id; this.sessionId = id;
+      // 알린 ID 와 다르면 조용히 덮어쓰지 않고 session 이벤트로 알린다 (협업 방 ↔ agy 대화 연결)
+      if (id !== this.announcedId) {
+        this.announcedId = id;
+        const turn = this.run?.turn;
+        this.onEvent(turn == null ? { type: 'session', sessionId: id } : { type: 'session', sessionId: id, turn });
+      }
+    }
+    const ev = j?.event === 'init' ? null : parseAgyLine(j); // init 의 session 은 위에서 한 번만 알린다
+    if (j?.event === 'result' && j.result?.usage && typeof j.result.usage === 'object') this.onUsage?.(j.result.usage);
+    if (!ev) return null;
+    // 한 턴에 답변 단계(agent_response)가 여러 번 온다 (도구 호출 사이) — 단계가 바뀌면 문단을 나눈다
+    if (ev.type === 'text') {
+      const step = j.step_update.step_index;
+      if (step !== this.textStep) { this.textStep = step; return { ...ev, block: true }; }
+    }
+    // 같은 단계의 ACTIVE 는 한 번만 알린다
+    if (ev.type === 'tool' && typeof j.step_update.step_index === 'number') {
+      if (this.seenTools.has(j.step_update.step_index)) return null;
+      this.seenTools.add(j.step_update.step_index);
+    }
+    return ev;
+  }
+
+  failText(tail, errText) {
+    if (AGY_LOGIN_RE.test(errText) || AGY_LOGIN_RE.test(tail)) return 'Gemini 로그인이 필요합니다 (진입 화면에서 로그인)';
+    const m = String(errText).match(AGY_ERROR_RE); // 잘린 JSON 일 수 있어 JSON.parse 대신 정규식으로 읽는다
+    if (m) return m[1].replace(/\\(.)/g, '$1').slice(0, 200);
+    return tail || 'Gemini 가 응답 없이 끝났습니다';
+  }
+}
+
+module.exports = { claudeChatArgs, claudeUserLine, replayText, parseClaudeLine, parseClaudeModels, claudeModels, parseCodexLine, grokChatArgs, parseGrokLine, agyChatArgs, parseAgyLine, cleanStalePromptFiles, lineReader, killTree, spawnCli, ClaudeChat, CodexChat, GrokChat, MuseChat, AgyChat };

@@ -38,14 +38,14 @@ test('작업 요약은 파일·검색·테스트 등 관측한 활동을 짧게 
   assert.ok(activitySummary('Bash', { description: 'x'.repeat(1000) }).length <= 36);
 });
 
-test('작업 요약 말풍선은 시간 경과 후에도 유지되고 다음 도구 호출로 갱신된다', () => {
+test('작업 요약 말풍선은 시간이 지나면 한 줄 요약으로 줄고 다른 종류 도구 호출로 다시 갱신된다', () => {
   const engine = new OfficeEngine(layout);
   engine.handleEvent(event('PreToolUse', { tool_name: 'Agent', tool_input: { subagent_type: 'executor', description: '화면 구성 개선' } }));
   engine.handleEvent(event('SubagentStart', { agent_id: 'a', agent_type: 'executor' }));
   engine.handleEvent(event('PreToolUse', { agent_id: 'a', tool_name: 'Edit', tool_input: { file_path: 'theme.js' } }));
   advance(engine, 45000);
   const snapshot = () => engine.snapshot().find(a => a.id === 's:a');
-  assert.match(snapshot().bubble.text, /화면 구성 개선\ntheme.js 수정 중/);
+  assert.equal(snapshot().bubble.text, '⌨ 코드 수정 중');
   assert.equal(snapshot().bubble.summary, true);
   engine.handleEvent(event('PreToolUse', { agent_id: 'a', tool_name: 'Bash', tool_input: { command: 'npm test' } }));
   assert.match(snapshot().bubble.text, /테스트 실행 중/);

@@ -2,7 +2,6 @@ import layout from './layout.js';
 import { drawCharacter, usesAgentSprite } from './sprites.js';
 import { createAtmosphere } from './atmosphere.js';
 import { loadDrinkImages } from './drink-images.js';
-import { loadResidentSprites } from './resident-sprite.js';
 import { createExterior, loadCityImages } from './exterior.js';
 import { polygon, line, PIXEL_DETAIL } from './raster.js';
 import { attentionFill } from '../attention.js';
@@ -569,7 +568,7 @@ export default {
     });
   },
   async load() {
-    await Promise.all([loadDrinkImages(), loadCityImages(), loadResidentSprites()]);
+    await Promise.all([loadDrinkImages(), loadCityImages()]);
     if (!floorCache) {
       floorCache = buildFloor(); atmosphere.load(floorCache);
       shadedFloorCache = document.createElement('canvas');

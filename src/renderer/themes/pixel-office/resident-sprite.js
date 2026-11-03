@@ -19,7 +19,7 @@ export function loadResidentSprites() {
   return loading;
 }
 
-// 사무실과 바탕화면이 같은 상태별 그림을 사용한다. 실제 작업·알림 상태는 기존 엔진이 결정한다.
+// 바탕화면의 기본 이미지 대체 표시에 쓴다. 사무실은 companion-sprite의 정수 도트로 그린다.
 export function residentState(a) {
   if (a.pose === 'walk') return a.facing === 'left' || a.facing === 'up' ? 'running-left' : 'running-right';
   if (a.status === 'error') return 'failed';

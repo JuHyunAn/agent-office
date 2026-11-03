@@ -17,8 +17,8 @@ const claudeCli = require('./claudeCli.cjs');
 const codexCli = require('./codexCli.cjs');
 const agentCli = require('./agentCli.cjs');
 const museCli = require('./museCli.cjs');
-const { ClaudeChat, CodexChat, GrokChat, MuseChat, claudeModels, killTree, cleanStalePromptFiles } = require('./collabAgents.cjs');
-const { trackGrokSession, attachGrokRoom, dropGrokRoom } = require('./grokTools.cjs');
+const { ClaudeChat, CodexChat, GrokChat, MuseChat, AgyChat, claudeModels, killTree, cleanStalePromptFiles } = require('./collabAgents.cjs');
+const { trackGrokSession, trackGrokTab, attachGrokRoom, dropGrokRoom } = require('./grokTools.cjs');
 const { PtyManager } = require('./ptyManager.cjs');
 const { cleanEnv } = require('./env.cjs');
 const { createWeatherService } = require('./weather.cjs');
@@ -26,7 +26,7 @@ const { createPetController } = require('./pet.cjs');
 const { PET_KINDS, PET_ID_RE } = require('./petRules.cjs');
 const petImport = require('./petImport.cjs');
 const { createMainGuard } = require('./ipcGuard.cjs');
-const { createUsageService } = require('./usage.cjs');
+const { createUsageService, createUsageLocator } = require('./usage.cjs');
 const { createCodeRoots, createCodeService, registerCodeIpc } = require('./codeRepo.cjs');
 const { createCodeAnalyzer, registerAnalysisIpc, DENY_SETTINGS: ANALYSIS_SETTINGS } = require('./codeAnalysis.cjs');
 const { statusSnapshot } = require('./statusShape.cjs');
@@ -68,7 +68,7 @@ function setLoc(id, value, { reset = true } = {}) {
 }
 let sessionSettingsPath = null;
 let codeAnalyzer = null; // 코드 분석 실행기 (whenReady 에서 만든다)
-const grokRooms = new Map(); // 협업 방의 Grok 세션 ID → roomId (Grok hook 은 탭 ID 를 실을 수 없어 session_id 로만 방을 찾는다)
+const grokRooms = new Map(); // Grok 세션 ID → 협업 방 ID 또는 앱 탭 ID (Grok hook 은 탭 ID 를 실을 수 없어 session_id 로만 찾는다)
 const rooms = new Map(); // 협업 대화 탭 → { cwd, gen, roster: 참여 AI id 배열, [AI id]: ClaudeChat | CodexChat }
 // 협업 대화 규칙 문장은 collabRules.cjs 가 참여자(roster)로 만든다 (cmd.exe 경유 실행에서도 깨지지 않도록 따옴표·% 기호·줄바꿈을 쓰지 않는다).
 const DEFAULT_ROSTER = ['claude', 'codex'];
@@ -79,7 +79,7 @@ function send(channel, payload) {
 
 const ptys = new PtyManager({
   onData: (tabId, data) => send('pty:data', { tabId, data }),
-  onExit: (tabId, exitCode) => send('pty:exit', { tabId, exitCode }),
+  onExit: (tabId, exitCode) => { dropGrokRoom(grokRooms, tabId); send('pty:exit', { tabId, exitCode }); },
 });
 
 function configPath() {
@@ -246,7 +246,21 @@ const COLLAB_CHATS = {
     await needMuse();
     return new MuseChat({ loc: loc('muse'), cwd: room.cwd, systemPrompt: collabRules(room.roster, 'muse'), env: cleanEnv(), hooks: museCli.hookArgs({ port: hook.port, token: config.token, tab: roomId }), onEvent });
   },
+  // Antigravity: 공용 hook 명령의 %AGENT_OFFICE_TAB% 가 방 ID 로 치환되어 사무실 캐릭터가 방에 붙는다 (Grok 같은 매핑 표 불필요).
+  // 로그인 전에는 agy -p 가 로그인을 60초 기다리므로, 실행기를 만들 때(방마다 한 번) 로그인 여부부터 확인한다.
+  antigravity: async ({ room, roomId, onEvent }) => {
+    if (!loc('antigravity')) setLoc('antigravity', await agentCli.locate('antigravity'));
+    if (!loc('antigravity')) throw new Error('Antigravity CLI 를 찾지 못했습니다');
+    const auth = await agentCli.authStatus('antigravity', loc('antigravity'), { timeoutMs: 15000 });
+    if (auth.timedOut) throw new Error('Gemini 로그인 상태를 확인하지 못했습니다 (시간 초과)'); // 로그인 필요와는 다른 문제 — 잠시 뒤 다시 시도하면 된다
+    if (!auth.loggedIn) throw new Error(auth.error || 'Gemini 로그인이 필요합니다 (진입 화면에서 로그인)');
+    ensureAgyHooks();
+    return new AgyChat({ loc: loc('antigravity'), cwd: room.cwd, systemPrompt: collabRules(room.roster, 'antigravity'), env: cleanEnv({ AGENT_OFFICE_TAB: roomId }), onEvent, onUsage: (u) => usage?.addTurnUsage('antigravity', u) });
+  },
 };
+
+// 사용량 서비스가 쓰는 CLI 위치: 기억한 실행 파일이 있으면 그대로, 없거나 지워졌으면 다시 찾는다 (미설치 결과는 5분 기억 — usage.cjs).
+const locateForUsage = createUsageLocator({ get: loc, set: (id, value) => setLoc(id, value), locate: (id) => agentCli.locate(id), exists: (file) => fs.existsSync(file) });
 
 // 새 방의 참여자: 없으면 기본(Claude·Codex), 있으면 2명 이상·중복 없음·협업 실행기가 있는 AI 만 허용한다 (잘못된 값은 오류).
 function validRoster(roster) {
@@ -307,6 +321,15 @@ const collabModels = createModelCatalog({
     const list = agentCli.parseGrokModels(r.stdout);
     return { list, error: list.length ? '' : 'grok models 응답을 읽지 못했습니다' };
   },
+  // `agy models` 출력에서 읽는다 (미로그인이면 exit 1 + 「Please sign in」). 설치되지 않았으면 다시 조회하지 않는다.
+  antigravity: async () => {
+    if (!loc('antigravity')) setLoc('antigravity', await agentCli.locate('antigravity'), { reset: false });
+    if (!loc('antigravity')) return { error: 'Antigravity CLI 를 찾지 못했습니다', final: true };
+    const r = await claudeCli.runClaude(loc('antigravity'), ['models'], 15000);
+    if (/please sign in/i.test(`${r.stdout || ''}\n${r.stderr || ''}`)) return { error: 'Gemini 로그인이 필요합니다' };
+    const list = agentCli.parseAgyModels(r.stdout);
+    return { list, error: list.length ? '' : 'Gemini 모델 목록을 받지 못했습니다' }; // 출력 해석 실패와 Gemini 없음을 한 문구로
+  },
 }, { onFail: (id, error) => console.warn(`[collab] ${id} 모델 목록 조회 실패`, error) });
 
 function collabStop({ roomId, agent }) {
@@ -338,6 +361,7 @@ function dropSessions() {
   ptys.killAll();
   codeAnalyzer?.stopAll(); // 진행 중인 코드 분석(숨긴 claude)도 끝낸다
   for (const roomId of [...rooms.keys()]) collabClose({ roomId });
+  grokRooms.clear(); // 남은 것은 닫힌 앱 탭의 연결
   hook?.releaseAll(); // 붙잡아 둔 권한 요청은 원래 터미널 승인으로 넘긴다
   pet?.clearState(); // 연결이 끊긴 탭의 「확인 필요」가 펫에 유령으로 남지 않게
   usage?.setFocus(null); // 사라진 탭을 가리키는 세션 줄도 비운다 (새 화면이 첫 포커스를 다시 알린다)
@@ -396,6 +420,7 @@ async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli
     const tabOpts = cli === 'muse' ? { hook: { port: hook.port, token: config.token, tab: tabId }, cmdShim: !!loc('muse').cmdShim } : { sessionId };
     const cmd = claudeCli.commandFor(loc(cli), agentCli.tabArgs(cli, tabOpts));
     ptys.create({ tabId, cwd, cols, rows, file: cmd.file, args: cmd.args, env: cleanEnv({ AGENT_OFFICE_TAB: tabId }) });
+    trackGrokTab(grokRooms, tabId, sessionId); // Grok 탭의 hook 이벤트에 탭 ID 를 붙이려고 (sessionId 가 없는 AI 는 무시)
     return { sessionId };
   }
   if (cli === 'codex') return createCodexPty({ tabId, cwd, cols, rows });
@@ -668,6 +693,9 @@ if (!app.requestSingleInstanceLock()) {
     config = loadConfig();
     usage = createUsageService({
       locateClaude: () => loc('claude'), locateCodex: () => loc('codex'), userDataDir: app.getPath('userData'), appVersion: app.getVersion(),
+      // 그 밖의 AI: 아직 못 찾았거나 지워진 실행 파일이면 다시 찾는다 (Muse 런처는 업데이트하며 옛 실행 파일을 지운다). 설치되지 않았으면 null → 칸을 숨긴다.
+      locateGrok: () => locateForUsage('grok'), locateMuse: () => locateForUsage('muse'), locateAntigravity: () => locateForUsage('antigravity'),
+      runCli: (l, args, ms) => claudeCli.runClaude(l, args, ms),
       onChange: (s) => pet?.setUsage(s), smoke: !!process.env.AGENT_OFFICE_SMOKE,
     });
     hook = await startHookServer({
@@ -710,7 +738,7 @@ if (!app.requestSingleInstanceLock()) {
       if (!f || typeof f !== 'object') return;
       usage?.setFocus({
         tabId: typeof f.tabId === 'string' && TAB_RE.test(f.tabId) ? f.tabId : null,
-        kind: ['claude', 'codex', 'collab'].includes(f.kind) ? f.kind : null,
+        kind: [...AGENT_IDS, 'collab'].includes(f.kind) ? f.kind : null,
         label: typeof f.label === 'string' ? f.label.slice(0, 60) : '',
       });
     });
@@ -732,7 +760,7 @@ if (!app.requestSingleInstanceLock()) {
     handleMain('pty:create', (opts) => createTabPty(opts || {}));
     onMain('pty:write', ({ tabId, data }) => ptys.write(tabId, data));
     onMain('pty:resize', ({ tabId, cols, rows }) => ptys.resize(tabId, cols, rows));
-    handleMain('pty:kill', ({ tabId }) => ptys.kill(tabId));
+    handleMain('pty:kill', ({ tabId }) => { dropGrokRoom(grokRooms, tabId); return ptys.kill(tabId); });
     handleMain('hooks:global:set', ({ enabled }) => setGlobalHooks(!!enabled));
     handleMain('collab:send', (opts) => collabSend(opts || {}));
     handleMain('collab:stop', (opts) => collabStop(opts || {}));

@@ -579,7 +579,7 @@ async function openTab({ cwd, mode = 'new', resumeId = null, kind = 'claude', lo
   if (kind === 'collab') {
     pane.classList.add('pane-collab');
     // 작업 상태는 전이 알림(동기)으로도 정한다 — 창이 숨겨져 렌더가 멈춰도 펫이 협업 진행을 바로 알게.
-    tab.panel = createCollabPanel({ api, roomId: id, cwd, agents, onStatus: (s) => setTabStatus(tab, s === 'running' ? 'working' : 'idle'), onTransition: (prev, next, agent) => { setTabStatus(tab, next === 'running' ? 'working' : 'idle'); collabAttention(tab, prev, next, agent); }, onSpeaker: (agent) => collabSpeaker(tab, agent) });
+    tab.panel = createCollabPanel({ api, roomId: id, cwd, agents, onStatus: (s) => setTabStatus(tab, s === 'running' ? 'working' : 'idle'), onTransition: (prev, next, agent) => { setTabStatus(tab, next === 'running' ? 'working' : 'idle'); collabAttention(tab, prev, next, agent); collabSettle(tab, prev, next, agent); }, onSpeaker: (agent) => collabSpeaker(tab, agent) });
     pane.append(tab.panel.root);
     activate(id);
     return;
@@ -669,7 +669,7 @@ async function closeTab(id) {
 const EXTERNAL_ATTENTION_MS = 20 * 60000; // 앱 탭이 아닌 세션은 끌 탭이 없다 — 퇴근 규칙(20분)과 같은 시간 뒤 저절로 끈다
 const ATTENTION_TEXT = {
   done: '✅ 답변 완료', permission: '❓ 권한 확인', notification: '❓ 확인이 필요합니다', question: '❓ 선택을 기다려요',
-  'collab-question': '❓ 질문이 있어요', 'collab-idle': '✅ 대화 완료', 'collab-error': '⚠ 오류 — 확인 필요',
+  'collab-question': '❓ 질문이 있어요', 'collab-idle': '✅ 대화 완료', 'collab-error': '❌ 오류 — 확인 필요',
 };
 
 // 사용자가 그 탭을 보고 있다: 활성 탭이고 창이 보이며 포커스가 있고, 새 탭·펫 그림 대화상자가 닫혀 있다.
@@ -779,6 +779,15 @@ function collabAttention(tab, prev, next, agent) {
   if (prev !== 'running' || !ATTENTION_TEXT[reason]) return;
   attend(tab.id, { tabId: tab.id, sessionId: tab.cliSession?.[agent] ?? null, agentId: null, cli: agent || 'claude', label: tab.label,
     reason, kind: next === 'idle' ? 'done' : 'alert', text: ATTENTION_TEXT[reason] });
+}
+
+// 협업 대화: AI 가 오류·중단으로 끝나면 Stop hook 이 오지 않으니 사무실에 바로 작업 끝으로 알린다 (D-068 — 정상 완료는 실제 Stop hook 이 온다).
+function collabSettle(tab, prev, next, agent) {
+  if (prev !== 'running' || (next !== 'stopped' && next !== 'error')) return;
+  const sid = tab.cliSession?.[agent];
+  if (!sid) return;
+  engine.settle(sid, next === 'stopped' ? '⏹️ 작업 중단' : '❌ 오류로 끝남');
+  updateHeadcount();
 }
 
 // 협업 대화에서 말하는 AI 가 바뀜 (null = 아무도 안 말함): 펫이 서로 주고받는 모습을 보이도록 직전 발언자와 차례를 기록한다.

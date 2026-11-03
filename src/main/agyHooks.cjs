@@ -21,6 +21,9 @@ function filePath({ homedir = os.homedir() } = {}) {
 }
 
 // 이벤트마다 hook 명령 한 줄. curl 은 절대 경로 (museCli.curlPath — cmd 는 현재 폴더를 먼저 찾으므로 이름만 쓰지 않는다).
+// 끝은 `>nul 2>nul & exit /b 0`: Antigravity 는 hook 이 실패하거나(exit≠0 — 앱이 꺼져 curl 이 연결 실패) 결과가 `{}` 이면 모든 도구를 거부한다(fail closed, 1.4.12 실측).
+// 그래서 curl 출력(앱 응답)에 기대지 않고 늘 출력 없이 exit 0 으로 끝낸다. 오류 출력도 버린다 (cmd 의 한글 오류가 UTF-8 이 아니면 agy 가 비정상 종료한다).
+// 명령에는 큰따옴표를 넣지 않는다 (agy 가 `\"` 로 바꿔 cmd 에 넘겨 명령이 깨진다).
 // 경로·포트·토큰이 안전하지 않으면 null (호출하는 쪽이 항목을 만들지 않는다).
 function command(port, token, ev, { systemRoot } = {}) {
   const p = Number(port);
@@ -28,7 +31,7 @@ function command(port, token, ev, { systemRoot } = {}) {
   if (!SAFE.test(String(token)) || !EVENTS.includes(ev)) return null;
   const curl = curlPath(systemRoot);
   if (!curl) return null;
-  return `${curl} -sS --noproxy 127.0.0.1 -m 3 -H Content-Type:application/json --data-binary @- --url-query k=${token} --url-query src=global --url-query cli=antigravity --url-query ev=${ev} --url-query tab=%AGENT_OFFICE_TAB% http://127.0.0.1:${p}/hook`;
+  return `${curl} -s --noproxy 127.0.0.1 -m 3 -H Content-Type:application/json --data-binary @- --url-query k=${token} --url-query src=global --url-query cli=antigravity --url-query ev=${ev} --url-query tab=%AGENT_OFFICE_TAB% http://127.0.0.1:${p}/hook >nul 2>nul & exit /b 0`;
 }
 
 // 우리 항목. 안전한 명령을 만들 수 없으면 null.
@@ -109,7 +112,7 @@ function writeAtomic(fs, file, obj) {
 function enable(port, token, { fs = nodeFs, now = new Date(), ...opts } = {}) {
   const file = filePath(opts);
   const mine = entry(port, token, opts);
-  if (!mine) throw new Error('curl.exe 경로나 hook 값이 안전하지 않아 Antigravity hook 을 만들지 않습니다');
+  if (!mine) throw new Error('curl.exe 경로나 hook 값이 안전하지 않아 Gemini(Antigravity CLI) hook 을 만들지 않습니다');
   const first = load(fs, file);
   if (!first) fs.mkdirSync(path.dirname(file), { recursive: true });
   else if (!Object.hasOwn(first.obj, NAME)) fs.writeFileSync(backupName(file, now), first.text);

@@ -46,23 +46,23 @@ export class OfficeView {
         if (Math.hypot(e.clientX - p.x, e.clientY - p.y) > 5) p.dragging = true;
         if (p.dragging) {
           this.camera.pan(e.clientX - p.lastX, e.clientY - p.lastY); this.syncCamera();
-          this.hoverAt = null; canvas.style.cursor = this.camera.zoom > 1 ? 'grabbing' : 'default';
+          this.hoverAt = null; canvas.style.cursor = this.camera.canPan ? 'grabbing' : 'default';
         }
         p.lastX = e.clientX; p.lastY = e.clientY;
       } else {
         const point = this.camera.toScene(this.hoverAt.x, this.hoverAt.y);
-        canvas.style.cursor = this.theme.hitTest?.(point.x, point.y) ? 'pointer' : this.camera.zoom > 1 ? 'grab' : 'default';
+        canvas.style.cursor = this.theme.hitTest?.(point.x, point.y) ? 'pointer' : this.camera.canPan ? 'grab' : 'default';
       }
     });
     canvas.addEventListener('pointerup', e => {
       const p = this.pointer; this.pointer = null;
       if (!p || p.id !== e.pointerId) return;
       if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-      canvas.style.cursor = this.camera.zoom > 1 ? 'grab' : 'default';
+      canvas.style.cursor = this.camera.canPan ? 'grab' : 'default';
       if (!p.dragging) { const r = canvas.getBoundingClientRect(); this.clickAt(e.clientX - r.left, e.clientY - r.top); }
     });
-    canvas.addEventListener('pointercancel', () => { this.pointer = null; canvas.style.cursor = this.camera.zoom > 1 ? 'grab' : 'default'; });
-    canvas.addEventListener('lostpointercapture', () => { this.pointer = null; canvas.style.cursor = this.camera.zoom > 1 ? 'grab' : 'default'; });
+    canvas.addEventListener('pointercancel', () => { this.pointer = null; canvas.style.cursor = this.camera.canPan ? 'grab' : 'default'; });
+    canvas.addEventListener('lostpointercapture', () => { this.pointer = null; canvas.style.cursor = this.camera.canPan ? 'grab' : 'default'; });
     canvas.addEventListener('wheel', e => {
       e.preventDefault(); const r = canvas.getBoundingClientRect();
       this.camera.zoomAt(Math.exp(-e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top); this.syncCamera();
@@ -120,7 +120,7 @@ export class OfficeView {
     const { scale, ox, oy } = this.camera;
     this.view = { ...this.view, scale, ox, oy };
     this.redraw = true;
-    if (!this.pointer?.dragging) this.canvas.style.cursor = this.camera.zoom > 1 ? 'grab' : 'default';
+    if (!this.pointer?.dragging) this.canvas.style.cursor = this.camera.canPan ? 'grab' : 'default';
     this.notify();
   }
 

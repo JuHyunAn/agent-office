@@ -2,7 +2,7 @@
 import { ROWS, CELL, SHEETS, SLEEP_SHEET, SLEEP_AFTER_MS, gazeCell, visiblePets, petState, bubbleOf, cardOf, usageRowText, updatedText, refreshButton, sessionText } from './model.js';
 import { AGENT_IDS, agentName } from '../../shared/agents.js';
 import { drawCharacter } from '../themes/pixel-office/sprites.js';
-import { loadResidentSprites } from '../themes/pixel-office/resident-sprite.js';
+import { loadResidentSprites, drawResidentCharacter } from '../themes/pixel-office/resident-sprite.js';
 
 const W = 96, H = 104; // 캔버스의 CSS 크기
 const CHAT_MS = 600; // 💬 가 날아가는 시간 (CSS transition)
@@ -85,10 +85,11 @@ function drawBase(ctx, p) {
     if (!fallbackArt) fallbackArt = loadResidentSprites().then(() => {
       for (const pet of pets.values()) if (!pet.sheet) redraw(pet);
     }).catch(error => console.warn(error.message));
-    // 아이콘 선택도 승인된 사무실 외형을 쓴다. 기본 전용 시트는 기존 재생기로 그린다.
+    // 바탕화면은 사무실 픽셀 그림과 별개로 승인된 세밀한 외형을 유지한다.
     ctx.save();
     ctx.scale(3, 3);
-    drawCharacter(ctx, { cli: p.kind, pose: 'stand', status: 'working', facing: 'down', colorIndex: 0, appearance: {} }, now(), 0, -2);
+    const actor = { cli: p.kind, pose: 'stand', status: 'working', facing: 'down', colorIndex: 0, appearance: {} };
+    if (!drawResidentCharacter(ctx, actor, now(), 0, -2)) drawCharacter(ctx, actor, now(), 0, -2);
     ctx.restore();
     return;
   }
@@ -707,6 +708,7 @@ function updateUsageTexts() {
     const known = Number.isFinite(r.row.percent) && !(Number.isFinite(r.row.resetsAt) && r.row.resetsAt <= t); // 리셋 시각이 지난 값은 막대를 비운다
     r.fill.style.width = known ? `${r.row.percent}%` : '0%';
     r.fill.dataset.level = known ? (r.row.percent >= 90 ? 'high' : r.row.percent >= 70 ? 'warn' : 'ok') : 'ok';
+    r.bar.hidden = !Number.isFinite(r.row.percent) && !!r.row.valueText; // 한도가 아닌 수치 줄은 막대 없이
     if (known) r.bar.setAttribute('aria-valuenow', String(r.row.percent));
     else r.bar.removeAttribute('aria-valuenow');
   }

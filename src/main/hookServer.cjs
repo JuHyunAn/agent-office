@@ -4,7 +4,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const { normAgent } = require('../shared/agents.js');
 const { GROK_TOOL_NAMES, pickGrokInput } = require('./grokTools.cjs');
-const { AGY_TOOL_NAMES } = require('./agyTools.cjs');
+const { AGY_TOOL_NAMES, pickAgyInput } = require('./agyTools.cjs');
 
 const MAX_BODY = 1024 * 1024;
 
@@ -25,8 +25,9 @@ function clip(v, n) {
 }
 
 // 엔진·화면이 쓰는 tool_input 필드 (파일 본문 등 큰 값은 보내지 않는다).
+// run_in_background: 하위 에이전트를 백그라운드로 띄웠는지 (메인이 끝나도 계속 일한다 — 엔진이 앞쪽 실행만 정리한다). 값은 문자열('true')로 간다.
 const TOOL_INPUT_KEYS = ['file_path', 'notebook_path', 'pattern', 'path', 'description', 'command', 'query', 'url',
-  'subagent_type', 'skill', 'to', 'summary'];
+  'subagent_type', 'skill', 'to', 'summary', 'run_in_background'];
 
 // Muse 는 tool_input 을 JSON 문자열로 보낼 수 있다(Grok 처럼) — 문자열이면 객체로 푼다. 풀 수 없으면 undefined.
 function parseToolInput(v) {
@@ -65,7 +66,6 @@ function normalizeGrok(payload) {
 // Antigravity(agy) hook 본문(camelCase, 이벤트 이름 필드 없음 — 주소의 ev 쿼리로 구분, 1.4.12 실측)를 Claude 모양으로 맞춘다.
 // 쿼리가 antigravity 가 아니거나 ev 가 없으면 본문을 그대로 돌려준다. 사무실에 쓰지 않는 이벤트(첫 호출이 아닌 PreInvocation 등)와 읽을 수 없는 본문은 null: 호출부가 버린다.
 // 원본 camelCase 키는 가져가지 않고 필요한 필드만 새 객체에 담는다.
-const AGY_INPUT_KEYS = { CommandLine: 'command', Path: 'file_path', AbsolutePath: 'file_path', TargetFile: 'file_path', query: 'query', Url: 'url' };
 function normalizeAgy(payload, query = {}) {
   if (query.cli !== 'antigravity' || !query.ev) return payload;
   if (!payload || typeof payload !== 'object') return null;
@@ -84,10 +84,7 @@ function normalizeAgy(payload, query = {}) {
     if (!call || typeof call !== 'object' || typeof call.name !== 'string' || !call.name) return null;
     out.hook_event_name = 'PreToolUse';
     out.tool_name = Object.hasOwn(AGY_TOOL_NAMES, call.name) ? AGY_TOOL_NAMES[call.name] : call.name;
-    out.tool_input = {};
-    if (call.args && typeof call.args === 'object') {
-      for (const [from, to] of Object.entries(AGY_INPUT_KEYS)) if (typeof call.args[from] === 'string' && out.tool_input[to] === undefined) out.tool_input[to] = call.args[from];
-    }
+    out.tool_input = pickAgyInput(call.args);
   } else if (query.ev === 'Stop') {
     out.hook_event_name = 'Stop';
   } else {
@@ -207,7 +204,9 @@ async function startHookServer({ port, token, onEvent, onStatus = () => {}, host
       }
       if (!hold) {
         // 그 밖의 hook 에는 「결정 없음」으로 즉시 응답한다 — Claude 작업을 늦추지 않는 것이 최우선.
-        res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
+        // Antigravity 는 빈 본문이어야 「결정 없음」이다: `{}` 는 decision 이 빠진 결과로 보고 도구 호출을 거부한다 (agy 1.4.12 실측 — 파일 읽기까지 막힘).
+        if (query.cli === 'antigravity') res.writeHead(200).end();
+        else res.writeHead(200, { 'content-type': 'application/json' }).end('{}');
         const dupBody = isDup(key);
         const dupGrok = grokKey ? isDup(grokKey) : false;
         if (dupBody || dupGrok) return;

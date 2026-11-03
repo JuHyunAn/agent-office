@@ -1,5 +1,5 @@
 // 협업 대화 탭 화면: 나 · 참여 AI(기본 Claude · Codex)가 한 대화창에서 실시간으로 주고받는다.
-import { Moderator, inputMode, isEmptyReply, rosterOf, nameOf, ownerOptions, targetsOf, mentionOf, agreedText, placeholderOf, MODEL_OPTIONS, EFFORT_OPTIONS, EFFORT_LABEL, MODEL_LABEL } from './moderator.js';
+import { Moderator, inputMode, isEmptyReply, rosterOf, nameOf, ownerOptions, targetsOf, mentionOf, agreedText, placeholderOf, effortLevels, MODEL_OPTIONS, EFFORT_OPTIONS, EFFORT_IN_MODEL, EFFORT_LABEL, MODEL_LABEL } from './moderator.js';
 import { agentById } from '../../shared/agents.js';
 import { toolPhrase } from '../office/phrases.js';
 
@@ -84,16 +84,21 @@ export function createCollabPanel({ api, roomId, cwd, agents = null, onStatus = 
   const modelOptions = (agent) => (mod.catalog[agent] ? [AUTO, ...mod.catalog[agent].map((m) => ({ value: m.value, label: m.label, title: m.description }))] : MODEL_OPTIONS[agent] || [AUTO]);
   const effortOptions = (agent) => {
     const list = mod.catalog[agent];
-    if (!list) return EFFORT_OPTIONS;
-    const model = mod.prefs[agent].model;
-    const levels = model === 'auto' ? [...new Set(list.flatMap((m) => m.efforts))] : list.find((m) => m.value === model)?.efforts || [];
-    return [AUTO, ...levels.map((e) => ({ value: e, label: EFFORT_LABEL[e] || e }))];
+    if (!list) return EFFORT_IN_MODEL.has(agent) ? [AUTO] : EFFORT_OPTIONS;
+    return [AUTO, ...effortLevels(list, mod.prefs[agent].model).map((e) => ({ value: e, label: EFFORT_LABEL[e] || e }))];
   };
   const prefSelects = {};
-  const syncEfforts = (agent) => { mod.prefs[agent].effort = fill(prefSelects[agent].effort, effortOptions(agent), mod.prefs[agent].effort); };
+  // 단계 선택지가 「자동」 하나뿐이면(Gemini 처럼 단계가 모델 이름에 들어 있는 경우) 상자를 숨긴다. 모델 변경·목록 도착 모두 이 함수를 거친다.
+  const syncEfforts = (agent) => {
+    const options = effortOptions(agent);
+    mod.prefs[agent].effort = fill(prefSelects[agent].effort, options, mod.prefs[agent].effort);
+    prefSelects[agent].effort.hidden = options.length === 1;
+  };
   const agentPrefs = (agent) => {
     const model = select(modelOptions(agent), 'auto', (v) => { mod.prefs[agent].model = v; syncEfforts(agent); }, `${nameOf(agent)} 모델`);
-    const effort = select(EFFORT_OPTIONS, 'auto', (v) => { mod.prefs[agent].effort = v; }, `${nameOf(agent)} 추론 단계`);
+    const firstEfforts = effortOptions(agent);
+    const effort = select(firstEfforts, 'auto', (v) => { mod.prefs[agent].effort = v; }, `${nameOf(agent)} 추론 단계`);
+    effort.hidden = firstEfforts.length === 1;
     prefSelects[agent] = { model, effort };
     const own = !isBuiltinColor(agent) && agentById(agent)?.color; // Claude·Codex 외 AI 의 색
     return node('span', { class: `collab-agent collab-${agent}${own ? ' collab-agent-x' : ''}`, style: own ? `--agent-color: ${own}` : null }, node('b', {}, nameOf(agent)), model, effort);

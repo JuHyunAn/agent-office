@@ -30,8 +30,8 @@ function pickGrokInput(raw) {
   return out;
 }
 
-// 협업 방의 Grok 연결: Grok 사무실 hook 은 탭 ID 를 실을 수 없어(헤더 치환 안 됨, 1.0.70 실측) 세션 ID 로만 방을 찾는다.
-// rooms: Map<Grok 세션 ID, roomId>. GrokChat 이 내는 session 이벤트로 채우고, hook 이벤트에는 방 ID 를 _tab 으로 붙인다.
+// 협업 방·앱 탭의 Grok 연결: Grok 사무실 hook 은 탭 ID 를 실을 수 없어(헤더 치환 안 됨, 1.0.70 실측) 세션 ID 로만 방·탭을 찾는다.
+// rooms: Map<Grok 세션 ID, roomId 또는 tabId>. GrokChat 이 내는 session 이벤트로 채우고, hook 이벤트에는 방 ID 를 _tab 으로 붙인다.
 function trackGrokSession(rooms, roomId, ev) {
   if (ev && ev.type === 'session' && typeof ev.sessionId === 'string') rooms.set(ev.sessionId, roomId);
 }
@@ -41,8 +41,15 @@ function attachGrokRoom(rooms, ev) {
   return ev;
 }
 
+// 앱 Grok 탭도 같은 표를 쓴다: 탭을 만들 때 미리 정한 세션 ID(-s)를 탭 ID 로 등록한다. 같은 탭에 다시 만들면 앞 세션 연결은 지운다.
+function trackGrokTab(rooms, tabId, sessionId) {
+  if (typeof tabId !== 'string' || !tabId || typeof sessionId !== 'string' || !sessionId) return;
+  dropGrokRoom(rooms, tabId);
+  rooms.set(sessionId, tabId);
+}
+
 function dropGrokRoom(rooms, roomId) {
   for (const [sid, id] of [...rooms]) if (id === roomId) rooms.delete(sid);
 }
 
-module.exports = { GROK_TOOL_NAMES, pickGrokInput, trackGrokSession, attachGrokRoom, dropGrokRoom };
+module.exports = { GROK_TOOL_NAMES, pickGrokInput, trackGrokSession, trackGrokTab, attachGrokRoom, dropGrokRoom };

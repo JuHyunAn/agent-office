@@ -100,15 +100,16 @@ async function version(loc, { runner = (l, a, ms) => claudeCli.runClaude(l, a, m
 // 로그인 여부. runner 는 { code, stdout, stderr } 를 돌려준다 (runClaude 모양 — 시간 제한 AUTH_TIMEOUT_MS, 넘기면 code 가 0 이 아니고 출력이 빈다).
 // 실측 소요: grok models 1.4초 · agy models 1.6초 · muse usage 0.6초 — 진입 화면이 한 AI 때문에 오래 묶이지 않게 10초에서 끊는다.
 // 미로그인 문구가 보이면 종료 코드와 무관하게 false (Grok 은 미로그인도 exit 0).
+// timeoutMs: 방을 만들 때처럼 더 기다려야 하는 호출자가 시간 제한을 늘린다. 출력 없이 실패하면(시간 초과) 「로그인 필요」 와 구분되게 timedOut 을 단다.
 const AUTH_TIMEOUT_MS = 10000;
-async function authStatus(id, loc, { runner = (l, a) => claudeCli.runClaude(l, a, AUTH_TIMEOUT_MS) } = {}) {
+async function authStatus(id, loc, { timeoutMs = AUTH_TIMEOUT_MS, runner = (l, a) => claudeCli.runClaude(l, a, timeoutMs) } = {}) {
   const a = ADAPTERS[id];
-  const r = await runner(loc, a.authArgs);
+  const r = await runner(loc, a.authArgs, timeoutMs);
   const out = `${r.stdout || ''}\n${r.stderr || ''}`;
   if (a.loggedOut.test(out)) return { loggedIn: false };
   if (r.code === 0) return { loggedIn: true };
   const first = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split(/\r?\n/).map((s) => s.trim()).find(Boolean);
-  return { loggedIn: false, error: '로그인 상태를 확인하지 못했습니다: ' + (first || '응답이 없습니다').slice(0, 120) };
+  return { loggedIn: false, error: '로그인 상태를 확인하지 못했습니다: ' + (first || '응답이 없습니다').slice(0, 120), ...(first ? {} : { timedOut: true }) };
 }
 
 function loginArgs(id) {
@@ -140,6 +141,21 @@ function parseGrokModels(text) {
   return out;
 }
 
+// `agy models` 출력 (1.4.12 실측): 첫 줄 「Fetching available models...」(탭 없음) 다음에 「<모델 ID>	<표시 이름>」 (탭으로 구분) 줄이 이어진다 —
+// 예: gemini-3.8-flash-high	Gemini 3.8 Flash (High) · claude-sonnet-4-6	Claude Sonnet 4.6 (Thinking). 이름은 협업 인자로 쓰이므로 안전한 글자만 허용한다.
+// Gemini 모델만 남긴다(이름이 gemini- 로 시작). 단계는 모델 이름에 포함(High·Medium·Low) — 따로 고르지 않는다(efforts 빈 배열).
+const AGY_MODEL_LINE = /^([A-Za-z0-9][A-Za-z0-9._:-]{0,79})\t(.+)$/;
+function parseAgyModels(text) {
+  const out = []; const seen = new Set();
+  for (const line of String(text ?? '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split(/\r?\n/)) {
+    const m = line.match(AGY_MODEL_LINE);
+    if (!m || !/^gemini[-_]/i.test(m[1]) || seen.has(m[1])) continue;
+    seen.add(m[1]);
+    out.push({ value: m[1], label: m[2].trim(), description: '', efforts: [] });
+  }
+  return out;
+}
+
 // 진입 화면 「설치」 버튼이 앱 안 터미널에서 실행할 공식 설치 명령 (Windows PowerShell). 명령은 레지스트리에서만 읽는다 — 화면이 보낸 문자열은 실행하지 않는다.
 // -EncodedCommand 라 따옴표·| 를 셸이 다시 해석하지 않고, ExecutionPolicy 는 이 프로세스에만 적용된다 (사용자 설정은 그대로).
 function installCommand(id, { platform = process.platform, systemRoot = process.env.SystemRoot || 'C:\\Windows' } = {}) {
@@ -152,4 +168,4 @@ function installCommand(id, { platform = process.platform, systemRoot = process.
   };
 }
 
-module.exports = { ADAPTERS, INSTALL_ENV, has, locate, version, authStatus, loginArgs, tabArgs, parseGrokModels, installCommand };
+module.exports = { ADAPTERS, INSTALL_ENV, has, locate, version, authStatus, loginArgs, tabArgs, parseGrokModels, parseAgyModels, installCommand };

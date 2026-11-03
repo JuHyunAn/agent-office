@@ -133,8 +133,7 @@ if (!process.versions.electron) {
     }
     await pause(200);
     await win.webContents.executeJavaScript(`new Promise((resolve,reject)=>{const start=Date.now(),timer=setInterval(()=>{if(window.__engine&&window.__view){clearInterval(timer);resolve();}else if(Date.now()-start>10000){clearInterval(timer);reject(new Error('Office scene did not become ready'));}},50);})`);
-    await win.webContents.executeJavaScript(`window.__engine.random = () => 0.5; for (let i=0;i<400;i++) {window.__engine.update(50);window.__view.life.update(50);}`);
-    event('SubagentStop', { agent_id: 'rest1', agent_type: 'researcher' });
+    await win.webContents.executeJavaScript(`window.__engine.random = () => 0.5; window.__engine.timing.subIdleLeaveMs = 10 * 60000; for (let i=0;i<400;i++) {window.__engine.update(50);window.__view.life.update(50);}`); // 하위 1분 퇴근이 이 점검의 시간 흐름에 걸리지 않게 늘린다
     await pause(100);
     await win.webContents.executeJavaScript(`for (let i=0;i<800;i++) window.__engine.update(50)`);
     await win.webContents.executeJavaScript(`(async () => { const { OfficeEngine } = await import('./office/engine.js'); OfficeEngine.prototype.update = window.__originalUpdate; })()`);
@@ -147,6 +146,7 @@ if (!process.versions.electron) {
     event('PreToolUse', { agent_id: 'review1', tool_name: 'Skill', tool_input: { skill: 'spreadsheets:Spreadsheets' } });
     await win.webContents.executeJavaScript(`document.hasFocus=()=>false;0`); // 「확인 필요」 점검: 사용자가 이 탭을 보고 있지 않은 상황으로 고정
     event('PermissionRequest', { tool_name: 'Bash' });
+    event('SubagentStop', { agent_id: 'rest1', agent_type: 'researcher' }); // 하위는 일을 마친 지 1분이면 퇴근 — 아래 시뮬레이션(50초) 안에서 휴게실에 있게 이 시점에 보낸다
     await pause(100);
     await win.webContents.executeJavaScript(`window.__view.environment.now=()=>Date.parse('2026-10-26T12:00:00+09:00'); window.__view.environment.cachedMinute=null;
       for (let i=0;i<1000;i++) {window.__engine.update(50);window.__view.life.update(50);} window.__view.fit();`);
@@ -179,7 +179,8 @@ if (!process.versions.electron) {
     assert.ok(status.agents.some(a => a.status === 'resting'));
     assert.ok(status.agents.some(a => a.pose === 'type'));
     const workSummaries = await win.webContents.executeJavaScript(`window.__snapshot.filter(a=>a.status==='working').map(a=>a.bubble)`);
-    assert.ok(workSummaries.every(b => b?.kind === 'alert' || (b?.summary && b.text.includes('\n'))),JSON.stringify(workSummaries));
+    assert.ok(workSummaries.every(b => b?.kind === 'alert' || (b?.summary && typeof b.text === 'string' && b.text.length > 0 && (!b.brief || !b.text.includes('\n')))),JSON.stringify(workSummaries));
+    assert.ok(workSummaries.some(b => b?.brief === true),JSON.stringify(workSummaries));
     assert.equal(workSummaries.filter(b=>b?.summary).length,5);
     await fs.promises.writeFile(path.join(OUT, 'office-isometric.png'), (await win.webContents.capturePage()).toPNG());
     // 「확인 필요」: 보고 있지 않은 탭의 권한 요청은 탭 점·말풍선에 표시되고, 탭 영역을 누르면 꺼진다.
@@ -568,7 +569,10 @@ if (!process.versions.electron) {
     win.webContents.sendInputEvent({type:'mouseUp',x:dragX+110,y:dragY+45,button:'left',clickCount:1});
     await pause(100);
     const afterDrag = await inspect();
-    assert.equal(beforeDrag.ox,afterDrag.ox,'full office must stay fixed');
+    // 세로로 긴 사무실 칸은 전체 보기도 세로에 맞춰 양옆이 넘친다 — 그때만 가로로 가장자리 안에서 움직인다
+    const fitPan = await win.webContents.executeJavaScript(`window.__view.camera.canPan`);
+    if (fitPan) assert.ok(afterDrag.ox > beforeDrag.ox && afterDrag.ox <= 0, JSON.stringify({before:beforeDrag.ox,after:afterDrag.ox}));
+    else assert.equal(beforeDrag.ox,afterDrag.ox,'full office must stay fixed');
     assert.equal(beforeDrag.oy,afterDrag.oy,'full office must stay fixed');
     assert.equal(afterDrag.player.x,beforeDrag.player.x,'drag must not move player');
     win.webContents.sendInputEvent({type:'mouseWheel',x:dragX,y:dragY,deltaY:300,deltaX:0});
@@ -771,17 +775,17 @@ if (!process.versions.electron) {
     assert.equal(codexSprites.looks,7);assert.ok(codexSprites.changes.every(c=>c.changed),JSON.stringify(codexSprites.changes));
     assert.ok(codexSprites.minimumFacePixels>=20,JSON.stringify(codexSprites));assert.equal(codexSprites.walkingBack,0);
     fs.writeFileSync(path.join(OUT,'codex-character-applied.png'),Buffer.from(codexSprites.png,'base64'));delete codexSprites.png;
-    // 새 AI(0D 임시 그림): Codex 와 같은 포즈 목록이 프레임마다 변하고, 자기 몸 색 픽셀이 있고, Claude 주황은 없다
+    // 새 AI 전용 도트: 기존과 같은 상태별 동작과 각 캐릭터의 몸 색을 확인한다.
     const agentSprites = await win.webContents.executeJavaScript(`(async()=>{
       const {drawCharacter}=await import('./themes/pixel-office/sprites.js');
-      const {AGENT_LOOKS}=await import('./themes/pixel-office/agent-looks.js');
+      const bodyColors={grok:'#30343e',muse:'#d9c6a5',antigravity:'#80aec5'};
       const frame=(a,t)=>{const c=document.createElement('canvas');c.width=c.height=96;drawCharacter(c.getContext('2d'),{pose:'stand',status:'working',facing:'down',colorIndex:1,...a},t,40,60);return c;};
       const data=c=>Array.from(c.getContext('2d').getImageData(0,0,96,96).data);
       const cases=[['walk','working'],['type','working'],['read','working'],['run','working'],['talk','working'],['alert','idle'],['stand','sharing'],['sit','resting']];
       const hex=h=>[1,3,5].map(i=>parseInt(h.slice(i,i+2),16));
       const out={};
       for(const cli of ['grok','muse','antigravity']){
-        const [br,bg,bb]=hex(AGENT_LOOKS[cli].body);
+        const [br,bg,bb]=hex(bodyColors[cli]);
         const changes=cases.map(([pose,status])=>{const a={cli,pose,status},before=data(frame(a,0)),after=data(frame(a,130));return {pose,status,changed:before.some((v,j)=>v!==after[j])};});
         const pixels=data(frame({cli},0));let body=0,orange=0;
         for(let n=0;n<pixels.length;n+=4){if(!pixels[n+3])continue;if(pixels[n]===br&&pixels[n+1]===bg&&pixels[n+2]===bb)body++;if(pixels[n]===215&&pixels[n+1]===123&&pixels[n+2]===87)orange++;}

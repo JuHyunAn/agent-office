@@ -67,7 +67,7 @@ function sanitizeUsage(s) {
       if (!r || typeof r !== 'object') continue;
       rows.push({
         id: text(r.id, 60) ?? '', label: text(r.label, 40) ?? '', percent: pct(r.percent),
-        resetsAt: finite(r.resetsAt), resetsText: text(r.resetsText, 60), observedAt: finite(r.observedAt),
+        resetsAt: finite(r.resetsAt), resetsText: text(r.resetsText, 60), valueText: text(r.valueText, 60), observedAt: finite(r.observedAt),
       });
     }
     return { rows, error: text(x.error, 120), updatedAt: finite(x.updatedAt) };
@@ -75,9 +75,8 @@ function sanitizeUsage(s) {
   const ss = src.session && typeof src.session === 'object' ? src.session : null;
   const rf = src.refresh && typeof src.refresh === 'object' ? src.refresh : {};
   return {
-    claude: section(src.claude),
-    codex: section(src.codex),
-    session: ss && (ss.kind === 'claude' || ss.kind === 'codex')
+    ...Object.fromEntries(AGENT_IDS.map((k) => [k, section(src[k])])), // claude·codex 뒤에 레지스트리 순서대로
+    session: ss && AGENT_IDS.includes(ss.kind)
       ? { kind: ss.kind, label: text(ss.label, 60) ?? '', requests: finite(ss.requests) === null ? 0 : Math.max(0, Math.trunc(ss.requests)), contextPercent: pct(ss.contextPercent) }
       : null,
     refresh: { busy: rf.busy === true, nextAllowedAt: finite(rf.nextAllowedAt), lastRunAt: finite(rf.lastRunAt) },

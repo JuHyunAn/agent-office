@@ -101,7 +101,8 @@ test('collabChoices·collabReady·collabSupported', () => {
   assert.equal(collabSupported([]), false);
   assert.equal(collabSupported(['claude', 'codex', 'grok']), true);
   assert.equal(collabSupported(['claude', 'muse']), true);
-  assert.equal(collabSupported(['claude', 'antigravity']), false); // 협업 실행기가 없는 AI
+  assert.equal(collabSupported(['claude', 'antigravity']), true);
+  assert.equal(collabSupported(['antigravity', 'muse', 'grok']), true);
   assert.equal(collabSupported(['claude', 'grok']), true);
   assert.equal(collabSupported(['claude', 'claude']), false);
   assert.equal(collabSupported(['claude', 'codex', 'claude']), false); // 길이가 3이어도 중복이면 거절

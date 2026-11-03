@@ -8,6 +8,7 @@ import path from 'node:path';
 const require = createRequire(import.meta.url);
 const agyHooks = require('../src/main/agyHooks.cjs');
 const { normalizeAgy, toEvent, startHookServer } = require('../src/main/hookServer.cjs');
+const { pickAgyInput } = require('../src/main/agyTools.cjs');
 
 // 실제 ~/.gemini 은 건드리지 않고 임시 홈만 쓴다.
 function withHome(fn) {
@@ -20,8 +21,12 @@ const AGY = { cli: 'antigravity' };
 
 test('agyHooks.command: 절대 경로 curl · 쿼리 · %AGENT_OFFICE_TAB% 치환 자리, 이상하면 null', () => {
   const c = agyHooks.command(47821, 'abcd', 'PreToolUse', SYS);
-  assert.equal(c, 'C:\\Windows\\System32\\curl.exe -sS --noproxy 127.0.0.1 -m 3 -H Content-Type:application/json --data-binary @- --url-query k=abcd --url-query src=global --url-query cli=antigravity --url-query ev=PreToolUse --url-query tab=%AGENT_OFFICE_TAB% http://127.0.0.1:47821/hook');
-  assert.ok(!c.includes('"'));
+  assert.equal(c, 'C:\\Windows\\System32\\curl.exe -s --noproxy 127.0.0.1 -m 3 -H Content-Type:application/json --data-binary @- --url-query k=abcd --url-query src=global --url-query cli=antigravity --url-query ev=PreToolUse --url-query tab=%AGENT_OFFICE_TAB% http://127.0.0.1:47821/hook >nul 2>nul & exit /b 0');
+  // 회귀 방지: 앱이 꺼져 curl 이 실패하거나 응답이 `{}` 여도 agy 가 모든 도구를 거부하지 않게, 출력을 버리고 늘 exit 0 으로 끝낸다 (1.4.12 실측)
+  assert.ok(!c.includes('"'), 'agy 가 큰따옴표를 \\" 로 바꿔 명령이 깨진다');
+  assert.ok(c.includes(' >nul 2>nul '), 'curl 출력과 오류 출력(한글 오류는 agy 를 비정상 종료시킨다)을 버린다');
+  assert.ok(c.endsWith(' & exit /b 0'), '늘 exit 0');
+  assert.ok(c.includes(' -s ') && !c.includes(' -sS '), '오류 문구를 내는 -S 는 쓰지 않는다');
   assert.equal(agyHooks.command(47821, 'abcd', 'PreToolUse', { systemRoot: 'C:\\My Windows' }), null, '경로에 공백');
   assert.equal(agyHooks.command(47821, 'abcd', 'PreToolUse', { systemRoot: 'C:\\W&calc' }), null, 'cmd 특수문자');
   assert.equal(agyHooks.command(0, 'abcd', 'Stop', SYS), null);
@@ -47,6 +52,35 @@ test('agyHooks.entry: 도구 이벤트만 matcher+hooks, 그 밖 이벤트는 ho
   assert.ok(e.PreToolUse[0].hooks[0].command.includes('ev=PreToolUse '));
   assert.equal(agyHooks.entry(47821, 'abcd', { systemRoot: 'C:\\My Windows' }), null, 'curl 경로가 이상하면 항목을 만들지 않는다');
 });
+
+test('agyHooks: 모든 이벤트 명령이 같은 끝맺음(출력 버림 + exit 0)이고 큰따옴표가 없다', () => {
+  const e = agyHooks.entry(47821, 'abcd', SYS);
+  const cmds = [e.SessionStart[0].command, e.PreToolUse[0].hooks[0].command, e.PreInvocation[0].command, e.Stop[0].command];
+  for (const c of cmds) {
+    assert.ok(c.endsWith(' >nul 2>nul & exit /b 0'), c);
+    assert.ok(!c.includes('"'), c);
+  }
+});
+
+test('agyHooks.status/enable: 출력을 버리지 않는 옛 명령 항목은 current 가 아니고, enable 이 새 명령으로 고치되 사용자가 끈 enabled:false 는 유지한다', () => withHome((opts) => {
+  const o = { ...opts, ...SYS };
+  const file = agyHooks.filePath(o);
+  const read = () => JSON.parse(fs.readFileSync(file, 'utf8'))['agent-office'];
+  const old = agyHooks.entry(1, 'a', SYS);
+  const fix = (c) => c.replace(' -s ', ' -sS ').replace(' >nul 2>nul & exit /b 0', '');
+  old.SessionStart[0].command = fix(old.SessionStart[0].command);
+  old.PreToolUse[0].hooks[0].command = fix(old.PreToolUse[0].hooks[0].command);
+  old.PreInvocation[0].command = fix(old.PreInvocation[0].command);
+  old.Stop[0].command = fix(old.Stop[0].command);
+  assert.ok(old.Stop[0].command.endsWith('/hook') && old.Stop[0].command.includes(' -sS '), '옛 명령 모양');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ 'agent-office': { ...old, enabled: false } }));
+  assert.deepEqual(agyHooks.status(1, 'a', o), { installed: true, ours: true, current: false, valid: true, foreign: false }, '옛 명령은 현재가 아니다 → ensureAgyHooks 가 다시 쓴다');
+  agyHooks.enable(1, 'a', o);
+  assert.equal(agyHooks.status(1, 'a', o).current, true);
+  assert.equal(read().enabled, false, '사용자가 끈 것은 다시 켜지 않는다');
+  assert.ok(read().Stop[0].command.endsWith(' >nul 2>nul & exit /b 0'));
+}));
 
 test('agyHooks.filePath: ~/.gemini/config/hooks.json', () => {
   assert.equal(agyHooks.filePath({ homedir: path.join('x', 'h') }), path.join('x', 'h', '.gemini', 'config', 'hooks.json'));
@@ -286,6 +320,14 @@ test('normalizeAgy: PreToolUse 는 도구 이름·입력을 Claude 모양으로'
   assert.equal(normalizeAgy({ ...common(), toolCall: { args: {} } }, { ...AGY, ev: 'PreToolUse' }), null, '도구 이름이 없음');
 });
 
+test('pickAgyInput: 키 이름을 Claude 쪽으로 바꾸고 문자열만 300자까지, 객체가 아니면 빈 객체', () => {
+  assert.deepEqual(pickAgyInput({ CommandLine: 'ls', Path: 'C:/a.txt', query: 'q', Url: 'https://x', Other: 'z' }), { command: 'ls', file_path: 'C:/a.txt', query: 'q', url: 'https://x' });
+  assert.equal(pickAgyInput({ Path: 'a', AbsolutePath: 'b', TargetFile: 'c' }).file_path, 'a', '같은 키가 겹치면 먼저 온 값');
+  assert.deepEqual(pickAgyInput({ CommandLine: 5, Path: null }), {}, '문자열이 아닌 값은 버린다');
+  assert.equal(pickAgyInput({ CommandLine: 'x'.repeat(400) }).command.length, 300);
+  for (const v of [null, undefined, 'ls', 3, ['a']]) assert.deepEqual(pickAgyInput(v), {});
+});
+
 test('normalizeAgy: Stop → Stop (최종 답변 없음) · 모르는 이벤트는 null · camelCase 원본 키는 없다', () => {
   const stop = normalizeAgy({ ...common(), terminationReason: 'done', error: '', fullyIdle: true, executionNum: 1 }, { ...AGY, ev: 'Stop' });
   assert.deepEqual(stop, { session_id: 'conv-1', cwd: 'C:/proj/demo', hook_event_name: 'Stop' });
@@ -316,13 +358,13 @@ test('toEvent: 정규화한 agy 본문 → _cli antigravity · 치환 안 된 %A
   assert.equal(toEvent(n, {}, 'global', 1, { ...AGY, tab: '%AGENT_OFFICE_TAB%' })._tab, null);
 });
 
-test('hookServer: agy 본문을 ev 쿼리로 해석해 전달하고, 쓰지 않는 이벤트는 {} 로 응답만 하고 버린다', async () => {
+test('hookServer: agy 본문을 ev 쿼리로 해석해 전달하고, 쓰지 않는 이벤트는 빈 본문으로 응답만 하고 버린다', async () => {
   const got = [];
   const srv = await startHookServer({ port: 0, token: 'tok', onEvent: (ev) => got.push(ev) });
   const post = async (ev, body, tab = 'tab-agy-1') => {
     const r = await fetch(`http://127.0.0.1:${srv.port}/hook?k=tok&src=global&cli=antigravity&ev=${ev}&tab=${encodeURIComponent(tab)}`, { method: 'POST', body: JSON.stringify(body) });
     assert.equal(r.status, 200);
-    assert.equal(await r.text(), '{}');
+    assert.equal(await r.text(), '', 'Antigravity 는 빈 본문이 「결정 없음」이다 — {} 는 도구를 거부한다');
   };
   try {
     await post('SessionStart', common());
@@ -341,6 +383,27 @@ test('hookServer: agy 본문을 ev 쿼리로 해석해 전달하고, 쓰지 않�
     await post('SessionStart', same);
     await post('Stop', same);
     assert.equal(got.length, 6);
+  } finally {
+    srv.server.close();
+    srv.server.closeAllConnections?.();
+  }
+});
+
+test('hookServer 응답 본문: cli=antigravity 는 200·404 모두 빈 본문, 그 밖(Claude 등)은 {} 그대로', async () => {
+  const srv = await startHookServer({ port: 0, token: 'tok', onEvent: () => {} });
+  const url = (q) => `http://127.0.0.1:${srv.port}/hook?${q}`;
+  const body = JSON.stringify({ session_id: 's', hook_event_name: 'Stop' });
+  try {
+    const agy = await fetch(url('k=tok&src=global&cli=antigravity&ev=Stop'), { method: 'POST', body: JSON.stringify(common()) });
+    assert.equal(agy.status, 200); assert.equal(await agy.text(), '');
+    const bad = await fetch(url('k=틀림&src=global&cli=antigravity&ev=Stop'), { method: 'POST', body: JSON.stringify(common()) });
+    assert.equal(bad.status, 404); assert.equal(await bad.text(), '');
+    const noEv = await fetch(url('k=tok&src=global&cli=antigravity'), { method: 'POST', body });
+    assert.equal(noEv.status, 200); assert.equal(await noEv.text(), '', 'ev 가 없어도 antigravity 면 빈 본문');
+    const claude = await fetch(url('k=tok&src=global'), { method: 'POST', body });
+    assert.equal(claude.status, 200); assert.equal(await claude.text(), '{}');
+    const grok = await fetch(url('k=tok&src=global&cli=grok'), { method: 'POST', body });
+    assert.equal(await grok.text(), '{}');
   } finally {
     srv.server.close();
     srv.server.closeAllConnections?.();

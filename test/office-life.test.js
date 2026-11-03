@@ -99,7 +99,7 @@ test('상주 캐릭터는 자율적으로 이동하고 스킬 작업 중에는 �
   run(life, 5000);
   assert.ok(life.residents.some((a, i) => a.path.length || a.x !== positions[i][0] || a.y !== positions[i][1]));
   engine.handleEvent(ev('PreToolUse', { tool_name: 'Skill', tool_input: { skill: 'documents:documents' } }), { label: 'tab' });
-  run(life, 120000);
+  run(life, 25000);
   assert.ok(life.residents.some(a => a.action === 'collaborate'));
   assert.equal(engine.agents.size, 1);
 });
@@ -118,15 +118,63 @@ test('나를 포함해 생활 캐릭터는 6명이며 새 AI 세 종류가 한 �
   assert.equal(new Set(life.residents.map(a => a.id)).size, 5);
 });
 
-test('스킬 작업 중 협업 공간에 모인 상주 캐릭터는 같은 자리에 겹치지 않는다', () => {
+// 스킬을 쓰는 액터 n명(팀장 + 하위 에이전트)이 막 스킬을 시작한 상태의 엔진·생활을 만든다.
+function skillScene(n, skill = 'documents:documents') {
   const engine = new OfficeEngine(layout), life = new OfficeLife(layout, engine, () => 0.2);
-  engine.handleEvent(ev('PreToolUse', { tool_name: 'Skill', tool_input: { skill: 'documents:documents' } }), { label: 'tab' });
-  run(life, 120000);
-  const gathered = life.residents.filter(a => a.action === 'collaborate' && !a.path.length);
-  assert.equal(gathered.length, 4);
-  assert.ok(gathered.some(a => a.cli === 'codex'));
+  const useSkill = (who, name) => engine.handleEvent(ev('PreToolUse', { ...(who === 'lead' ? {} : { agent_id: who, agent_type: 'executor' }), tool_name: 'Skill', tool_input: { skill: name } }), { label: 'tab' });
+  ['lead', 'a', 'b'].slice(0, n).forEach(who => useSkill(who, skill));
+  return { engine, life, useSkill };
+}
+const gatheredIn = life => life.residents.filter(a => a.action === 'collaborate' && !a.path.length);
+
+test('스킬 작업 중 협업 공간에 모인 상주 캐릭터는 같은 자리에 겹치지 않는다', () => {
+  const { life } = skillScene(1);
+  run(life, 20000);
+  const gathered = gatheredIn(life);
+  assert.deepEqual(gathered.map(a => a.id), ['resident-dex']);
+  assert.equal(gathered[0].cli, 'codex');
+  const crowd = skillScene(2).life;
+  run(crowd, 20000);
+  const pair = gatheredIn(crowd);
+  assert.equal(pair.length, 2);
   // 화면에서는 가로 간격이 약 0.36배로 줄고 캐릭터는 1.5배로 그려지므로 넉넉히 띄운다.
-  for (const a of gathered) for (const b of gathered) if (a !== b) assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 100, `${a.label}·${b.label}`);
+  for (const a of pair) for (const b of pair) if (a !== b) assert.ok(Math.hypot(a.x - b.x, a.y - b.y) >= 100, `${a.label}·${b.label}`);
+});
+
+test('스킬을 쓰는 에이전트가 셋이어도 협업하러 가는 상주 캐릭터는 최대 2명이다', () => {
+  const { life } = skillScene(3);
+  run(life, 20000);
+  assert.equal(gatheredIn(life).length, 2);
+  assert.equal(life.residents.filter(a => a.action === 'collaborate').length, 2);
+});
+
+test('스킬을 시작한 지 오래되면 스킬 표시가 남아 있어도 협업 연출을 하지 않고, 스킬이 바뀌면 다시 모인다', () => {
+  const { engine, life, useSkill } = skillScene(1);
+  run(life, 20000);
+  assert.equal(gatheredIn(life).length, 1);
+  run(life, 40000);
+  assert.equal(engine.agents.get('s:lead').skill, 'documents:documents');
+  assert.equal(life.residents.filter(a => a.action === 'collaborate').length, 0);
+  useSkill('lead', 'pdf:pdf');
+  run(life, 20000);
+  assert.equal(gatheredIn(life).length, 1);
+});
+
+test('결과 공유로 작업 중이 잠깐 아니었다가 같은 스킬로 돌아와도 협업 연출은 다시 시작하지 않는다', () => {
+  const { engine, life } = skillScene(1);
+  const tick = () => { engine.update(50); life.update(50); };
+  const lead = engine.agents.get('s:lead');
+  for (let i = 0; i < 800; i++) tick();
+  assert.equal(life.residents.filter(a => a.action === 'collaborate').length, 0);
+  engine.handleEvent(ev('SubagentStart', { agent_id: 'a', agent_type: 'executor' }), { label: 'tab' });
+  engine.handleEvent(ev('PreToolUse', { tool_name: 'SendMessage', tool_input: { to: 'executor', message: 'hi' } }), { label: 'tab' });
+  assert.equal(lead.status, 'sharing');
+  tick();
+  assert.equal(lead.skill, 'documents:documents');
+  for (let i = 0; i < 2400 && lead.status !== 'working'; i++) tick();
+  assert.equal(lead.status, 'working');
+  for (let i = 0; i < 400; i++) tick();
+  assert.equal(life.residents.filter(a => a.action === 'collaborate').length, 0);
 });
 
 // 같은 씨앗이면 같은 수열을 내는 의사 난수 (mulberry32).
