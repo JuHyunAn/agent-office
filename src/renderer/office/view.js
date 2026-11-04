@@ -30,7 +30,7 @@ export class OfficeView {
     this.hidden = false; // 코드 화면 등이 사무실을 덮는 동안: 계산은 계속하고 그리기만 쉰다
     this.resize = this.resize.bind(this);
     this.frame = this.frame.bind(this);
-    new ResizeObserver(this.resize).observe(canvas.parentElement);
+    new ResizeObserver(() => { this.resize(); this.redrawNow(); }).observe(canvas.parentElement);
     const input = () => { this.lastInputAt = performance.now(); };
     for (const type of ['pointerdown', 'pointermove', 'wheel', 'mouseleave']) canvas.addEventListener(type, input, { passive: true });
     canvas.addEventListener('pointerdown', e => {
@@ -170,6 +170,13 @@ export class OfficeView {
     if (key !== this.lastState) { this.lastState = key; this.onState(state); }
   }
 
+  // 크기를 다시 정하면 캔버스가 지워진다. 다음 프레임을 기다리면 그 사이 바탕색이 비쳐 깜빡이므로, 화면에 나오기 전인 이 자리에서 바로 그린다.
+  redrawNow() {
+    if (!this.running || this.hidden) return;
+    this.redraw = false; this.lastDraw = performance.now();
+    try { this.draw(this.lastDraw); } catch (e) { this.reportDrawError(e); }
+  }
+
   frame(now) {
     if (!this.running) return;
     const dt = now - this.last;
@@ -192,11 +199,15 @@ export class OfficeView {
         }
       }
     } catch (e) {
-      // 테마 그리기 오류 하나로 사무실이 멈추지 않게 한다 (같은 오류는 한 번만 기록).
-      if (this.lastError !== String(e)) { this.lastError = String(e); console.error('[office]', e); }
+      this.reportDrawError(e);
     } finally {
       requestAnimationFrame(this.frame);
     }
+  }
+
+  // 테마 그리기 오류 하나로 사무실이 멈추지 않게 한다 (같은 오류는 한 번만 기록).
+  reportDrawError(e) {
+    if (this.lastError !== String(e)) { this.lastError = String(e); console.error('[office]', e); }
   }
 
   // 화면에 움직이는 것이 있으면 매 프레임 그린다 (걷기·문·비/눈·효과·마우스 조작·편집).

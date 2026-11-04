@@ -54,10 +54,9 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 /* 오른쪽 영역 너비 조절 손잡이: 기본 너비가 최소, 왼쪽으로 끌어 넓힌다 */
 .cli-resizer { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; cursor: col-resize; z-index: 20; touch-action: none; }
-.cli-resizer::after { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px; background: transparent; transition: background .15s; }
-.cli-resizer:hover::after, .cli-resizer.dragging::after { background: #8a76b0; }
+.cli-resizer::after { content: ""; position: absolute; left: 3px; top: 0; bottom: 0; width: 2px; background: #8a76b0; }
 body.resizing-cli { cursor: col-resize; user-select: none; }
-body.resizing-cli iframe, body.resizing-cli canvas, body.resizing-cli .xterm { pointer-events: none; }
+body.resizing-cli iframe, body.resizing-cli canvas, body.resizing-cli .xterm, body.resizing-cli .monaco-editor { pointer-events: none; }
 .office-pane { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
 /* 코드 화면: 도구줄 아래 사무실 영역을 통째로 덮는다 (손잡이 z-index 20 은 덮지 않는다) */
 .code-pane { position: absolute; left: 0; right: 0; bottom: 0; top: var(--office-toolbar-h, 52px); z-index: 10; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #1e1e1e; color: #cccccc; }
@@ -68,12 +67,18 @@ body.resizing-cli iframe, body.resizing-cli canvas, body.resizing-cli .xterm { p
 .code-head button, .code-diff-toggle { background: #3a3d41; color: #cccccc; border: 1px solid #454545; border-radius: 3px; padding: 4px 10px; font-size: 12px; white-space: nowrap; }
 .code-head button:hover:not(:disabled), .code-diff-toggle:hover:not(:disabled) { background: #45494e; }
 .code-head button:disabled, .code-diff-toggle:disabled, .code-head select:disabled { opacity: 0.45; cursor: default; }
-.code-head select:focus-visible, .code-head button:focus-visible, .code-diff-toggle:focus-visible, .code-node:focus-visible, .code-touch:focus-visible { outline: 1px solid #007fd4; outline-offset: -1px; }
+.code-head select:focus-visible, .code-head button:focus-visible, .code-diff-toggle:focus-visible, .code-node:focus-visible, .code-touch:focus-visible, .gp-file:focus-visible, .gp-act:focus-visible, .gp-rbtn:focus-visible, .gp-graph-toggle:focus-visible, .gp-all:focus-visible, .gp-gen:focus-visible, .gp-actions button:focus-visible, .gp-confirm button:focus-visible, .gp-pending button:focus-visible, .gp-note-close:focus-visible, .gp-msg:focus-visible { outline: 1px solid #007fd4; outline-offset: -1px; }
 .code-status { flex: 1; min-width: 0; text-align: right; color: #8b8b8b; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .code-status.err { color: #f48771; }
-/* 본문: 왼쪽 목록(280px) · 오른쪽 보기 */
+/* 본문: 왼쪽 목록(기본 280px, 경계를 끌어 조절) · 오른쪽 보기 */
 .code-body { flex: 1; min-height: 0; display: flex; }
-.code-side { flex: 0 0 280px; width: 280px; overflow-x: hidden; overflow-y: auto; padding-bottom: 12px; background: #252526; border-right: 1px solid #3c3c3c; }
+.code-side { flex: 0 0 var(--code-side-w, 280px); width: var(--code-side-w, 280px); display: flex; flex-direction: column; overflow: hidden; background: #252526; border-right: 1px solid #3c3c3c; }
+/* 왼쪽 목록의 오른쪽 경계를 끌어 너비 조절. 목록이 overflow:hidden 이라 안쪽에 두면 잘리고 스크롤바와 겹쳐, 둘 사이 폭 0 요소에서 편집기 쪽으로 더 걸친다 */
+.code-side-resizer { position: relative; flex: 0 0 0; width: 0; cursor: col-resize; z-index: 20; touch-action: none; }
+.code-side-resizer::before { content: ""; position: absolute; top: 0; bottom: 0; left: -2px; width: 7px; }
+.code-side-resizer::after { content: ""; position: absolute; top: 0; bottom: 0; left: -2px; width: 2px; background: transparent; transition: background .15s; pointer-events: none; }
+.code-side-resizer:hover::after, .code-side-resizer.dragging::after { background: #007fd4; }
+.code-side-top { flex: 1 1 auto; min-height: 0; overflow-x: hidden; overflow-y: auto; padding-bottom: 12px; }
 .code-section { margin: 0; padding: 10px 10px 4px; color: #bbbbbb; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; }
 .code-note { margin: 0; padding: 2px 10px 6px; color: #cca700; font-size: 11px; }
 .code-touched, .code-tree, .code-children { list-style: none; margin: 0; padding: 0; }
@@ -97,6 +102,77 @@ body.resizing-cli iframe, body.resizing-cli canvas, body.resizing-cli .xterm { p
 .code-mark[data-kind="read"] { color: #8b8b8b; }
 .code-touch .code-meta { color: #8b8b8b; font-size: 10px; white-space: nowrap; }
 .code-touch .code-dir { grid-column: 2 / 4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7a7a7a; font-size: 10px; }
+/* Git 패널: 왼쪽 목록 아래 (.code-side-top 과 위아래 경계로 나뉜다. 분석 패널과 같은 경계 끌기) */
+.git-panel { position: relative; flex: 0 0 var(--gp-height, min(300px, 50%)); min-height: 0; display: flex; flex-direction: column; border-top: 1px solid #3c3c3c; background: #252526; font-size: 12px; }
+.git-panel [hidden] { display: none !important; }
+.gp-head { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; padding: 5px 10px 3px; font-size: 11px; min-width: 0; }
+.gp-title { color: #bbbbbb; font-weight: 700; letter-spacing: 0.3px; }
+.gp-branch { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cccccc; font: 11px Consolas, "Malgun Gothic", monospace; }
+.gp-ab { color: #8b8b8b; white-space: nowrap; }
+.gp-busy { margin-left: auto; color: #cca700; white-space: nowrap; }
+.gp-remote { flex: 0 0 auto; display: flex; gap: 2px; margin-left: auto; }
+.gp-busy:not([hidden]) + .gp-remote { margin-left: 0; }
+.gp-login { flex: 0 0 auto; padding: 0 10px 3px; color: #cca700; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gp-rbtn { padding: 0 5px; background: transparent; border: 0; border-radius: 3px; color: #cccccc; font-size: 14px; line-height: 18px; cursor: pointer; }
+.gp-rbtn:hover:not(:disabled) { background: #2a2d2e; }
+.gp-rbtn:disabled { opacity: 0.45; cursor: default; }
+.gp-fixed { flex: 0 1 auto; min-height: 0; overflow-y: auto; }
+.gp-note { display: flex; align-items: flex-start; gap: 4px; max-height: 8em; overflow-y: auto; padding: 2px 6px 4px 10px; color: #cca700; font-size: 11px; }
+.gp-note-close { flex: 0 0 auto; margin-left: auto; padding: 0 5px; background: transparent; border: 0; color: inherit; font-size: 13px; line-height: 14px; cursor: pointer; }
+.gp-note-close:hover { background: #2f3236; }
+.gp-pending { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; padding: 0 10px 6px; color: #cca700; font-size: 11px; }
+.gp-pending-text { flex: 1 1 auto; min-width: 0; }
+.gp-note.err { color: #f48771; }
+.gp-note-text { flex: 1 1 auto; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gp-msg-wrap { position: relative; margin: 0 10px; }
+.gp-msg { display: block; box-sizing: border-box; width: 100%; margin: 0; padding: 4px 30px 4px 6px; background: #3c3c3c; color: #cccccc; border: 1px solid #454545; border-radius: 3px; font: inherit; line-height: 1.4; resize: none; max-height: calc(8 * 1.4em + 10px); overflow-y: auto; }
+.gp-msg::placeholder { color: #8b8b8b; }
+/* 메시지 칸 안 오른쪽의 생성 아이콘. 메시지가 길어 스크롤바가 생겨도 아이콘과 겹치지 않게 스크롤바를 얇게 둔다 */
+.gp-msg::-webkit-scrollbar { width: 6px; }
+.gp-msg::-webkit-scrollbar-thumb { background: #5a5a5a; border-radius: 3px; }
+.gp-gen { position: absolute; top: 3px; right: 7px; display: flex; width: 22px; height: 22px; padding: 3px; background: transparent; color: #cccccc; border: 0; border-radius: 3px; cursor: pointer; }
+.gp-gen svg { display: block; width: 16px; height: 16px; }
+.gp-gen:hover:not(:disabled) { background: #45494e; }
+.gp-actions button, .gp-confirm button, .gp-pending button, .gp-all { background: #3a3d41; color: #cccccc; border: 1px solid #454545; border-radius: 3px; padding: 3px 8px; font-size: 12px; white-space: nowrap; }
+.gp-actions button:hover:not(:disabled), .gp-confirm button:hover:not(:disabled), .gp-pending button:hover:not(:disabled), .gp-all:hover:not(:disabled) { background: #45494e; }
+.gp-gen:disabled, .gp-actions button:disabled, .gp-confirm button:disabled, .gp-all:disabled, .gp-act:disabled { opacity: 0.45; cursor: default; }
+.gp-actions { display: flex; gap: 4px; padding: 4px 10px 6px; }
+.gp-actions button { flex: 1 1 auto; padding: 0 4px; font-size: 11px; line-height: 22px; }
+.gp-commit { background: #0e639c !important; border-color: #0e639c !important; color: #ffffff !important; }
+.gp-commit:hover:not(:disabled) { background: #1177bb !important; }
+.gp-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 0 10px 6px; color: #cccccc; font-size: 11px; }
+.gp-confirm-text { flex: 1 1 100%; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gp-lists { flex: 1 1 60px; min-height: 60px; overflow-x: hidden; overflow-y: auto; padding-bottom: 8px; border-top: 1px solid #333333; }
+.gp-staged, .gp-changes, .gp-conflicts { list-style: none; margin: 0; padding: 0; }
+.gp-h { margin: 0; padding: 6px 10px 2px; display: flex; align-items: center; gap: 6px; color: #bbbbbb; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; }
+.gp-h-text { flex: 1 1 auto; min-width: 0; }
+.gp-all { padding: 0 6px; line-height: 16px; font-weight: 400; }
+.gp-staged li, .gp-changes li, .gp-conflicts li { display: flex; align-items: stretch; }
+.gp-none, .gp-more { padding: 3px 10px; color: #6f6f6f; font-size: 11px; }
+.gp-file { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 4px; padding: 2px 4px 2px 10px; border: 0; background: transparent; color: #cccccc; text-align: left; font-size: 12px; line-height: 17px; cursor: pointer; }
+.gp-file:hover:not(:disabled), .gp-act:hover:not(:disabled) { background: #2a2d2e; }
+.gp-file:disabled { opacity: 0.6; cursor: default; }
+.gp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gp-agent { color: #e2c08d; font-size: 9px; }
+.gp-dir { grid-column: 2 / 4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7a7a7a; font-size: 10px; }
+/* 그래프: 읽기 전용 커밋 목록 (Git 패널 목록 맨 아래) */
+.gp-graph-head { margin: 0; border-top: 1px solid #333333; font-size: 11px; }
+.gp-graph-toggle { display: block; width: 100%; padding: 6px 10px 2px; background: transparent; border: 0; color: #bbbbbb; text-align: left; font-size: 11px; font-weight: 700; letter-spacing: 0.3px; cursor: pointer; }
+.gp-graph-toggle:hover { color: #ffffff; }
+.gp-graph { list-style: none; margin: 0; padding: 0 0 4px; }
+.gp-node { padding: 2px 10px; }
+.gp-node:hover { background: #2a2d2e; }
+.gp-node-top { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.gp-mark { flex: 0 0 12px; text-align: center; color: #7a7a7a; font-size: 9px; }
+.gp-subject { flex: 1 1 40px; min-width: 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cccccc; font-size: 12px; line-height: 17px; }
+.gp-ref { flex: 0 1 auto; max-width: 96px; padding: 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: #3a3d41; border-radius: 3px; color: #cccccc; font-size: 10px; line-height: 15px; }
+.gp-ref-remote { color: #89d185; }
+.gp-ref-tag { color: #e2c08d; }
+.gp-ref-cur { background: #0e639c; color: #ffffff; }
+.gp-meta { padding-left: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7a7a7a; font-size: 10px; }
+.gp-graph-empty { padding: 3px 10px; color: #6f6f6f; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gp-graph-empty.err { color: #f48771; }
+.gp-act { flex: 0 0 26px; border: 0; background: transparent; color: #cccccc; font-size: 14px; cursor: pointer; }
 .code-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .code-file-head { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; min-height: 31px; padding: 3px 10px 3px 14px; background: #252526; border-bottom: 1px solid #3c3c3c; }
 .code-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #cccccc; font: 12px Consolas, "Malgun Gothic", monospace; }
@@ -119,12 +195,32 @@ body.resizing-cli iframe, body.resizing-cli canvas, body.resizing-cli .xterm { p
 .code-act:disabled, .code-analyze select:disabled { opacity: 0.45; cursor: default; }
 .code-act:focus-visible, .code-analyze select:focus-visible { outline: 1px solid #007fd4; outline-offset: -1px; }
 /* 코드 분석: 하단 패널 (.code-view 아래) */
-.code-analysis { position: relative; flex: 0 0 var(--ca-height, min(240px, 40%)); min-height: 0; display: flex; flex-direction: column; background: #1e1e1e; border-top: 1px solid #3c3c3c; }
-/* 위쪽 경계를 끌어 높이 조절 (오른쪽 영역 너비 조절 .cli-resizer 와 같은 모양) */
+/* 하단 영역: 분석 패널과 터미널이 탭으로 나눠 쓴다. 높이(--ca-height)와 위쪽 경계(.ca-resizer)는 이 영역의 것 */
+.code-bottom { position: relative; flex: 0 0 var(--ca-height, min(240px, 40%)); min-height: 0; display: flex; flex-direction: column; background: #1e1e1e; border-top: 1px solid #3c3c3c; }
+.cb-tabs { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; padding: 2px 6px; background: #252526; border-bottom: 1px solid #3c3c3c; min-width: 0; }
+.cb-tab, .cb-restart, .cb-close { background: transparent; color: #cccccc; border: 1px solid transparent; border-radius: 3px; padding: 2px 6px; font-size: 12px; white-space: nowrap; }
+.cb-tab { display: inline-flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+.cb-tab:hover, .cb-close:hover { background: #2f3236; }
+.cb-tab.on { background: #37373d; color: #ffffff; }
+.cb-dot { color: #d97757; font-size: 10px; line-height: 1; }
+.cb-restart { background: #3a3d41; border-color: #454545; }
+.cb-restart:hover { background: #45494e; }
+.cb-shell { background: #3a3d41; color: #cccccc; border: 1px solid #454545; border-radius: 3px; padding: 2px 6px; font-size: 12px; min-width: 0; }
+.cb-close { margin-left: auto; font-size: 15px; line-height: 1; }
+.cb-tab:focus-visible, .cb-restart:focus-visible, .cb-close:focus-visible, .cb-shell:focus-visible, .code-term-toggle:focus-visible { outline: 1px solid #007fd4; outline-offset: -1px; }
+.code-term-toggle[aria-pressed="true"] { background: #0e639c; border-color: #0e639c; color: #ffffff; }
+.code-term-toggle[aria-pressed="true"]:hover:not(:disabled) { background: #1177bb; }
+.cb-off { display: none !important; } /* 하단에서 보지 않는 쪽 (분석 패널의 hidden 속성은 따로 둔다) */
+.code-analysis { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; background: #1e1e1e; }
+.code-terminal { flex: 1; min-height: 0; display: flex; flex-direction: column; box-sizing: border-box; padding: 4px 4px 2px 8px; background: #1a1a1f; overflow: hidden; }
+.ct-host { flex: 1; min-height: 0; min-width: 0; }
+.ct-note { margin: auto; color: #8a8a8a; font-size: 12px; }
+body.resizing-ca .xterm { pointer-events: none; }
+/* 위쪽 경계를 끌어 높이 조절 (왼쪽 목록 너비 조절 .code-side-resizer 와 같은 모양) */
 /* 편집기 쪽으로는 2px 만 걸쳐 모나코 가로 스크롤바를 가리지 않는다 */
-.ca-resizer { position: absolute; left: 0; right: 0; top: -2px; height: 7px; cursor: row-resize; z-index: 5; touch-action: none; }
-.ca-resizer::after { content: ""; position: absolute; left: 0; right: 0; top: 1px; height: 2px; background: transparent; transition: background .15s; }
-.ca-resizer:hover::after, .ca-resizer.dragging::after { background: #007fd4; }
+.ca-resizer, .gp-resizer { position: absolute; left: 0; right: 0; top: -2px; height: 7px; cursor: row-resize; z-index: 5; touch-action: none; }
+.ca-resizer::after, .gp-resizer::after { content: ""; position: absolute; left: 0; right: 0; top: 1px; height: 2px; background: transparent; transition: background .15s; }
+.ca-resizer:hover::after, .ca-resizer.dragging::after, .gp-resizer:hover::after, .gp-resizer.dragging::after { background: #007fd4; }
 body.resizing-ca { cursor: row-resize; user-select: none; }
 body.resizing-ca iframe, body.resizing-ca canvas, body.resizing-ca .monaco-editor { pointer-events: none; }
 .ca-head { flex: 0 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 3px 8px; padding: 3px 10px; background: #252526; border-bottom: 1px solid #3c3c3c; min-width: 0; }
@@ -216,10 +312,14 @@ body.code-mode .custom-builder { display: none; }
 .player-chip { padding: 2px 5px; border-radius: 3px; color: #fff; background: #739c99; }
 .camera-hint { margin-left: auto; color: #9ba491; white-space: nowrap; }
 #player-state { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.feed-panel { background: #f8f3e8; border-top: 1px solid var(--line); padding: 9px 24px; }
-.feed-heading { display: flex; align-items: center; gap: 12px; font-size: 10px; color: #b0a38e; margin-bottom: 8px; }
+.feed-panel { position: relative; display: flex; flex-direction: column; flex: 0 0 var(--feed-height, auto); min-height: 0; background: #f8f3e8; border-top: 1px solid var(--line); padding: 9px 24px; }
+/* 위쪽 경계를 끌어 높이 조절 (--feed-height, setupAnalysisResizer). 끄는 중 표시는 body.resizing-ca 규칙을 같이 쓴다 */
+.feed-resizer { position: absolute; left: 0; right: 0; top: -2px; height: 7px; cursor: row-resize; z-index: 5; touch-action: none; }
+.feed-resizer::after { content: ""; position: absolute; left: 0; right: 0; top: 1px; height: 2px; background: transparent; transition: background .15s; }
+.feed-resizer:hover::after, .feed-resizer.dragging::after { background: #8a76b0; }
+.feed-heading { flex: 0 0 auto; display: flex; align-items: center; gap: 12px; font-size: 10px; color: #b0a38e; margin-bottom: 8px; }
 .feed {
-  list-style: none; margin: 0; padding: 0; height: 68px; overflow: hidden;
+  list-style: none; margin: 0; padding: 0; flex: 1 1 68px; min-height: 0; overflow-x: hidden; overflow-y: auto; scrollbar-width: thin;
   color: #837b6c; font-size: 11px; line-height: 17px;
 }
 .feed li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -97,3 +97,54 @@ test('도시·배경 없음 전환은 생활 상태·카메라·진행 중 상�
     if (priorWindow === undefined) delete globalThis.window; else globalThis.window = priorWindow;
   }
 });
+
+test('크기가 바뀌면 redrawNow 가 바로 한 번 그린다 (가려졌거나 멈췄으면 그리지 않는다)', () => {
+  const view = makeView(theme);
+  let draws = 0;
+  view.draw = () => { draws += 1; };
+  view.running = true; view.hidden = false; view.redraw = true;
+  view.redrawNow();
+  assert.equal(draws, 1);
+  assert.equal(view.redraw, false);
+  view.running = false; view.redrawNow();
+  assert.equal(draws, 1, '멈춘 동안은 그리지 않는다');
+  view.running = true; view.hidden = true; view.redrawNow();
+  assert.equal(draws, 1, '코드 화면에 가려진 동안은 그리지 않는다');
+});
+
+test('redrawNow 중 그리기가 던져도 예외가 밖으로 나가지 않는다', () => {
+  const view = makeView(theme);
+  view.draw = () => { throw new Error('그리기 오류'); };
+  view.running = true; view.hidden = false;
+  const priorError = console.error;
+  console.error = () => {};
+  try {
+    assert.doesNotThrow(() => view.redrawNow());
+  } finally {
+    console.error = priorError;
+  }
+});
+
+test('사무실 부모 칸 크기가 바뀌면 ResizeObserver 콜백이 resize 후 (돌고 있을 때) 한 번 그린다', () => {
+  const priorObserver = globalThis.ResizeObserver;
+  let callback = null, observed = null;
+  globalThis.ResizeObserver = class { constructor(cb) { callback = cb; } observe(el) { observed = el; } };
+  try {
+    const parent = { clientWidth: 800, clientHeight: 600 };
+    const canvas = { getContext: () => ({}), parentElement: parent, addEventListener() {} };
+    const view = new OfficeView(canvas, {}, { layout: { width: 800, height: 600 } });
+    assert.equal(observed, parent, '캔버스의 부모 칸을 지켜본다');
+    let resizes = 0, draws = 0;
+    view.resize = () => { resizes += 1; };
+    view.draw = () => { draws += 1; };
+    view.running = true; view.hidden = false;
+    callback();
+    assert.equal(resizes, 1);
+    assert.equal(draws, 1);
+    view.running = false; callback();
+    assert.equal(resizes, 2);
+    assert.equal(draws, 1, '멈춘 동안은 그리지 않는다');
+  } finally {
+    if (priorObserver === undefined) delete globalThis.ResizeObserver; else globalThis.ResizeObserver = priorObserver;
+  }
+});

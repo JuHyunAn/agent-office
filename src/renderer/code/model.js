@@ -66,7 +66,9 @@ export class TouchedList {
     const i = this.#list.findIndex((x) => x.rel.toLowerCase() === key);
     const prev = i >= 0 ? this.#list[i] : null;
     // 한 번이라도 edit 이면 edit 유지 (읽기가 나중에 와도 「수정함」 표시를 낮추지 않는다).
-    const merged = { ...item, kind: prev?.kind === 'edit' || item.kind === 'edit' ? 'edit' : 'read' };
+    // editAt = 마지막 수정 시각 (읽기가 나중에 와도 유지) — Git 패널의 「방금 수정」 판정에 쓴다.
+    const editAt = item.kind === 'edit' ? item.at : prev?.editAt;
+    const merged = { ...item, kind: prev?.kind === 'edit' || item.kind === 'edit' ? 'edit' : 'read', ...(editAt !== undefined ? { editAt } : {}) };
     if (prev) this.#list.splice(i, 1);
     this.#list.unshift(merged);
     if (this.#list.length > TOUCHED_MAX) this.#list.length = TOUCHED_MAX;
@@ -109,7 +111,7 @@ export function buildTree(paths) {
 
 // 일정 주기로 run 을 부르는 갱신기. 실행은 절대 겹치지 않고, run 이 실패해도 다음 주기는 이어진다.
 //  - start: 이미 켜져 있으면 무시. 켜고 즉시 1회 실행, 끝나면(성공·실패 모두) 켜져 있을 때만 intervalMs 뒤 예약.
-//  - bump: 꺼져 있으면 무시. 실행 중이면 끝난 뒤 예약을 bumpMs 로, 대기 중이면 남은 시간이 bumpMs 보다 길 때만 bumpMs 로 당김.
+//  - bump(ms = bumpMs): 꺼져 있으면 무시. 실행 중이면 끝난 뒤 예약을 ms 로, 대기 중이면 남은 시간이 ms 보다 길 때만 ms 로 당김 (0 이면 곧바로).
 //  - stop: 예약 취소. 실행 중이던 것이 끝나도 다시 예약하지 않음.
 //  - running: 켜져 있는 동안 true (start 이후 stop 전).
 // timers 의 setTimeout·clearTimeout 은 부를 때마다 꺼내 쓴다 (테스트의 mock 타이머가 적용되도록).
@@ -160,10 +162,10 @@ export function createRefresher({ run, intervalMs = 10000, bumpMs = 3000, timers
       again = false;
       cancel();
     },
-    bump() {
+    bump(ms = bumpMs) {
       if (!on) return;
-      if (busy) { nextMs = Math.min(nextMs, bumpMs); return; }
-      if (timer != null && dueAt - Date.now() > bumpMs) schedule(bumpMs);
+      if (busy) { nextMs = Math.min(nextMs, ms); return; }
+      if (timer != null && dueAt - Date.now() > ms) schedule(ms);
     },
   };
 }

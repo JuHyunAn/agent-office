@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const {
   resolveInside, toGitPath, createCodeRoots, repoInfo, listFiles, statusOf,
   readText, statMtime, headText, createCodeService, registerCodeIpc, git: gitRun,
-  rootKey, diffText, diffStat, searchText, hasHead,
+  rootKey, diffText, diffStat, searchText, hasHead, killTrackedGit, trackedGitCount,
 } = require('../src/main/codeRepo.cjs');
 
 after(() => fs.rmSync(base, { recursive: true, force: true, maxRetries: 3 }));
@@ -285,7 +285,7 @@ test('createCodeService: 나중에 git init 한 폴더는 트리를 다시 받�
   assert.equal((await service.read(late, 'a.txt')).kind, 'text');
 });
 
-test('registerCodeIpc: 7개 채널, 잘못된 요청 거부, 폴더 등록·선택', { skip }, async () => {
+test('registerCodeIpc: 16개 채널, 잘못된 요청 거부, 폴더 등록·선택', { skip }, async () => {
   const handlers = new Map();
   const handleMain = (ch, fn) => handlers.set(ch, fn);
   const roots = createCodeRoots();
@@ -297,7 +297,10 @@ test('registerCodeIpc: 7개 채널, 잘못된 요청 거부, 폴더 등록·선�
   registerCodeIpc(handleMain, { roots, service, pickFolder: async () => picked, checkFolder });
   const call = (ch, payload) => handlers.get(ch)(payload);
 
-  assert.deepEqual([...handlers.keys()].sort(), ['code:allow', 'code:base', 'code:pick', 'code:poll', 'code:read', 'code:search', 'code:tree']);
+  assert.deepEqual([...handlers.keys()].sort(), [
+    'code:allow', 'code:base', 'code:git:commit', 'code:git:fetch', 'code:git:log', 'code:git:pull', 'code:git:push', 'code:git:stage',
+    'code:git:state', 'code:git:sync', 'code:git:unstage', 'code:pick', 'code:poll', 'code:read', 'code:search', 'code:tree',
+  ]);
 
   await assert.rejects(call('code:tree', { root: fx.sub }), { message: '허용되지 않는 폴더입니다' }, '등록 전');
   assert.equal(await call('code:allow', { cwd: fx.sub }), true);
@@ -314,11 +317,21 @@ test('registerCodeIpc: 7개 채널, 잘못된 요청 거부, 폴더 등록·선�
   await assert.rejects(call('code:allow', { cwd: path.join(base, 'nope') }), { message: /^폴더가 없습니다/ });
   assert.equal(roots.has(path.join(base, 'nope')), false, '검사에 실패하면 등록하지 않는다');
 
-  for (const ch of ['code:tree', 'code:poll', 'code:read', 'code:base', 'code:search']) {
+  for (const ch of ['code:tree', 'code:poll', 'code:read', 'code:base', 'code:search',
+    'code:git:state', 'code:git:stage', 'code:git:unstage', 'code:git:commit', 'code:git:fetch', 'code:git:pull', 'code:git:push', 'code:git:sync', 'code:git:log']) {
     for (const bad of ['문자열', null, undefined, 5, {}, { root: 5 }, []]) {
       await assert.rejects(call(ch, bad), { message: '잘못된 요청입니다' }, `${ch} ${JSON.stringify(bad)}`);
     }
   }
+
+  // Git 채널: 등록된 폴더에서 상태·기록을 읽고, 인자 검사 결과는 던지지 않고 값으로 돌려준다
+  const gst = await call('code:git:state', { root: fx.sub });
+  assert.equal(gst.ok, true);
+  assert.equal(typeof gst.canWrite, 'boolean');
+  assert.equal((await call('code:git:log', { root: fx.sub })).commits.length, 1);
+  assert.deepEqual(await call('code:git:stage', { root: fx.sub, paths: [] }), { ok: false, code: 'bad', error: '잘못된 요청입니다' });
+  assert.equal((await call('code:git:commit', { root: fx.sub, message: ' ', expected: [], stage: undefined, then: null })).code, 'bad');
+  assert.equal((await call('code:git:state', { root: path.join(base, 'nope') })).code, 'root', '등록 안 된 폴더는 값으로 거부');
   for (const bad of ['문자열', null, {}, { cwd: 5 }]) {
     await assert.rejects(call('code:allow', bad), { message: '잘못된 요청입니다' });
   }
@@ -356,6 +369,41 @@ test('git: 시간 초과면 timeout 오류로 거부하고 git 프로세스도 �
   assert.notEqual(aliveWithMarker(marker), true, '시간이 지난 git 이 남아 있다');
 });
 
+test('killTrackedGit: track 으로 띄운 오래 도는 git 만 끝내고, 다시 불러도 안전하다', { skip }, async () => {
+  const mark = `aotrack${process.pid}x${Date.now()}`;
+  const markPlain = `aoplain${process.pid}x${Date.now()}`;
+  // cat-file --batch 는 표준 입력을 기다리며 끝나지 않는다
+  const tracked = gitRun(fx.sub, ['-c', `ao.marker=${mark}`, 'cat-file', '--batch'], { track: true, timeoutMs: 60000 });
+  const plainRun = gitRun(fx.sub, ['-c', `ao.marker=${markPlain}`, 'cat-file', '--batch'], { timeoutMs: 10000 });
+  const plainDone = assert.rejects(plainRun, (e) => e.kind === 'timeout');
+  await sleep(700);
+  const t0 = Date.now();
+  killTrackedGit();
+  await assert.rejects(tracked, (e) => e.kind === 'fail');
+  assert.ok(Date.now() - t0 < 8000, '제때 끝남');
+  await sleep(300);
+  // aliveWithMarker 가 null(확인 불가)이면 실패한다 — 확인하지 못한 채 통과하지 않게
+  assert.equal(aliveWithMarker(mark), false, '추적한 git 이 남아 있다');
+  assert.equal(aliveWithMarker(markPlain), true, 'track 없는 git 은 끝내지 않는다');
+  killTrackedGit(); // 비어 있어도 안전
+  await plainDone; // track 없는 자식은 자기 시간 초과로만 끝난다
+});
+
+test('killTrackedGit: 추적 git 은 실행 중에만 목록에 있고 끝나면 빠진다', { skip }, async () => {
+  const before = trackedGitCount();
+  const run = gitRun(fx.sub, ['rev-parse', 'HEAD'], { track: true });
+  const t0 = Date.now();
+  while (trackedGitCount() === before && Date.now() - t0 < 3000) await sleep(1);
+  assert.equal(trackedGitCount(), before + 1, '실행 중에는 목록에 있다');
+  assert.match((await run).trim(), /^[0-9a-f]{40}$/);
+  await sleep(50);
+  assert.equal(trackedGitCount(), before, '끝난 자식은 목록에서 빠진다');
+  await gitRun(fx.sub, ['rev-parse', 'HEAD']); // track 없는 실행은 목록에 들지 않는다
+  assert.equal(trackedGitCount(), before);
+  killTrackedGit(); // 끝난 자식뿐이어도 안전
+  assert.match((await gitRun(fx.sub, ['rev-parse', 'HEAD'], { track: true })).trim(), /^[0-9a-f]{40}$/, '그 뒤에도 정상 동작');
+});
+
 test('git: 출력이 상한을 넘으면 fail 오류로 거부한다', { skip }, async () => {
   await assert.rejects(gitRun(fx.sub, ['ls-files', '-z'], { buffer: true, maxBuffer: 1 }),
     (e) => e.kind === 'fail' && /너무 큽니다/.test(e.message));
@@ -365,6 +413,30 @@ test('rootKey: 끝 구분자·표기 차이를 없앤 비교용 키', () => {
   assert.equal(rootKey('C:\\Repo\\'), rootKey('C:\\Repo'));
   assert.notEqual(rootKey('C:\\Repo'), rootKey('C:\\Repo2'));
   if (process.platform === 'win32') assert.equal(rootKey('C:\\REPO'), rootKey('c:\\repo'));
+});
+
+test('git: input 은 표준 입력으로, env 는 환경에 더해진다', { skip }, async () => {
+  assert.equal((await gitRun(fx.sub, ['hash-object', '--stdin'], { input: 'hello\n' })).trim(), 'ce013625030ba8dba906f756967f9e9ca394464a');
+  assert.equal((await gitRun(fx.sub, ['var', 'GIT_EDITOR'], { env: { GIT_EDITOR: 'my-editor' } })).trim(), 'my-editor');
+  assert.equal((await gitRun(fx.sub, ['hash-object', '--stdin'], { input: '' })).trim(), 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391', '빈 입력도 닫아 준다');
+});
+
+test('git: 입력을 읽지 않고 끝나는 명령에 큰 input 을 써도 프로세스가 죽지 않는다', { skip }, async () => {
+  const out = await gitRun(fx.sub, ['rev-parse', 'HEAD'], { input: 'x'.repeat(8 * 1024 * 1024) });
+  assert.match(out.trim(), /^[0-9a-f]{40}$/);
+  await sleep(100); // 늦게 오는 EPIPE 가 처리되지 않은 오류가 되지 않는지
+});
+
+test('git: 실패 오류에 stderr·stdout 원문이 붙는다', { skip }, async () => {
+  await assert.rejects(gitRun(fx.sub, ['rev-parse', '--verify', 'no-such-ref']),
+    (e) => e.kind === 'fail' && typeof e.stderr === 'string' && e.stderr.length > 0 && typeof e.stdout === 'string' && /^git 실행 실패:\n/.test(e.message));
+});
+
+test('git: 실패 오류의 stderr 는 뒤쪽 4000자를 남긴다 (끝에 원인이 온다)', { skip }, async () => {
+  // 별칭(셸 함수)으로 긴 stderr 를 내고 종료 코드 3 으로 끝낸다 — git 자신의 오류 문구는 4096자에서 잘려 시험에 쓸 수 없다
+  const noisy = '!f() { i=0; while [ $i -lt 1000 ]; do echo errline-$i >&2; i=$((i+1)); done; echo END-MARK >&2; exit 3; }; f';
+  await assert.rejects(gitRun(fx.sub, ['-c', `alias.noisy=${noisy}`, 'noisy']),
+    (e) => e.kind === 'fail' && e.exitCode === 3 && e.stderr.length === 4000 && e.stderr.endsWith('END-MARK'));
 });
 
 test('git: 실패 오류에 종료 코드(숫자)가 붙는다', { skip }, async () => {
@@ -536,4 +608,30 @@ test('createCodeService.search: 미등록 폴더·깃 아닌 폴더 거부, 등�
   await assert.rejects(service.search(plain, 'const'), { message: '깃 저장소가 아닙니다' });
   roots.add(fx.sub);
   assert.equal((await service.search(fx.sub, 'const a')).matches.length, 1);
+});
+
+test('code:git:sync: hasMessage 를 그대로 넘겨, 메인이 옛 화면의 동기화를 거부하고 잘못된 값도 가른다', async () => {
+  const handlers = new Map();
+  const got = [];
+  const gitOps = { sync: async (root, r) => { got.push([root, r]); return { ok: true }; } };
+  registerCodeIpc((ch, fn) => handlers.set(ch, fn), { roots: createCodeRoots(), service: {}, pickFolder: async () => null, checkFolder() {}, gitOps });
+  await handlers.get('code:git:sync')({ root: 'R', hasMessage: true });
+  await handlers.get('code:git:sync')({ root: 'R', hasMessage: false });
+  await handlers.get('code:git:sync')({ root: 'R', hasMessage: 'true' });
+  assert.deepEqual(got, [['R', { hasMessage: true }], ['R', { hasMessage: false }], ['R', { hasMessage: 'true' }]]);
+});
+
+// 반드시 이 파일의 맨 뒤 시험: closing 은 프로세스에 남는 상태라 한 번 켜면 이 프로세스에서 되돌릴 수 없다.
+// 조회 중에 앱이 종료되면 다음 단계 재시도(track)가 뒤늦게 떠서 로그인 창이 남기 때문에, 종료 뒤의 track 실행은 띄우지 않고 거부한다.
+test('killTrackedGit({ closing: true }): 그 뒤의 track 실행은 띄우지 않고 거부, track 없는 호출은 그대로', { skip }, async () => {
+  const mark = `aoclose${process.pid}x${Date.now()}`;
+  killTrackedGit({ closing: true });
+  const t0 = Date.now();
+  await assert.rejects(gitRun(fx.sub, ['-c', `ao.marker=${mark}`, 'cat-file', '--batch'], { track: true, timeoutMs: 10000 }),
+    (e) => e.kind === 'fail' && /종료하는 중/.test(e.message));
+  assert.ok(Date.now() - t0 < 5000, '띄우지 않고 바로 거부');
+  assert.equal(trackedGitCount(), 0);
+  assert.equal(aliveWithMarker(mark), false, 'git 이 떴다');
+  assert.match((await gitRun(fx.sub, ['rev-parse', 'HEAD'])).trim(), /^[0-9a-f]{40}$/, 'track 없는 조회는 종료 중에도 동작');
+  await assert.rejects(gitRun(fx.sub, ['rev-parse', 'HEAD'], { refuseClosing: true }), /종료하는 중/, 'refuseClosing: 추적하지 않아도 종료 뒤에는 새로 시작하지 않는다 (pull 병합 단계)');
 });

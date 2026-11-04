@@ -5,7 +5,7 @@ import { baseName } from './office/phrases.js';
 import { THEMES, getTheme } from './themes/index.js';
 import { createCollabPanel } from './collab/panel.js';
 import { rosterOf } from './collab/moderator.js';
-import { setupCliResizer } from './layout.js';
+import { setupCliResizer, setupAnalysisResizer } from './layout.js';
 import { cardPreview } from './pet/model.js';
 import { createCodePanel } from './code/panel.js';
 import { AGENTS, AGENT_IDS, agentName, agentById, normAgent } from '../shared/agents.js';
@@ -13,6 +13,7 @@ import { agentsOf, connectedIds, canEnter, accountText, pickDefault, collabReady
 
 const api = window.office;
 const $ = (sel) => document.querySelector(sel);
+const FEED_MAX = 200; // 활동 기록 보관 수 — 칸을 끌어 키우면 더 보이고, 넘치면 스크롤 (addFeed 가 위쪽 코드에서도 불리므로 파일 맨 위에 둔다)
 
 const store = {
   get(key, fallback) {
@@ -99,11 +100,13 @@ $('#zoom-out').addEventListener('click', () => view.zoomBy(0.8));
 $('#zoom-fit').addEventListener('click', () => view.fit());
 $('#focus-player').addEventListener('click', () => view.focusPlayer());
 setupCliResizer($('.layout'), $('#cli-resizer'));
+// 활동 기록 높이: 머리줄·여백(27px) 아래 2줄(34px)은 남기고, 사무실 칸은 200px 남긴다.
+setupAnalysisResizer($('.feed-panel'), $('.feed-heading'), $('.office-stage'), $('#feed-resizer'), { key: 'ao.feedHeight', cssVar: '--feed-height', bodyMin: 61, viewMin: 200 });
 
 // ───────────────────────── 왼쪽 화면 전환 (사무실 ↔ 코드) ─────────────────────────
 // 코드 화면은 사무실 영역을 덮는다. 사무실은 그리기만 쉬고 계산은 계속한다 (view.setHidden). 상태는 저장하지 않아 앱을 켜면 사무실이다.
 
-const codePanel = createCodePanel({ api, host: $('#code-pane') }); // 화면(DOM)만 만든다 — 모나코는 첫 파일을 열 때 불러온다
+const codePanel = createCodePanel({ api, host: $('#code-pane'), newTerminal }); // 화면(DOM)만 만든다 — 모나코는 첫 파일을 열 때 불러온다
 let codeMode = false;
 
 // 열린 탭(Codex 로그인 탭 제외)의 작업 폴더를 코드 패널의 폴더 목록으로 알린다.
@@ -537,7 +540,7 @@ function updateHeadcount() {
 function addFeed(item) {
   const ul = $('#feed');
   ul.prepend(el('li', {}, el('time', {}, hhmm()), item.text));
-  while (ul.children.length > 5) ul.lastChild.remove();
+  while (ul.children.length > FEED_MAX) ul.lastChild.remove();
 }
 
 // ───────────────────────── 탭 ─────────────────────────
@@ -891,6 +894,7 @@ api.onPermClosed?.(({ permId, how } = {}) => {
 api.onPetActivate?.(({ tabId } = {}) => { if (tabId && state.tabs.has(tabId)) activate(tabId); });
 api.onPtyData(({ tabId, data }) => {
   if (tabId === 'login') { if (gateTerm) gateTerm.term.write(data); return; }
+  if (codePanel.onPtyData(tabId, data)) return;
   const tab = state.tabs.get(tabId);
   if (tab?.term) tab.term.write(data);
 });
@@ -904,6 +908,7 @@ api.onPtyExit(({ tabId, exitCode }) => {
     refreshStatus();
     return;
   }
+  if (codePanel.onPtyExit(tabId, exitCode)) return;
   const tab = state.tabs.get(tabId);
   if (!tab?.term) return;
   tab.exited = true;

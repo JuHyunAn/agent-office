@@ -39,11 +39,12 @@ if (!process.versions.electron) {
   app.disableHardwareAcceleration(); app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'ao-code-')));
   protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
   const fail = async message => { await cleanup(); console.error(message); console.error(errors); app.exit(1); };
-  const timeout = setTimeout(() => fail('코드 화면 점검 시간 초과'), 480000);
+  const timeout = setTimeout(() => fail('코드 화면 점검 시간 초과'), 600000);
 
   // 사용자·시스템 git 설정이 결과를 흔들지 않게 격리한다 (앱이 띄우는 git 도 이 값을 물려받는다).
   fs.writeFileSync(path.join(FIXBASE, 'gitconfig'), '');
   process.env.GIT_CONFIG_GLOBAL = path.join(FIXBASE, 'gitconfig'); process.env.GIT_CONFIG_NOSYSTEM = '1';
+  process.env.GCM_INTERACTIVE = 'never'; // 안전장치: 혹시 GCM 이 불려도 사용자 화면에 로그인 창을 띄우지 않는다
   const gitAt = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'core.autocrlf=false', ...args], { cwd, encoding: 'utf8', windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   const gitIn = (...args) => gitAt(FIX, ...args);
   const put = (rel, text) => { const f = path.join(FIX, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, text); };
@@ -71,8 +72,8 @@ if (!process.versions.electron) {
     for (let i = 1; i <= 21; i++) fs.writeFileSync(path.join(BIG, `f${String(i).padStart(2, '0')}.txt`), `file ${i}\n`);
   };
   makeFixture();
-  // code:poll 호출 수·마지막 요청 경로, 그리고 시험용 실패 주입 (읽기·트리)
-  const calls = { poll: 0, lastPollRel: undefined, failRead: null, failTreeFor: null };
+  // code:poll·code:git:state 호출 수, 마지막 요청 경로, 그리고 시험용 실패 주입 (읽기·트리)
+  const calls = { poll: 0, gitState: 0, gitLog: 0, failGit: null, delayGit: 0, lastPollRel: undefined, failRead: null, failTreeFor: null };
   let pickTarget = FIX;
   const pause = ms => new Promise(r => setTimeout(r, ms));
   const js = code => win.webContents.executeJavaScript(code);
@@ -102,9 +103,13 @@ if (!process.versions.electron) {
     const { createCodeRoots, createCodeService, registerCodeIpc } = require(path.join(ROOT, 'src/main/codeRepo.cjs'));
     const roots = createCodeRoots();
     // 호출을 감싸 센다 (대역은 아니다 — 안쪽은 실제 처리 그대로).
-    const wrap = (ch, fn) => ipcMain.handle(ch, (_e, ...a) => {
+    const wrap = (ch, fn) => ipcMain.handle(ch, async (_e, ...a) => {
       const v = a[0] || {};
       if (ch === 'code:poll') { calls.poll++; calls.lastPollRel = v.rel ?? null; }
+      if (ch === 'code:git:state') calls.gitState++;
+      if (ch === 'code:git:log') calls.gitLog++;
+      if (calls.failGit && ch === calls.failGit.ch) throw new Error(calls.failGit.text); // 시험용 거부 (IPC 거부가 콘솔 오류로 새지 않는지)
+      if (calls.delayGit && ch === 'code:git:commit') await pause(calls.delayGit); // 시험용 지연 (작업 중 표시·진행 중 입력)
       if (ch === 'code:read' && calls.failRead && v.rel === calls.failRead) throw new Error('읽기 실패 시험');
       if (ch === 'code:tree' && calls.failTreeFor && v.root === calls.failTreeFor) throw new Error('트리 실패 시험');
       return fn(...a);
@@ -124,7 +129,7 @@ if (!process.versions.electron) {
         proc.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', model: sc.model }) + '\n');
         proc.stdout.write(JSON.stringify(sc.isError
           ? { type: 'result', subtype: 'success', is_error: true, result: sc.errorText, total_cost_usd: 0 }
-          : { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.04, structured_output: sc.structured }) + '\n');
+          : { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.04, structured_output: sc.structured, result: sc.resultText }) + '\n');
         proc.stdout.end();
         setTimeout(() => { rec.closed = true; proc.emit('exit', 0); proc.emit('close', 0); }, 30);
       });
@@ -145,10 +150,24 @@ if (!process.versions.electron) {
       spawn: fakeSpawn, kill: fakeKill, exitGraceMs: 200, killGraceMs: 200,
     });
     codeAnalysis.registerAnalysisIpc(wrap, { analyzer });
-    ipcMain.handle('pty:create', (_e, options) => { tabId = options.tabId; return { sessionId: 'preview-main' }; });
+    // 가짜 pty: 하단 터미널(mode:'shell')은 호출만 기록한다. 메인과 같은 검사(shellLaunch — 등록된 폴더·고정된 셸 종류)를 거치되 셸은 띄우지 않는다.
+    // 탭 ID 로 오인되지 않게 앱 탭의 tabId 는 건드리지 않는다.
+    const term = { creates: [], writes: [], resizes: [], failWith: null }; // creates: 호출 옵션 + 메인이 만들었을 명령(cmd, 거부면 null)
+    const { shellLaunch } = require(path.join(ROOT, 'src/main/shellCmd.cjs'));
+    ipcMain.handle('pty:create', async (_e, options) => {
+      if (options.mode === 'shell') {
+        let cmd = null;
+        try {
+          if (term.failWith) throw new Error(term.failWith);
+          cmd = await shellLaunch({ shell: options.shell, cwd: options.cwd, roots, checkFolder: d => { if (!fs.existsSync(d)) throw new Error('폴더가 없습니다'); }, findBash: async () => 'C:\\Git\\bin\\bash.exe' });
+        } finally { term.creates.push({ ...options, cmd }); }
+        return { sessionId: null };
+      }
+      tabId = options.tabId; return { sessionId: 'preview-main' };
+    });
     ipcMain.handle('pty:kill', () => {});
-    ipcMain.on('pty:write', () => {});
-    ipcMain.on('pty:resize', () => {});
+    ipcMain.on('pty:write', (_e, m) => { if (/^code-term-/.test(m?.tabId)) term.writes.push(m); });
+    ipcMain.on('pty:resize', (_e, m) => { if (/^code-term-/.test(m?.tabId)) term.resizes.push(m); });
     win = new BrowserWindow({ width: 1600, height: 1000, show: false, webPreferences: { preload: path.join(ROOT, 'src/main/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false, offscreen: true } });
     win.webContents.on('console-message', e => { if (e.level === 'error' || e.level === 3) errors.push(e.message); });
     win.webContents.on('did-fail-load', (_e, code, detail) => errors.push(`${code}: ${detail}`));
@@ -290,6 +309,8 @@ if (!process.versions.electron) {
     };
     let narrowAnalysis = null;
     let analysisResize = null;
+    let gitPanelResize = null;
+    let sideResize = null;
     const firstLine = fs.readFileSync(path.join(FIX, 'README.md'), 'utf8').split(/\r?\n/).find(l => l.trim()).replace(/^#+\s*/, '').trim();
 
     try {
@@ -678,7 +699,7 @@ if (!process.versions.electron) {
       // 오류 결과(is_error): 한국어 문구, 이전 결과는 유지.
       scenario({ isError: true, errorText: '모델 오류 시험' });
       await clickBy('.ca-act', '다시 분석');
-      await waitFor(bodyHas('분석 실패: 모델 오류 시험'), 10000);
+      await waitFor(bodyHas('분석 실패:\n모델 오류 시험'), 10000);
       assert.equal(await js(`${A('.ca-banner')}.classList.contains('err')`), true);
       assert.equal(await js(`${A('.ca-body')}.firstElementChild === ${A('.ca-banner')}`), true, '오류가 본문 위 첫 줄이 아님');
       assert.equal(await js(`${A('.ca-status')}.textContent.includes('분석 실패')`), false, '결과가 있는데 오류가 상태 줄에 있음');
@@ -727,6 +748,8 @@ if (!process.versions.electron) {
       const gateStale = deferred();
       scenario({ gate: gateStale, structured: staleResult });
       const nSt = fake.spawns.length;
+      // 트리가 그려진 뒤에도 상태 조회가 끝날 때까지 분석 단추는 꺼져 있다 (treeBusy). 꺼진 단추를 누르면 분석이 시작되지 않는다.
+      await waitFor(`[...document.querySelectorAll('#code-pane .ca-act')].some(b => b.textContent.includes('다시 분석') && !b.disabled)`, 10000);
       await clickBy('.ca-act', '다시 분석');
       await waitCalls(() => fake.spawns.length === nSt + 1);
       put('src/during.js', 'export const during = 1;\n'); // 분석이 도는 중에 새 파일이 생김
@@ -1054,9 +1077,11 @@ if (!process.versions.electron) {
         const view = document.querySelector('#code-pane .code-view').getBoundingClientRect();
         const main = document.querySelector('#code-pane .code-main').getBoundingClientRect();
         const h = s => Math.round(document.querySelector('#code-pane ' + s).getBoundingClientRect().height);
-        return { heads: ['.code-file-head', '.ca-head', '.code-analysis', '.ca-body', '.code-analyze'].map(fits), heights: { pane: h('.code-main'), head: h('.code-head'), file: h('.code-file-head'), analysis: h('.code-analysis'), caHead: h('.ca-head'), caBody: h('.ca-body') }, viewH: view.height, mainW: main.width, noPageScroll: document.documentElement.scrollWidth <= innerWidth };
+        return { heads: ['.code-file-head', '.cb-tabs', '.code-bottom', '.ca-head', '.code-analysis', '.ca-body', '.code-analyze', '.git-panel', '.gp-head', '.gp-actions', '.gp-fixed'].map(fits), heights: { pane: h('.code-main'), head: h('.code-head'), file: h('.code-file-head'), analysis: h('.code-analysis'), caHead: h('.ca-head'), caBody: h('.ca-body') }, gpButtons: [...document.querySelectorAll('#code-pane .gp-actions button')].map(b => ({ s: b.textContent, sw: b.scrollWidth, cw: b.clientWidth })), viewH: view.height, mainW: main.width, noPageScroll: document.documentElement.scrollWidth <= innerWidth };
       })()`);
       for (const h of small.heads) assert.ok(h.sw <= h.cw, `좁은 창에서 넘침: ${JSON.stringify(small)}`);
+      for (const b of small.gpButtons) assert.ok(b.sw <= b.cw, `좁은 창에서 Git 단추 글자가 잘림: ${JSON.stringify(small.gpButtons)}`);
+      assert.equal(small.gpButtons.length, 3);
       assert.ok(small.viewH >= 150, `코드 영역이 너무 작음: ${JSON.stringify(small)}`);
       assert.ok(small.heights.caBody >= 60, `분석 패널 본문이 너무 작음: ${JSON.stringify(small)}`);
       assert.ok(small.mainW < 200 && small.noPageScroll, JSON.stringify(small));
@@ -1064,9 +1089,19 @@ if (!process.versions.electron) {
       await js(`document.querySelector('.layout').style.removeProperty('--cli-width')`);
       win.setSize(1600, 1000); await pause(500);
 
+      // 왼쪽 목록 너비가 바뀌면 열려 있는 편집기도 따라간다 (끌기 자체는 아래 ⑭ 에서 시험한다 — 그때는 열린 편집기가 없다).
+      const monacoFits = async () => { await pause(400); return js(`(() => { const w = s => Math.round(document.querySelector('#code-pane ' + s).getBoundingClientRect().width); return { side: w('.code-side'), view: w('.code-view'), monaco: w('.code-editor .monaco-editor') }; })()`); };
+      await js(`${pane('.code-body')}.style.setProperty('--code-side-w', '380px')`);
+      const monacoWide = await monacoFits();
+      assert.ok(monacoWide.side === 380 && monacoWide.monaco > 0 && Math.abs(monacoWide.monaco - monacoWide.view) <= 2, `왼쪽 목록을 넓혀도 편집기 너비가 따라가지 않음: ${JSON.stringify(monacoWide)}`);
+      await js(`${pane('.code-body')}.style.removeProperty('--code-side-w')`);
+      const monacoBack = await monacoFits();
+      assert.ok(monacoBack.side === 280 && Math.abs(monacoBack.monaco - monacoBack.view) <= 2 && monacoBack.monaco > monacoWide.monaco, `왼쪽 목록을 되돌려도 편집기 너비가 따라가지 않음: ${JSON.stringify({ monacoWide, monacoBack })}`);
+
       // 분석 패널 높이 조절: 위쪽 경계를 끌어 높이고 낮추며, 편집기 최소 높이·패널 머리줄은 남기고, 두 번 클릭하면 기본 높이.
+      // 높이를 갖는 쪽은 하단 영역(.code-bottom)이라 패널 높이 = 하단 영역 높이, 머리줄 = 탭줄(.cb-tabs) + 분석 머리줄(.ca-head).
       const caBox = () => js(`(() => { const h = s => Math.round(document.querySelector('#code-pane ' + s).getBoundingClientRect().height);
-        return { panel: h('.code-analysis'), view: h('.code-view'), head: h('.ca-head'), saved: localStorage.getItem('ao.analysisHeight') }; })()`);
+        return { panel: h('.code-bottom'), view: h('.code-view'), head: h('.cb-tabs') + h('.ca-head'), saved: localStorage.getItem('ao.analysisHeight') }; })()`);
       const grip = await js(`(() => { const r = ${A('.ca-resizer')}.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
       const dragCa = async (dy) => {
         const g = await js(`(() => { const r = ${A('.ca-resizer')}.getBoundingClientRect(); return Math.round(r.top + r.height / 2); })()`);
@@ -1115,6 +1150,1100 @@ if (!process.versions.electron) {
       assert.ok(kept.includes('cap/c31.js') && kept.includes('cap/c02.js'), JSON.stringify(kept));
       assert.ok(!kept.includes('cap/c01.js'), '가장 오래된 결과가 남음');
 
+      // ───────── Git 패널: 실제 code:git:* IPC (임시 저장소 GITFX · 원격 REMOTE · 다른 작업자 CLONE, 모두 임시 폴더) ─────────
+      const GITFX = path.join(FIXBASE, 'gitfx'), REMOTE = path.join(FIXBASE, 'remote.git'), CLONE = path.join(FIXBASE, 'clone'), PLAIN = path.join(FIXBASE, 'plain');
+      const gx = (...args) => gitAt(GITFX, ...args);
+      const putG = (rel, text, base = GITFX) => { const f = path.join(base, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, text); };
+      fs.mkdirSync(GITFX); fs.mkdirSync(PLAIN); putG('x.txt', 'x\n', PLAIN);
+      gitAt(FIXBASE, 'init', '-q', '--bare', '-b', 'main', REMOTE);
+      gx('init', '-q', '-b', 'main');
+      gx('config', 'user.name', 'fx'); gx('config', 'user.email', 'fx@fx.test'); gx('config', 'core.autocrlf', 'false');
+      putG('a.txt', 'one\n'); putG('docs/b.txt', 'bee\n'); putG('sub/in.txt', 'in\n'); putG('한글 파일.txt', '가나\n');
+      gx('add', '-A'); gx('commit', '-q', '-m', 'init');
+      const headOf = () => gx('rev-parse', 'HEAD').trim();
+      const remoteHead = () => { try { return gitAt(FIXBASE, '--git-dir', REMOTE, 'rev-parse', 'main').trim(); } catch { return ''; } };
+      const cachedNames = () => gx('-c', 'core.quotepath=false', 'diff', '--cached', '--name-only').split('\n').filter(Boolean).sort();
+      const gpHeads = () => js(`[...document.querySelectorAll('#code-pane .gp-h')].filter(h => !h.hidden).map(h => h.querySelector('.gp-h-text').textContent)`);
+      const gpList = list => js(`[...document.querySelectorAll('#code-pane .gp-${list} .gp-file')].map(b => b.dataset.path)`);
+      const gpBadges = list => js(`Object.fromEntries([...document.querySelectorAll('#code-pane .gp-${list} li')].filter(li => li.querySelector('.gp-file')).map(li => [li.querySelector('.gp-file').dataset.path, li.querySelector('.code-badge').textContent]))`);
+      const gpAct = (act, rel) => pane(`.gp-act[data-act=${act}][data-path=${sel(rel)}]`);
+      const gpSet = text => js(`(() => { const t = ${pane('.gp-msg')}; t.value = ${sel(text)}; t.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+      const gpVal = () => js(`${pane('.gp-msg')}.value`);
+      const gpNote = () => js(`${pane('.gp-note')}.hidden ? '' : ${pane('.gp-note-text')}.textContent`);
+      const gpNoteHas = text => `!${pane('.gp-note')}.hidden && ${pane('.gp-note-text')}.textContent.includes(${sel(text)})`;
+      const gpOff = cls => js(`${pane('.' + cls)}.disabled`);
+      const gpConfirmText = () => js(`${pane('.gp-confirm')}.hidden ? '' : ${pane('.gp-confirm-text')}.textContent`);
+      const gpRemoteNote = text => `!${pane('.gp-note')}.hidden && ${pane('.gp-note-text')}.textContent === ${sel(text)}`;
+      const gpFolder = async dir => { pickTarget = dir; await js(`${pane('.code-pick')}.click()`); await waitFor(`${pane('.code-folder')}?.value === ${sel(dir)}`, 10000); };
+      // 새로 고침(⟳)으로 조회를 한 번 돌리고 응답이 화면에 반영될 시간을 준다.
+      const gitRefresh = async () => { const g0 = calls.gitState; await js(`${pane('.code-refresh')}.click()`); await waitCalls(() => calls.gitState > g0); await pause(300); };
+      const gpKey = init => js(`${pane('.gp-msg')}.dispatchEvent(new KeyboardEvent('keydown', Object.assign({ key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true }, ${sel(init)})))`);
+
+      // ① 상태·목록: 깨끗한 main 은 목록이 비고 단추가 꺼져 있다. 변경(수정·삭제·새 파일·한글 이름)은 변경 목록에 배지와 함께 나온다.
+      await gpFolder(GITFX);
+      await waitFor(`${pane('.gp-branch')}.textContent === 'main' && ${pane('.gp-lists')}.querySelectorAll('.gp-none').length === 2`, 10000);
+      assert.equal(await js(`${pane('.git-panel')}.getAttribute('aria-label')`), 'Git');
+      assert.deepEqual(await gpHeads(), ['스테이징된 변경 (0)', '변경 (0)']);
+      assert.equal(await js(`${pane('.gp-conflicts')}.hidden`), true, '충돌이 없는데 충돌 목록이 보임');
+      assert.equal(await js(`${pane('.gp-msg')}.maxLength`), 20000);
+      assert.deepEqual(await js(`[${['gp-commit', 'gp-commit-push', 'gp-commit-sync'].map(c => pane('.' + c)).join(', ')}].map(b => b.textContent)`), ['Commit', 'Commit & Push', 'Commit & Sync']);
+      assert.equal(await js(`[...document.querySelectorAll('#code-pane .gp-actions button')].every(b => b.scrollWidth <= b.clientWidth)`), true, '기본 폭에서 Git 단추 글자가 잘림');
+      assert.equal(await js(`${pane('.gp-gen')}.disabled`), true, '변경이 없는데 메시지 생성이 켜짐');
+      // 생성 버튼: VS Code 처럼 메시지 칸 안 오른쪽의 별 아이콘 (글자·별도 줄 없음, 입력한 글이 아이콘 아래로 가지 않음)
+      const genBox = await js(`(() => { const g = ${pane('.gp-gen')}, m = ${pane('.gp-msg')}, gr = g.getBoundingClientRect(), mr = m.getBoundingClientRect(); return { inWrap: g.parentElement === m.parentElement && g.parentElement.className === 'gp-msg-wrap', row: !!document.querySelector('#code-pane .gp-gen-row'), text: g.textContent, svg: !!g.querySelector('svg path[d]'), label: g.getAttribute('aria-label'), title: g.title, inside: gr.left >= mr.left && gr.right <= mr.right && gr.top >= mr.top && gr.bottom <= mr.bottom, rightSide: gr.left > mr.left + mr.width / 2, pad: parseFloat(getComputedStyle(m).paddingRight), fromRight: mr.right - gr.left }; })()`);
+      assert.equal(genBox.inWrap, true, '생성 버튼이 메시지 칸과 같은 묶음에 없음');
+      assert.equal(genBox.row, false, '생성 버튼 줄이 남아 있음');
+      assert.equal(genBox.text, '', '생성 버튼에 글자가 있음');
+      assert.equal(genBox.svg, true, '생성 버튼에 아이콘이 없음');
+      assert.equal(genBox.label, '커밋 메시지 생성');
+      assert.equal(genBox.title, '커밋 메시지 생성');
+      assert.equal(genBox.inside, true, `생성 버튼이 메시지 칸 밖에 있음 ${JSON.stringify(genBox)}`);
+      assert.equal(genBox.rightSide, true, '생성 버튼이 메시지 칸 오른쪽에 있지 않음');
+      assert.ok(genBox.pad >= genBox.fromRight, `입력한 글이 아이콘 아래로 들어감 ${JSON.stringify(genBox)}`);
+      putG('a.txt', 'one\ntwo\n'); putG('new.txt', '신규\n'); fs.rmSync(path.join(GITFX, 'docs', 'b.txt')); putG('한글 파일.txt', '가나다\n');
+      await gitRefresh();
+      await waitFor(`document.querySelectorAll('#code-pane .gp-changes .gp-file').length === 4`, 10000);
+      assert.deepEqual(await gpBadges('changes'), { 'a.txt': 'M', 'docs/b.txt': 'D', 'new.txt': 'U', '한글 파일.txt': 'M' });
+      assert.deepEqual(await gpHeads(), ['스테이징된 변경 (0)', '변경 (4)']);
+      assert.equal(await js(`${pane('.gp-gen')}.disabled`), false);
+      // 원격이 없으면 Push·Sync 는 메시지가 있어도 꺼지고 이유를 title 로 알린다 (Commit 은 켜진다).
+      assert.equal(await gpOff('gp-commit'), true, '메시지가 없는데 Commit 이 켜짐');
+      await gpSet('x');
+      assert.deepEqual([await gpOff('gp-commit'), await gpOff('gp-commit-push'), await gpOff('gp-commit-sync')], [false, true, true]);
+      assert.equal(await js(`${pane('.gp-commit-push')}.title`), 'origin 원격이 없습니다');
+      for (const [c, label] of [['fetch', 'Fetch'], ['pull', 'Pull'], ['push', 'Push']]) {
+        assert.equal(await js(`${pane('.gp-' + c)}.getAttribute('aria-label')`), label);
+        assert.equal(await js(`${pane('.gp-' + c)}.disabled`), true, `원격이 없는데 ${label} 이 켜짐`);
+        assert.equal(await js(`${pane('.gp-' + c)}.title`), 'origin 원격이 없습니다');
+        assert.equal(await js(`(() => { const h = ${pane('.gp-head')}.getBoundingClientRect(), r = ${pane('.gp-' + c)}.getBoundingClientRect(); return r.width > 0 && r.left >= h.left - 1 && r.right <= h.right + 1; })()`), true, `${label} 단추가 머리줄 밖으로 나감`);
+      }
+      assert.equal(await js(`${pane('.gp-graph-toggle')}.getAttribute('aria-expanded')`), 'false', '그래프가 기본으로 펼쳐져 있음');
+      assert.ok((await js(`${pane('.gp-graph-head')}.textContent`)).includes('그래프'));
+      assert.equal(await js(`${pane('.gp-graph')}.hidden`), true, '접힌 그래프 목록이 보임');
+      await gpSet('');
+      await capture('code-git-panel');
+
+      // ② + / − / 전체: 단일 스테이징·해제와 전체 스테이징·해제가 실제 git 상태와 일치한다. 키보드로 + 를 누르면 초점이 다음 줄로 이어진다.
+      await js(`${gpAct('stage', 'a.txt')}.focus()`);
+      await js(`${gpAct('stage', 'a.txt')}.click()`);
+      await waitFor(`!!${pane('.gp-staged .gp-file[data-path="a.txt"]')} && !${pane('.gp-changes .gp-file[data-path="a.txt"]')}`, 10000);
+      assert.deepEqual(cachedNames(), ['a.txt']);
+      assert.deepEqual(await gpBadges('staged'), { 'a.txt': 'M' });
+      await waitFor(`document.activeElement?.dataset?.path === 'docs/b.txt' && document.activeElement.dataset.act === 'stage'`, 5000);
+      await js(`${gpAct('unstage', 'a.txt')}.click()`);
+      await waitFor(`!!${pane('.gp-changes .gp-file[data-path="a.txt"]')} && !${pane('.gp-staged .gp-file[data-path="a.txt"]')}`, 10000);
+      assert.deepEqual(cachedNames(), []);
+      await js(`${pane('.gp-all[data-act=stage]')}.click()`);
+      await waitFor(`document.querySelectorAll('#code-pane .gp-staged .gp-file').length === 4 && document.querySelectorAll('#code-pane .gp-changes .gp-file').length === 0`, 10000);
+      assert.deepEqual(cachedNames(), ['a.txt', 'docs/b.txt', 'new.txt', '한글 파일.txt']);
+      assert.deepEqual(await gpBadges('staged'), { 'a.txt': 'M', 'docs/b.txt': 'D', 'new.txt': 'A', '한글 파일.txt': 'M' });
+      await js(`${pane('.gp-all[data-act=unstage]')}.click()`);
+      await waitFor(`document.querySelectorAll('#code-pane .gp-changes .gp-file').length === 4 && document.querySelectorAll('#code-pane .gp-staged .gp-file').length === 0`, 10000);
+      assert.deepEqual(cachedNames(), []);
+      // 초점이 이미 다른 곳(입력란)으로 갔으면 작업이 끝나도 초점을 빼앗지 않는다.
+      const msgFocused = () => js(`document.activeElement === ${pane('.gp-msg')}`);
+      await js(`${gpAct('stage', 'a.txt')}.focus()`);
+      await js(`(() => { ${gpAct('stage', 'a.txt')}.click(); ${pane('.gp-msg')}.focus(); })()`);
+      await waitFor(`!!${pane('.gp-staged .gp-file[data-path="a.txt"]')}`, 10000);
+      await pause(500);
+      assert.equal(await msgFocused(), true, '줄의 + 뒤 입력란으로 옮긴 초점을 빼앗김');
+      await js(`${pane('.gp-all[data-act=stage]')}.focus()`);
+      await js(`(() => { ${pane('.gp-all[data-act=stage]')}.click(); ${pane('.gp-msg')}.focus(); })()`);
+      await waitFor(`document.querySelectorAll('#code-pane .gp-staged .gp-file').length === 4`, 10000);
+      await pause(500);
+      assert.equal(await msgFocused(), true, '전체 + 뒤 입력란으로 옮긴 초점을 빼앗김');
+      await js(`${pane('.gp-all[data-act=unstage]')}.focus()`);
+      await js(`(() => { ${pane('.gp-all[data-act=unstage]')}.click(); ${pane('.gp-msg')}.focus(); })()`);
+      await waitFor(`document.querySelectorAll('#code-pane .gp-changes .gp-file').length === 4 && document.querySelectorAll('#code-pane .gp-staged .gp-file').length === 0`, 10000);
+      await pause(500);
+      assert.equal(await msgFocused(), true, '전체 − 뒤 입력란으로 옮긴 초점을 빼앗김');
+      assert.deepEqual(cachedNames(), []);
+
+      // ③ 스테이징 없이 Commit: 변경을 모두 스테이징할지 확인 → 확인하면 커밋되고 HEAD 가 바뀌며 목록·메시지가 비고 트리 배지가 사라진다.
+      const head0 = headOf();
+      await gpSet('첫 커밋 메시지 한글');
+      await js(`${pane('.gp-commit')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      assert.match(await gpConfirmText(), /변경 4개를 모두 스테이징하고 커밋할까요\?/);
+      assert.ok(!(await gpConfirmText()).includes('에이전트'), '에이전트가 만지지 않았는데 에이전트 문구가 있음');
+      assert.equal(headOf(), head0, '확인 전에 커밋됨');
+      await js(`${pane('.gp-confirm-ok')}.click()`);
+      await waitCalls(() => headOf() !== head0);
+      await waitFor(`${pane('.gp-lists')}.querySelectorAll('.gp-none').length === 2 && ${pane('.gp-msg')}.value === '' && ${pane('.gp-confirm')}.hidden`, 10000);
+      assert.equal(gx('log', '-1', '--format=%s').trim(), '첫 커밋 메시지 한글');
+      assert.deepEqual(gx('-c', 'core.quotepath=false', 'show', '--name-only', '--format=', 'HEAD').split('\n').filter(Boolean).sort(), ['a.txt', 'docs/b.txt', 'new.txt', '한글 파일.txt']);
+      await waitFor(`${gpNoteHas('커밋했습니다. ' + headOf().slice(0, 7))}`, 5000);
+      await waitFor(`!!${node('a.txt')} && !${node('a.txt')}.querySelector('.code-badge')`, 10000);
+
+      // ④ Ctrl+Enter 로 커밋. 한글 조합 중(isComposing·keyCode 229)의 Enter 는 무시한다.
+      putG('a.txt', 'one\ntwo\nthree\n');
+      await gitRefresh();
+      await js(`${gpAct('stage', 'a.txt')}.click()`);
+      await waitFor(`!!${pane('.gp-staged .gp-file[data-path="a.txt"]')}`, 10000);
+      await gpSet('엔터 커밋');
+      const head1 = headOf();
+      await gpKey({ isComposing: true }); await pause(800);
+      assert.equal(headOf(), head1, '조합 중 Ctrl+Enter 로 커밋됨');
+      await gpKey({ keyCode: 229 }); await pause(800);
+      assert.equal(headOf(), head1, 'keyCode 229 Ctrl+Enter 로 커밋됨');
+      await gpKey({});
+      await waitCalls(() => headOf() !== head1);
+      assert.equal(gx('log', '-1', '--format=%s').trim(), '엔터 커밋');
+      await waitFor(`${pane('.gp-msg')}.value === '' && ${pane('.gp-lists')}.querySelectorAll('.gp-none').length === 2`, 10000);
+
+      // ⑤ 메시지 생성(가짜 claude): 입력란에 채우고, 만드는 동안 사용자가 쓴 글은 덮어쓰지 않고 적용·버림을 묻는다.
+      putG('a.txt', 'one\ntwo\nthree\nfour\n');
+      await gitRefresh();
+      await waitFor(`!${pane('.gp-gen')}.disabled`, 10000);
+      scenario({ resultText: '```\nfeat: 생성된 메시지\n```' });
+      const nGen = fake.spawns.length;
+      await js(`${pane('.gp-gen')}.click()`);
+      await waitCalls(() => fake.spawns.length === nGen + 1);
+      await waitFor(`${pane('.gp-msg')}.value === 'feat: 생성된 메시지'`, 10000);
+      assert.equal(argAfter(fake.spawns[nGen], '--model'), 'sonnet');
+      assert.equal(fake.spawns[nGen].cwd, GITFX);
+      assert.ok(fake.spawns[nGen].prompt.includes('a.txt'), '메시지 프롬프트에 변경 파일이 없음');
+      await settle(fake.spawns[nGen]);
+      assert.equal(await js(`${pane('.gp-gen')}.getAttribute('aria-label')`), '커밋 메시지 생성');
+      const gateG1 = deferred();
+      scenario({ gate: gateG1, resultText: 'AAA 생성' });
+      await gpSet('');
+      const nGen1 = fake.spawns.length;
+      await js(`${pane('.gp-gen')}.click()`);
+      await waitCalls(() => fake.spawns.length === nGen1 + 1);
+      await waitFor(`${pane('.gp-gen')}.getAttribute('aria-label') === '생성 중지' && !${pane('.gp-gen')}.disabled`, 5000);
+      assert.equal(await js(`${pane('.gp-gen')}.title`), '생성 중지');
+      assert.equal(await js(`${pane('.gp-gen')}.querySelector('path').getAttribute('d').startsWith('M5.25')`), true, '생성 중 아이콘이 중지 모양이 아님');
+      await gpSet('내가 쓴 글');
+      gateG1.open();
+      await waitFor(`!${pane('.gp-pending')}.hidden`, 10000);
+      assert.equal(await gpVal(), '내가 쓴 글', '생성 결과가 사용자 입력을 덮어씀');
+      await js(`${pane('.gp-apply')}.click()`);
+      await waitFor(`${pane('.gp-msg')}.value === 'AAA 생성' && ${pane('.gp-pending')}.hidden`, 5000);
+      await settle(fake.spawns[nGen1]);
+      const gateG2 = deferred();
+      scenario({ gate: gateG2, resultText: 'BBB 생성' });
+      const nGen2 = fake.spawns.length;
+      await js(`${pane('.gp-gen')}.click()`);
+      await waitCalls(() => fake.spawns.length === nGen2 + 1);
+      await gpSet('초안 수정');
+      gateG2.open();
+      await waitFor(`!${pane('.gp-pending')}.hidden`, 10000);
+      await js(`${pane('.gp-discard')}.click()`);
+      await waitFor(`${pane('.gp-pending')}.hidden`, 5000);
+      assert.equal(await gpVal(), '초안 수정');
+      await settle(fake.spawns[nGen2]);
+      // 중지: 만드는 중에 「중지」를 누르면 「중단했습니다」, 입력은 그대로.
+      const gateG3 = deferred();
+      scenario({ gate: gateG3, resultText: 'CCC 생성' });
+      const nGen3 = fake.spawns.length;
+      await js(`${pane('.gp-gen')}.click()`);
+      await waitCalls(() => fake.spawns.length === nGen3 + 1);
+      await waitFor(`${pane('.gp-gen')}.getAttribute('aria-label') === '생성 중지'`, 5000);
+      await js(`${pane('.gp-gen')}.click()`);
+      await waitFor(gpNoteHas('중단했습니다'), 10000);
+      assert.equal(await gpVal(), '초안 수정');
+      assert.equal(await js(`${pane('.gp-gen')}.getAttribute('aria-label')`), '커밋 메시지 생성');
+      await waitCalls(() => fake.spawns[nGen3].closed);
+
+      // ⑥ Commit & Push: 원격을 연결하면 켜지고, 커밋과 함께 첫 푸시(upstream 연결)까지 되어 원격 HEAD 가 같아진다.
+      gx('remote', 'add', 'origin', REMOTE);
+      await gpSet('푸시 커밋');
+      await gitRefresh();
+      await waitFor(`!${pane('.gp-commit-push')}.disabled && !${pane('.gp-commit-sync')}.disabled`, 10000);
+      assert.equal(await js(`${pane('.gp-commit-push')}.title`), 'Commit & Push');
+      await js(`${pane('.gp-commit-push')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      await js(`${pane('.gp-confirm-ok')}.click()`);
+      await waitCalls(() => remoteHead() !== '' && remoteHead() === headOf());
+      await waitFor(`${gpNoteHas('커밋·푸시했습니다')} && ${pane('.gp-msg')}.value === ''`, 10000);
+      assert.equal(gx('rev-parse', '--abbrev-ref', '@{u}').trim(), 'origin/main', '푸시 뒤 upstream 이 연결되지 않음');
+      assert.equal(gx('log', '-1', '--format=%s').trim(), '푸시 커밋');
+
+      // ⑦ 다른 작업자가 먼저 푸시한 뒤 Commit & Push 는 거절된다: 「커밋됨」과 오류를 알리고 메시지는 비운다 → Commit & Sync 로 해결.
+      gitAt(FIXBASE, 'clone', '-q', REMOTE, CLONE);
+      putG('other.txt', '다른 작업자\n', CLONE);
+      gitAt(CLONE, 'add', '-A'); gitAt(CLONE, 'commit', '-q', '-m', '다른 작업자 커밋'); gitAt(CLONE, 'push', '-q', 'origin', 'main');
+      putG('a.txt', 'one\ntwo\nthree\nfour\nfive\n');
+      await gitRefresh();
+      await gpSet('거절될 커밋');
+      const headRej = headOf();
+      await js(`${pane('.gp-commit-push')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      await js(`${pane('.gp-confirm-ok')}.click()`);
+      await waitFor(`${gpNoteHas('커밋됨')} && ${gpNoteHas('⚠')}`, 15000);
+      assert.notEqual(headOf(), headRej, '푸시가 거절돼도 로컬 커밋은 남아야 함');
+      assert.notEqual(remoteHead(), headOf());
+      assert.equal(await gpVal(), '', '커밋됐는데 메시지가 남음');
+      assert.equal(await js(`${pane('.gp-note')}.classList.contains('err')`), true);
+      await waitFor(`${pane('.gp-ab')}.textContent.includes('↑1')`, 10000);
+      // 커밋이 남았는데 커밋할 것이 없다(메시지 빈칸): Commit & Sync 만 켜지고 제목이 동기화만 한다고 알린다. 스테이징을 하면 커밋하려는 것이므로 다시 꺼진다.
+      const SYNC_ONLY_TITLE = '커밋할 것이 없어 Pull 후 Push 합니다';
+      await waitFor(`!${pane('.gp-commit-sync')}.disabled`, 10000);
+      assert.deepEqual([await gpOff('gp-commit'), await gpOff('gp-commit-push'), await gpOff('gp-commit-sync')], [true, true, false], '거절된 푸시 뒤 Commit & Sync 만 켜져야 함');
+      assert.equal(await js(`${pane('.gp-commit-sync')}.title`), SYNC_ONLY_TITLE);
+      putG('docs/c.txt', '싱크용\n');
+      await gitRefresh();
+      await waitFor(`!!${gpAct('stage', 'docs/c.txt')} && !${pane('.gp-commit-sync')}.disabled`, 10000);
+      assert.equal(await gpOff('gp-commit-sync'), false, '스테이징하지 않은 변경이 있어도 동기화만은 켜져 있어야 함');
+      await js(`${gpAct('stage', 'docs/c.txt')}.click()`);
+      await waitFor(`!!${pane('.gp-staged .gp-file[data-path="docs/c.txt"]')}`, 10000);
+      await waitFor(`${pane('.gp-commit-sync')}.disabled`, 5000);
+      assert.equal(await js(`${pane('.gp-commit-sync')}.title`), 'Commit & Sync');
+      await waitFor(`!!${gpAct('unstage', 'docs/c.txt')}`, 5000);
+      await js(`${gpAct('unstage', 'docs/c.txt')}.click()`);
+      await waitFor(`!!${pane('.gp-changes .gp-file[data-path="docs/c.txt"]')} && !${pane('.gp-commit-sync')}.disabled`, 10000);
+      assert.equal(await js(`${pane('.gp-commit-sync')}.title`), SYNC_ONLY_TITLE);
+      await gpSet('싱크 커밋');
+      await js(`${pane('.gp-commit-sync')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      await js(`${pane('.gp-confirm-ok')}.click()`);
+      await waitCalls(() => remoteHead() === headOf() && fs.existsSync(path.join(GITFX, 'other.txt')), 20000);
+      await waitFor(`${gpNoteHas('커밋·푸시했습니다')} && ${pane('.gp-msg')}.value === ''`, 10000);
+      assert.ok(gx('log', '--merges', '-1', '--format=%H').trim(), '싱크 뒤 병합 커밋이 없음');
+
+      // ⑦-2 받을 것만 있으면(↓1, 올릴 커밋 없음) 메시지가 빈칸이어도 Commit & Sync 가 켜지고, 가져오기만 한다 (푸시 없음, 빨리 감기).
+      gitAt(CLONE, 'pull', '-q', '--no-rebase', '--no-edit', 'origin', 'main');
+      putG('other.txt', '받기만\n', CLONE);
+      gitAt(CLONE, 'add', '-A'); gitAt(CLONE, 'commit', '-q', '-m', '받기만 커밋'); gitAt(CLONE, 'push', '-q', 'origin', 'main');
+      await js(`${pane('.gp-fetch')}.click()`);
+      await waitFor(gpRemoteNote('가져왔습니다'), 15000);
+      await waitFor(`${pane('.gp-ab')}.textContent === '↓1' && !${pane('.gp-commit-sync')}.disabled`, 15000);
+      assert.equal(await js(`${pane('.gp-commit-sync')}.title`), SYNC_ONLY_TITLE);
+      assert.equal(await gpVal(), '');
+      const remoteRecv = remoteHead(), countRecv0 = Number(gx('rev-list', '--count', 'HEAD').trim());
+      await js(`${pane('.gp-commit-sync')}.click()`);
+      await waitFor(gpRemoteNote('가져와 병합했습니다'), 20000);
+      assert.equal(remoteHead(), remoteRecv, '받기만 하는데 원격이 바뀜');
+      assert.equal(headOf(), remoteRecv, '가져온 뒤 로컬이 원격과 다름');
+      assert.equal(Number(gx('rev-list', '--count', 'HEAD').trim()), countRecv0 + 1, '가져온 커밋 하나 말고 커밋이 더 생김');
+      assert.equal(fs.readFileSync(path.join(GITFX, 'other.txt'), 'utf8'), '받기만\n');
+      await waitFor(`${pane('.gp-ab')}.textContent === '' && ${pane('.gp-commit-sync')}.disabled`, 15000);
+      assert.equal(await js(`${pane('.gp-commit-sync')}.title`), 'Commit & Sync');
+
+      // ⑦-3 거절돼 남은 커밋만 있고 커밋할 것이 없으면 Commit & Sync 는 커밋 없이 Pull 후 Push 만 한다 (확인 줄 없음, 메시지 칸은 그대로 빈칸).
+      putG('other.txt', '다른 작업자 수정\n', CLONE);
+      gitAt(CLONE, 'add', '-A'); gitAt(CLONE, 'commit', '-q', '-m', '다른 작업자 수정'); gitAt(CLONE, 'push', '-q', 'origin', 'main');
+      putG('docs/c.txt', '싱크용 2\n');
+      await gitRefresh();
+      await waitFor(`!!${gpAct('stage', 'docs/c.txt')}`, 10000);
+      await gpSet('다시 거절될 커밋');
+      await js(`${pane('.gp-commit-push')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      await js(`${pane('.gp-confirm-ok')}.click()`);
+      await waitFor(`${gpNoteHas('커밋됨')} && ${gpNoteHas('Commit & Sync')}`, 15000);
+      assert.equal(await gpVal(), '', '커밋됐는데 메시지가 남음');
+      await waitFor(`${pane('.gp-ab')}.textContent.includes('↑1') && !${pane('.gp-commit-sync')}.disabled`, 10000);
+      assert.equal(await js(`${pane('.gp-commit-sync')}.title`), SYNC_ONLY_TITLE);
+      assert.deepEqual([await gpOff('gp-commit'), await gpOff('gp-commit-push')], [true, true]);
+      // 메시지가 있어도 커밋할 변경이 없으면 동기화만 한다고 켜져 있다
+      await gpSet('메시지만 있음');
+      await waitFor(`!${pane('.gp-commit-sync')}.disabled`, 5000);
+      assert.equal(await js(`${pane('.gp-commit-sync')}.title`), SYNC_ONLY_TITLE);
+      assert.deepEqual([await gpOff('gp-commit'), await gpOff('gp-commit-push')], [true, true], '커밋할 변경이 없는데 Commit/Push 가 켜짐');
+      await gpSet('');
+      // 스테이징하지 않은 변경은 그대로 두고 동기화만 한다: 성공 안내에 남긴 개수가 보인다
+      putG('docs/c.txt', '동기화 중에도 그대로\n');
+      await gitRefresh();
+      await waitFor(`!!${gpAct('stage', 'docs/c.txt')} && !${pane('.gp-commit-sync')}.disabled`, 10000);
+      const countSync0 = Number(gx('rev-list', '--count', 'HEAD').trim());
+      await js(`${pane('.gp-commit-sync')}.click()`);
+      await waitFor(`${gpNoteHas('가져와 푸시했습니다')} && ${gpNoteHas('변경 1개는 커밋하지 않고 그대로 뒀습니다')}`, 20000);
+      assert.equal(remoteHead(), headOf(), '동기화 뒤 원격 HEAD 가 로컬과 다름');
+      assert.equal(await js(`${pane('.gp-confirm')}.hidden`), true, '동기화만 하는데 확인 줄이 열림');
+      assert.equal(fs.readFileSync(path.join(GITFX, 'other.txt'), 'utf8'), '다른 작업자 수정\n', '원격 커밋을 가져오지 못함');
+      assert.equal(fs.readFileSync(path.join(GITFX, 'docs', 'c.txt'), 'utf8'), '동기화 중에도 그대로\n', '스테이징하지 않은 변경이 바뀜');
+      assert.equal(gx('status', '--porcelain').trim(), 'M docs/c.txt', '동기화가 스테이징하거나 다른 파일을 건드림');
+      assert.equal(Number(gx('rev-list', '--count', 'HEAD').trim()), countSync0 + 2, '원격 커밋 하나와 병합 커밋 하나 말고 커밋이 더 생김');
+      assert.equal(gx('log', '-1', '--format=%P').trim().split(' ').length, 2, '병합 커밋이 맨 위가 아님');
+      assert.equal(await gpVal(), '', '동기화가 메시지 칸을 건드림');
+      await waitFor(`${pane('.gp-ab')}.textContent === '' && ${pane('.gp-commit-sync')}.disabled`, 15000);
+      assert.equal(await js(`${pane('.gp-commit-sync')}.title`), 'Commit & Sync');
+      // 뒤 시나리오는 깨끗한 main 에서 시작한다
+      gx('checkout', '--', 'docs/c.txt');
+      await gitRefresh();
+      await waitFor(`!${pane('.gp-changes .gp-file[data-path="docs/c.txt"]')}`, 10000);
+
+      // ⑮ 그래프(읽기 전용)·Fetch·Pull·Push: 깨끗한 main 이 원격과 같은 위치에서 시작한다. 접혀 있는 동안은 code:git:log 를 부르지 않는다.
+      const gpGraph = () => js(`[...document.querySelectorAll('#code-pane .gp-graph .gp-node')].map(li => ({ subject: li.querySelector('.gp-subject').textContent, mark: li.querySelector('.gp-mark').textContent, chips: [...li.querySelectorAll('.gp-ref')].map(c => ({ t: c.textContent, c: c.className })), meta: li.querySelector('.gp-meta').textContent, title: li.title }))`);
+      const gpGraphOpen = () => js(`${pane('.gp-graph-toggle')}.getAttribute('aria-expanded') === 'true'`);
+      const gpToggle = () => js(`${pane('.gp-graph-toggle')}.click()`);
+      const gpFirstSubject = text => `document.querySelector('#code-pane .gp-graph .gp-subject')?.textContent === ${sel(text)}`;
+      const gpBtns = async () => { const r = {}; for (const c of ['fetch', 'pull', 'push']) r[c] = await js(`(() => { const b = ${pane('.gp-' + c)}; return { off: b.disabled, title: b.title }; })()`); return r; };
+      const commitG = (file, msg) => { putG(file, msg + '\n'); gx('add', file); gx('commit', '-q', '-m', msg); };
+      assert.equal(calls.gitLog, 0, `그래프가 접혀 있는데 code:git:log 가 불림: ${calls.gitLog}회`);
+      assert.equal(await gpGraphOpen(), false);
+      gx('tag', 'v1', gx('rev-list', '--max-parents=0', 'HEAD').trim());
+      await gpToggle();
+      await waitFor(`document.querySelectorAll('#code-pane .gp-graph .gp-node').length > 0 && !${pane('.gp-graph')}.hidden`, 10000);
+      assert.equal(calls.gitLog, 1, '펼치자 한 번만 받아야 함');
+      assert.equal(await gpGraphOpen(), true);
+      assert.equal(await js(`localStorage.getItem('ao.gitGraphOpen')`), '1');
+      let rows = await gpGraph();
+      assert.equal(rows.length, Number(gx('rev-list', '--all', '--count').trim()), '그래프 줄 수가 커밋 수와 다름');
+      assert.equal(rows[0].subject, gx('log', '-1', '--format=%s').trim());
+      assert.equal(rows[0].mark, '◆', '병합 커밋에 ◆ 표식이 없음');
+      assert.equal(rows[0].title, `${headOf().slice(0, 7)} · ${rows[0].subject}`);
+      assert.deepEqual(rows[0].chips.map(c => c.t).sort(), ['main', 'origin/main']);
+      assert.ok(rows[0].chips.find(c => c.t === 'main').c.includes('gp-ref-cur'), '현재 브랜치 칩에 강조가 없음');
+      assert.ok(rows[0].chips.find(c => c.t === 'origin/main').c.includes('gp-ref-remote'));
+      assert.match(rows[0].meta, /^.+ · \d\d:\d\d$/);
+      const rootRow = rows[rows.length - 1];
+      assert.equal(rootRow.subject, 'init');
+      assert.equal(rootRow.mark, '●');
+      assert.ok(rootRow.chips.some(c => c.t === 'v1' && c.c.includes('gp-ref-tag')), '태그 칩이 없음');
+      // 클릭 동작이 없다: 단추·링크·초점 대상이 없고, 눌러도 아무 일도 없다 (Checkout 없음).
+      assert.equal(await js(`${pane('.gp-graph')}.querySelectorAll('button, a, [tabindex]').length`), 0, '그래프 줄에 누를 수 있는 것이 있음');
+      const headG0 = headOf();
+      await js(`${pane('.gp-graph .gp-node:last-child')}.click()`);
+      await pause(500);
+      assert.equal(headOf(), headG0);
+      assert.equal(gx('rev-parse', '--abbrev-ref', 'HEAD').trim(), 'main', '그래프 줄을 눌렀더니 브랜치가 바뀜');
+      // 커밋이 생기면(밖에서 커밋) 한 번만 다시 받고, 파일만 바뀌거나 같은 상태를 다시 조회하면 받지 않는다.
+      commitG('g1.txt', '그래프 갱신 1');
+      await gitRefresh();
+      await waitFor(gpFirstSubject('그래프 갱신 1'), 10000);
+      assert.equal(calls.gitLog, 2);
+      assert.equal((await gpGraph())[0].mark, '●');
+      putG('dirty-only.txt', 'x\n');
+      // ⟳ 는 그래프도 다시 받으므로(명시적 새로 고침) 여기서는 지문이 같은 일반 조회(주기 갱신)로 확인한다.
+      await waitFor(`!!${pane('.gp-changes .gp-file[data-path="dirty-only.txt"]')}`, 30000);
+      assert.equal(calls.gitLog, 2, '파일만 바뀌었는데 그래프를 다시 받음');
+      fs.rmSync(path.join(GITFX, 'dirty-only.txt'));
+      // 접으면 받지 않고, 다시 펼칠 때 바뀐 것만 받는다. 접었다 바로 펼치면 다시 받지 않는다.
+      await gpToggle();
+      assert.equal(await gpGraphOpen(), false);
+      assert.equal(await js(`localStorage.getItem('ao.gitGraphOpen')`), '0');
+      assert.equal(await js(`${pane('.gp-graph')}.hidden`), true);
+      commitG('g2.txt', '그래프 접힌 중');
+      await gitRefresh();
+      await pause(500);
+      assert.equal(calls.gitLog, 2, '접혀 있는데 그래프를 받음');
+      await gpToggle();
+      await waitFor(gpFirstSubject('그래프 접힌 중'), 10000);
+      assert.equal(calls.gitLog, 3);
+      await gpToggle(); await gpToggle();
+      await pause(500);
+      assert.equal(calls.gitLog, 3, '바뀐 것이 없는데 펼칠 때 다시 받음');
+      // 조회가 거부되면 안내만 보이고(머리말 없이) 콘솔로 새지 않는다. 다음에 바뀌면 복구된다.
+      calls.failGit = { ch: 'code:git:log', text: '로그 거부 시험' };
+      commitG('g3.txt', '로그 거부 중');
+      await gitRefresh();
+      await waitFor(`${pane('.gp-graph')}.textContent.includes('로그 거부 시험')`, 10000);
+      assert.ok((await js(`${pane('.gp-graph')}.textContent`)).includes('⚠'));
+      assert.equal(await js(`${pane('.gp-graph')}.textContent.includes('Error invoking')`), false);
+      calls.failGit = null;
+      gx('commit', '--allow-empty', '-q', '-m', '로그 복구');
+      await gitRefresh();
+      await waitFor(gpFirstSubject('로그 복구'), 10000);
+
+      // Fetch·Pull·Push: 로컬 커밋 4개가 앞서 있다 → Push 가 켜진다. 다른 작업자(CLONE)가 푸시한 뒤 Fetch 는 ↓1 만 만들고 작업 폴더는 그대로.
+      let bt = await gpBtns();
+      assert.deepEqual([bt.fetch.off, bt.pull.off, bt.push.off], [false, false, false], JSON.stringify(bt));
+      assert.equal(bt.push.title, 'Push');
+      gitAt(CLONE, 'pull', '-q', '--no-rebase', '--no-edit', 'origin', 'main');
+      putG('clone2.txt', '다른 작업자 2\n', CLONE); gitAt(CLONE, 'add', 'clone2.txt'); gitAt(CLONE, 'commit', '-q', '-m', '다른 작업자 2'); gitAt(CLONE, 'push', '-q', 'origin', 'main');
+      const headF0 = headOf();
+      await js(`${pane('.gp-fetch')}.click()`);
+      await waitFor(gpRemoteNote('가져왔습니다'), 15000);
+      await waitFor(`${pane('.gp-ab')}.textContent === '↑4 ↓1'`, 15000);
+      assert.equal(headOf(), headF0, 'Fetch 가 로컬 HEAD 를 바꿈');
+      assert.equal(fs.existsSync(path.join(GITFX, 'clone2.txt')), false, 'Fetch 가 작업 폴더를 바꿈');
+      await waitFor(`[...document.querySelectorAll('#code-pane .gp-graph .gp-node')].some(li => li.querySelector('.gp-subject').textContent === '다른 작업자 2' && [...li.querySelectorAll('.gp-ref')].some(c => c.textContent === 'origin/main'))`, 10000);
+      // Pull: 병합해 가져온다 (↓ 가 사라지고 병합 커밋이 ↑ 에 더해진다).
+      await js(`${pane('.gp-pull')}.click()`);
+      await waitFor(gpRemoteNote('가져와 병합했습니다'), 20000);
+      await waitFor(`${pane('.gp-ab')}.textContent === '↑5'`, 15000);
+      assert.equal(fs.existsSync(path.join(GITFX, 'clone2.txt')), true, 'Pull 뒤 가져온 파일이 없음');
+      await waitFor(`!!${node('clone2.txt')}`, 15000); // Pull 로 HEAD 가 바뀌면 트리의 파일 목록도 다시 받아 새 파일이 보여야 함
+      await waitFor(`document.querySelector('#code-pane .gp-graph .gp-mark')?.textContent === '◆' && document.querySelector('#code-pane .gp-graph .gp-subject').textContent.startsWith('Merge')`, 10000);
+      // Push: 원격이 로컬과 같아지고 ↑ 가 사라지며, 올릴 것이 없으면 Push 가 꺼진다.
+      await js(`${pane('.gp-push')}.click()`);
+      await waitFor(gpRemoteNote('푸시했습니다'), 20000);
+      assert.equal(remoteHead(), headOf(), 'Push 뒤 원격 HEAD 가 로컬과 다름');
+      await waitFor(`${pane('.gp-ab')}.textContent === ''`, 15000);
+      bt = await gpBtns();
+      assert.deepEqual([bt.fetch.off, bt.pull.off, bt.push.off], [false, false, true], JSON.stringify(bt));
+      assert.equal(bt.push.title, '올릴 커밋이 없습니다');
+      await waitFor(`[...document.querySelectorAll('#code-pane .gp-graph .gp-node')][0]?.querySelectorAll('.gp-ref').length === 2`, 10000);
+      // 원격의 다른 브랜치에만 커밋이 올라와도 Fetch 하면 그래프에 나온다 (커밋 위치·앞섬/뒤처짐 지문이 그대로여도 쓰기 성공 뒤에는 다시 받는다).
+      gitAt(CLONE, 'checkout', '-q', '-b', 'side-g'); putG('side-g.txt', '곁가지\n', CLONE); gitAt(CLONE, 'add', 'side-g.txt'); gitAt(CLONE, 'commit', '-q', '-m', '다른 브랜치 커밋'); gitAt(CLONE, 'push', '-q', 'origin', 'side-g'); gitAt(CLONE, 'checkout', '-q', 'main');
+      await js(`${pane('.gp-fetch')}.click()`);
+      await waitFor(gpRemoteNote('가져왔습니다'), 15000);
+      await waitFor(`[...document.querySelectorAll('#code-pane .gp-graph .gp-node')].some(li => li.querySelector('.gp-subject').textContent === '다른 브랜치 커밋')`, 10000);
+      // ⟳ 는 그래프도 다시 받는다: 태그는 지문에 들지 않지만 칩으로 보여야 한다. 칩 title 에는 전체 이름이 있다.
+      gx('tag', 'v-term-1');
+      await js(`${pane('.code-refresh')}.click()`);
+      await waitFor(`!![...document.querySelectorAll('#code-pane .gp-graph .gp-ref-tag')].find(c => c.textContent === 'v-term-1')`, 10000);
+      assert.equal(await js(`[...document.querySelectorAll('#code-pane .gp-graph .gp-ref-tag')].find(c => c.textContent === 'v-term-1').title.startsWith('v-term-1')`), true, '칩 title 에 전체 이름이 없음');
+      gx('tag', '-d', 'v-term-1');
+      // main 이 아닌 브랜치: Fetch 는 되고 Pull·Push 는 꺼진다. main 으로 돌아와 Pull(빨리 감기)로 맞춘다.
+      gx('checkout', '-q', '-b', 'feature2');
+      gitAt(CLONE, 'pull', '-q', '--no-rebase', '--no-edit', 'origin', 'main');
+      putG('clone3.txt', '다른 작업자 3\n', CLONE); gitAt(CLONE, 'add', 'clone3.txt'); gitAt(CLONE, 'rm', '-q', 'clone2.txt'); gitAt(CLONE, 'commit', '-q', '-m', '다른 작업자 3'); gitAt(CLONE, 'push', '-q', 'origin', 'main');
+      await gitRefresh();
+      await waitFor(`${pane('.gp-branch')}.textContent === 'feature2'`, 10000);
+      bt = await gpBtns();
+      assert.deepEqual([bt.fetch.off, bt.pull.off, bt.push.off], [false, true, true], JSON.stringify(bt));
+      assert.ok(bt.pull.title.includes('main 브랜치에서만') && bt.push.title.includes('main 브랜치에서만'), JSON.stringify(bt));
+      await js(`${pane('.gp-fetch')}.click()`);
+      await waitFor(gpRemoteNote('가져왔습니다'), 15000);
+      assert.equal(gx('rev-parse', 'origin/main').trim(), gitAt(CLONE, 'rev-parse', 'HEAD').trim(), '다른 브랜치에서 Fetch 가 원격 정보를 갱신하지 못함');
+      gx('checkout', '-q', 'main'); gx('branch', '-D', 'feature2');
+      await gitRefresh();
+      await waitFor(`${pane('.gp-branch')}.textContent === 'main' && ${pane('.gp-ab')}.textContent === '↓1' && !${pane('.gp-pull')}.disabled`, 10000);
+      await js(`${pane('.gp-pull')}.click()`);
+      await waitFor(gpRemoteNote('가져와 병합했습니다') + ` && ${pane('.gp-ab')}.textContent === ''`, 20000);
+      assert.equal(headOf(), remoteHead(), 'Pull 뒤 로컬이 원격과 다름');
+      await waitFor(`!!${node('clone3.txt')} && !${node('clone2.txt')}`, 15000); // 원격이 추가·삭제한 파일이 트리에 반영돼야 함
+
+      // ⑧ main 이 아닌 브랜치: 쓰기를 모두 끄고 안내한다. main 으로 돌아오면 복구된다.
+      gx('checkout', '-q', '-b', 'feature');
+      putG('a.txt', 'one\ntwo\nthree\nfour\nfive\nsix\n');
+      await gpSet('브랜치 확인');
+      await gitRefresh();
+      await waitFor(`${pane('.gp-branch')}.textContent === 'feature' && ${gpNoteHas('main 브랜치에서만')}`, 10000);
+      assert.ok((await gpNote()).includes('(현재: feature)'), await gpNote());
+      assert.deepEqual(await js(`[${pane('.gp-note-text')}.textContent.includes('\\n'), getComputedStyle(${pane('.gp-note-text')}).whiteSpace]`), [true, 'pre-wrap'], 'main 이 아닌 안내가 줄이 바뀌어 보이지 않음');
+      assert.deepEqual([await gpOff('gp-commit'), await gpOff('gp-commit-push'), await gpOff('gp-commit-sync')], [true, true, true]);
+      assert.equal(await js(`[...document.querySelectorAll('#code-pane .gp-act, #code-pane .gp-all')].every(b => b.disabled)`), true, '다른 브랜치인데 + − 가 켜져 있음');
+      assert.equal(await js(`!!${pane('.gp-changes .gp-file[data-path="a.txt"]')}`), true, '다른 브랜치에서도 목록은 보여야 함');
+      gx('checkout', '-q', 'main');
+      await gitRefresh();
+      await waitFor(`${pane('.gp-branch')}.textContent === 'main' && ${pane('.gp-note')}.hidden && !${pane('.gp-commit')}.disabled`, 10000);
+      assert.equal(await js(`[...document.querySelectorAll('#code-pane .gp-act, #code-pane .gp-all')].every(b => !b.disabled)`), true, 'main 으로 돌아왔는데 + − 가 꺼져 있음');
+      await gpSet('');
+
+      // ⑩ 하위 폴더를 열면: 폴더 밖 파일은 목록에 보이되 열기는 꺼지고(스테이징은 가능), 안쪽 파일을 누르면 폴더 기준 경로로 열린다.
+      putG('sub/in.txt', 'in\nmod\n');
+      await gpFolder(path.join(GITFX, 'sub'));
+      await waitFor(`document.querySelectorAll('#code-pane .gp-changes .gp-file').length === 2`, 10000);
+      assert.equal(await js(`${pane('.gp-file[data-path="a.txt"]')}.disabled`), true, '폴더 밖 파일 열기가 켜져 있음');
+      assert.match(await js(`${pane('.gp-file[data-path="a.txt"]')}.title`), /열린 폴더 밖 파일 — 스테이징만 할 수 있습니다/);
+      assert.equal(await js(`${pane('.gp-file[data-path="sub/in.txt"]')}.disabled`), false);
+      await js(`${pane('.gp-file[data-path="sub/in.txt"]')}.click()`);
+      await waitFor(`${pane('.code-path')}.textContent === 'in.txt'`, 10000);
+      await js(`${gpAct('stage', 'a.txt')}.click()`);
+      await waitFor(`!!${pane('.gp-staged .gp-file[data-path="a.txt"]')}`, 10000);
+      assert.deepEqual(cachedNames(), ['a.txt'], '폴더 밖 파일 스테이징이 안 됨');
+      await js(`${gpAct('unstage', 'a.txt')}.click()`);
+      await waitFor(`!${pane('.gp-staged .gp-file[data-path="a.txt"]')}`, 10000);
+
+      // ⑪ 에이전트가 방금 수정한 파일: ● 표시, 커밋 전 확인 줄(취소하면 커밋 안 됨).
+      await gpFolder(GITFX);
+      await waitFor(`${pane('.gp-branch')}.textContent === 'main' && !!${pane('.gp-changes .gp-file[data-path="a.txt"]')}`, 10000);
+      await js(`${gpAct('stage', 'a.txt')}.click()`);
+      await waitFor(`!!${pane('.gp-staged .gp-file[data-path="a.txt"]')}`, 10000);
+      assert.equal(await js(`!!${pane('.gp-agent')}`), false, '에이전트가 만지지 않았는데 ● 가 있음');
+      event('PreToolUse', { tool_name: 'Edit', tool_input: { file_path: path.join(GITFX, 'a.txt') } });
+      await waitFor(`!!${pane('.gp-staged .gp-file[data-path="a.txt"] .gp-agent')}`, 10000);
+      assert.match(await js(`${pane('.gp-agent')}.title`), /에이전트가 방금 수정/);
+      await gpSet('에이전트 커밋');
+      const headAg = headOf();
+      await js(`${pane('.gp-commit')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      assert.match(await gpConfirmText(), /에이전트가 방금 파일을 수정했습니다/);
+      assert.ok(!(await gpConfirmText()).includes('모두 스테이징'), '스테이징이 있는데 모두 스테이징 문구가 있음');
+      await js(`${pane('.gp-confirm-no')}.click()`);
+      await waitFor(`${pane('.gp-confirm')}.hidden`, 5000);
+      await pause(500);
+      assert.equal(headOf(), headAg, '취소했는데 커밋됨');
+      assert.equal(await gpVal(), '에이전트 커밋');
+      await js(`${pane('.gp-commit')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      await js(`${pane('.gp-confirm-ok')}.click()`);
+      await waitCalls(() => headOf() !== headAg);
+      // 커밋이 반영된 목록까지 기다린다: 옛 목록으로 연 확인 줄은 새 목록이 오면 닫히므로 (의도한 동작), 아래 시험의 확인 줄이 시작 전에 닫힐 수 있다.
+      await waitFor(`${pane('.gp-msg')}.value === '' && !${pane('.gp-staged .gp-file')}`, 10000);
+
+      // C1 확인 줄: (1) 열린 동안 목록이 바뀌면(밖에서 git add) 닫히고 커밋하지 않는다.
+      await gpSet('C1 확인');
+      const headC1 = headOf();
+      await js(`${pane('.gp-commit')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      assert.equal(await js(`document.activeElement === ${pane('.gp-confirm-ok')}`), true, '확인 줄이 뜨는데 확인 버튼에 초점이 없음');
+      gx('add', 'sub/in.txt');
+      await gitRefresh();
+      await waitFor(`${pane('.gp-confirm')}.hidden && ${gpNoteHas('목록이 바뀌었습니다')}`, 10000);
+      await pause(500);
+      assert.equal(headOf(), headC1, '목록이 바뀌었는데 확인 없이 커밋됨');
+      gx('reset', '-q');
+      // (2) Push 확인 줄이 열린 동안 Ctrl+Enter·Commit 단추는 then 을 바꾸지 않고 확인 버튼으로 초점만 옮긴다.
+      await gitRefresh();
+      await js(`${pane('.gp-commit-push')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      assert.match(await gpConfirmText(), /커밋·푸시/, '확인 글에 동작 이름이 없음');
+      await js(`${pane('.gp-msg')}.focus()`);
+      await gpKey({});
+      assert.equal(await js(`document.activeElement === ${pane('.gp-confirm-ok')}`), true, 'Ctrl+Enter 가 확인 버튼으로 초점을 옮기지 않음');
+      await js(`${pane('.gp-commit')}.click()`);
+      assert.match(await gpConfirmText(), /커밋·푸시/, '확인 줄이 열린 동안 then 이 바뀜');
+      await js(`${pane('.gp-confirm-ok')}.click()`);
+      await waitCalls(() => remoteHead() !== '' && remoteHead() === headOf() && headOf() !== headC1, 20000);
+      await waitFor(`${gpNoteHas('커밋·푸시했습니다')}`, 10000);
+      // (3) 폴더를 옮기면 확인 줄이 닫힌다.
+      putG('c1-folder.txt', '폴더 전환\n');
+      await gitRefresh();
+      await gpSet('C1 폴더');
+      const headC1b = headOf();
+      await js(`${pane('.gp-commit')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      await selectFolderUi(FIX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(FIX)}`, 10000);
+      await selectFolderUi(GITFX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(GITFX)}`, 10000);
+      assert.equal(await js(`${pane('.gp-confirm')}.hidden`), true, '폴더를 옮겼는데 확인 줄이 남음');
+      assert.equal(headOf(), headC1b);
+
+      // staged-changed: 화면이 본 뒤 밖에서 스테이징이 바뀌면 커밋하지 않고 알린다 (메시지는 유지).
+      putG('s1.txt', '1\n'); putG('s2.txt', '2\n');
+      await gitRefresh();
+      await waitFor(`!!${gpAct('stage', 's1.txt')}`, 10000);
+      await js(`${gpAct('stage', 's1.txt')}.click()`);
+      await waitFor(`!!${pane('.gp-staged .gp-file[data-path="s1.txt"]')}`, 10000);
+      await gpSet('SC 메시지');
+      const headSc = headOf();
+      gx('add', 's2.txt');
+      await js(`${pane('.gp-commit')}.click()`);
+      await waitFor(gpNoteHas('스테이징 목록이 바뀌었습니다'), 10000);
+      assert.equal(headOf(), headSc, '스테이징이 바뀌었는데 커밋됨');
+      assert.equal(await gpVal(), 'SC 메시지');
+      assert.equal(await js(`${pane('.gp-note')}.classList.contains('err')`), true);
+      gx('reset', '-q');
+      for (const r of ['s1.txt', 's2.txt', 'c1-folder.txt']) fs.rmSync(path.join(GITFX, r));
+      await gpSet('');
+
+      // 이름 변경 줄: title 에 옛 이름 → 새 이름, 해제하면 두 경로 모두 내려가고, 전체 + 로 다시 R 로 합쳐진다.
+      putG('ren-old.txt', '첫째 줄\n둘째 줄\n셋째 줄\n넷째 줄\n');
+      gx('add', '-A'); gx('commit', '-q', '-m', 'rename 준비');
+      gx('mv', 'ren-old.txt', 'ren-new.txt');
+      await gitRefresh();
+      await waitFor(`!!${pane('.gp-staged .gp-file[data-path="ren-new.txt"]')}`, 10000);
+      assert.equal(await js(`${pane('.gp-staged .gp-file[data-path="ren-new.txt"]')}.title`), 'ren-old.txt → ren-new.txt');
+      assert.equal(await js(`${pane('.gp-staged .gp-file[data-path="ren-new.txt"] .code-badge')}.textContent`), 'R');
+      await js(`${gpAct('unstage', 'ren-new.txt')}.click()`);
+      await waitFor(`!${pane('.gp-staged .gp-file[data-path="ren-new.txt"]')} && !!${pane('.gp-changes .gp-file[data-path="ren-old.txt"]')}`, 10000);
+      assert.deepEqual(cachedNames(), [], '이름 변경 해제 때 옛 경로가 남음');
+      assert.deepEqual(await gpBadges('changes'), { 'ren-new.txt': 'U', 'ren-old.txt': 'D' });
+      await js(`${pane('.gp-all[data-act=stage]')}.click()`);
+      await waitFor(`!!${pane('.gp-staged .gp-file[data-path="ren-new.txt"]')} && ${pane('.gp-staged .gp-file[data-path="ren-new.txt"]')}.title.includes('→')`, 10000);
+      assert.match(gx('diff', '--cached', '--name-status').trim(), /^R\d*\s+ren-old\.txt\s+ren-new\.txt$/);
+      gx('commit', '-q', '-m', 'rename 끝');
+      await gitRefresh();
+
+      // stageable:false (서브모듈 내용만 더러움): + 가 없고 안내 title, 전체 + 와 커밋 대상에서 빠진다.
+      const SM = path.join(GITFX, 'sm');
+      fs.mkdirSync(SM); gitAt(SM, 'init', '-q', '-b', 'main'); putG('sm.txt', 'sub\n', SM); gitAt(SM, 'add', '-A'); gitAt(SM, 'commit', '-q', '-m', 'sm');
+      gx('update-index', '--add', '--cacheinfo', `160000,${gitAt(SM, 'rev-parse', 'HEAD').trim()},sm`); gx('commit', '-q', '-m', '서브모듈 추가');
+      putG('sm.txt', 'sub modified\n', SM);
+      await gitRefresh();
+      await waitFor(`!!${pane('.gp-changes .gp-file[data-path="sm"]')}`, 10000);
+      assert.match(await js(`${pane('.gp-changes .gp-file[data-path="sm"]')}.title`), /서브모듈 안에서 커밋해 주세요\./);
+      assert.equal(await js(`!${gpAct('stage', 'sm')}`), true, '서브모듈 항목에 + 가 있음');
+      await gpSet('SM 메시지');
+      assert.equal(await gpOff('gp-commit'), true, '스테이징할 수 없는 변경뿐인데 Commit 이 켜짐');
+      gitAt(SM, 'checkout', '--', 'sm.txt');
+      await gpSet('');
+      await gitRefresh();
+
+      // ⑬ 높이 조절: 위쪽 경계를 끌어 높이고 낮추며, 위 목록 최소 높이·패널 머리줄은 남기고, 두 번 클릭하면 기본 높이. 저장 키는 ao.gitPanelHeight.
+      const gpBox = () => js(`(() => { const h = s => Math.round(document.querySelector('#code-pane ' + s).getBoundingClientRect().height);
+        return { panel: h('.git-panel'), top: h('.code-side-top'), head: h('.gp-head'), saved: localStorage.getItem('ao.gitPanelHeight') }; })()`);
+      const gpGrip = await js(`(() => { const r = ${pane('.gp-resizer')}.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+      const dragGp = async (dy) => {
+        const g = await js(`(() => { const r = ${pane('.gp-resizer')}.getBoundingClientRect(); return Math.round(r.top + r.height / 2); })()`);
+        const ev = (type, y) => win.webContents.sendInputEvent({ type, x: gpGrip.x, y, button: 'left', clickCount: 1, ...(type === 'mouseMove' ? { modifiers: ['leftButtonDown'] } : {}) });
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: gpGrip.x, y: g }); await pause(50);
+        ev('mouseDown', g); for (let i = 1; i <= 5; i++) { ev('mouseMove', g + Math.round(dy * i / 5)); await pause(30); } ev('mouseUp', g + dy);
+        await pause(300);
+      };
+      const gp0 = await gpBox();
+      assert.equal(gp0.saved, null, 'Git 패널 조절 전 저장값이 있음');
+      const sideH = await js(`${pane('.code-side')}.getBoundingClientRect().height`);
+      assert.ok(Math.abs(gp0.panel - Math.min(300, sideH * 0.5)) <= 2, `기본 높이가 min(300px, 50%) 가 아님: ${JSON.stringify({ gp0, sideH })}`);
+      await dragGp(-100);
+      const gpUp = await gpBox();
+      assert.ok(Math.abs(gpUp.panel - (gp0.panel + 100)) <= 2 && gpUp.top < gp0.top, `위로 끌어도 Git 패널이 높아지지 않음: ${JSON.stringify({ gp0, gpUp })}`);
+      assert.equal(Number(gpUp.saved), gpUp.panel, '조절한 Git 패널 높이를 저장하지 않음');
+      await dragGp(2000);
+      const gpLow = await gpBox();
+      assert.ok(Math.abs(gpLow.panel - (gpLow.head + 170)) <= 1, `가장 낮게 끌면 머리줄+170px 이어야 함: ${JSON.stringify(gpLow)}`);
+      await dragGp(-2000);
+      const gpHigh = await gpBox();
+      assert.ok(gpHigh.top >= 119 && gpHigh.top <= 122, `가장 높게 끌어도 위 목록 120px 는 남아야 함: ${JSON.stringify(gpHigh)}`);
+      const gpTop = await js(`Math.round(${pane('.gp-resizer')}.getBoundingClientRect().top + 4)`);
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: gpGrip.x, y: gpTop, button: 'left', clickCount: 2 });
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: gpGrip.x, y: gpTop, button: 'left', clickCount: 2 });
+      await pause(300);
+      const gpReset = await gpBox();
+      assert.ok(gpReset.panel === gp0.panel && gpReset.saved === null, `두 번 클릭해도 기본 높이로 돌아가지 않음: ${JSON.stringify({ gp0, gpReset })}`);
+      gitPanelResize = { default: gp0.panel, up: gpUp.panel, lowest: gpLow.panel, highestTop: gpHigh.top, reset: gpReset.panel };
+
+      // ⑭ 왼쪽 목록 너비 조절: 오른쪽 경계를 끌어 넓히고 좁히며, 목록 최소(260)·편집기 쪽 200px 는 남기고, 두 번 클릭하면 기본 280. 저장 키는 ao.codeSideWidth.
+      const sideBox = () => js(`(() => { const w = s => Math.round(document.querySelector('#code-pane ' + s).getBoundingClientRect().width);
+        return { side: w('.code-side'), main: w('.code-main'), view: w('.code-view'), saved: localStorage.getItem('ao.codeSideWidth') }; })()`);
+      const sideGrip = () => js(`(() => { const r = ${pane('.code-side-resizer')}.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top + r.height / 2) }; })()`);
+      const dragSide = async (dx) => {
+        const g = await sideGrip();
+        const ev = (type, x) => win.webContents.sendInputEvent({ type, x, y: g.y, button: 'left', clickCount: 1, ...(type === 'mouseMove' ? { modifiers: ['leftButtonDown'] } : {}) });
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: g.x, y: g.y }); await pause(50);
+        ev('mouseDown', g.x); for (let i = 1; i <= 5; i++) { ev('mouseMove', g.x + Math.round(dx * i / 5)); await pause(30); } ev('mouseUp', g.x + dx);
+        await pause(300);
+      };
+      const sideFit = () => js(`(() => ({ boxes: ['.gp-actions', '.gp-head'].map(s => { const e = document.querySelector('#code-pane ' + s); return { s, sw: e.scrollWidth, cw: e.clientWidth }; }),
+        buttons: [...document.querySelectorAll('#code-pane .gp-actions button')].map(b => ({ s: b.textContent, sw: b.scrollWidth, cw: b.clientWidth })) }))()`);
+      const sd0 = await sideBox();
+      assert.ok(sd0.side === 280 && sd0.saved === null, `조절 전 왼쪽 목록이 280px·저장값 없음이 아님: ${JSON.stringify(sd0)}`);
+      await dragSide(100);
+      const sdWide = await sideBox();
+      assert.ok(Math.abs(sdWide.side - 380) <= 2 && Math.abs(sdWide.main - (sd0.main - 100)) <= 2, `오른쪽으로 끌어도 왼쪽 목록이 380px 로 넓어지지 않음: ${JSON.stringify({ sd0, sdWide })}`);
+      assert.ok(Math.abs(Number(sdWide.saved) - sdWide.side) <= 1, `조절한 왼쪽 목록 너비를 저장하지 않음: ${JSON.stringify(sdWide)}`);
+      await dragSide(-2000);
+      const sdMin = await sideBox();
+      assert.ok(Math.abs(sdMin.side - 260) <= 1, `가장 좁게 끌면 왼쪽 목록이 260px 이어야 함: ${JSON.stringify(sdMin)}`);
+      const sdFit = await sideFit();
+      for (const b of sdFit.boxes) assert.ok(b.sw <= b.cw, `왼쪽 목록 최소 너비에서 Git 패널이 넘침: ${JSON.stringify(sdFit)}`);
+      assert.ok(sdFit.buttons.length > 0, 'Git 패널 단추가 없음');
+      for (const b of sdFit.buttons) assert.ok(b.sw <= b.cw, `왼쪽 목록 최소 너비에서 Git 단추 글자가 잘림: ${JSON.stringify(sdFit.buttons)}`);
+      await dragSide(5000);
+      const sdMax = await sideBox();
+      assert.ok(Math.abs(sdMax.main - 200) <= 2, `가장 넓게 끌어도 편집기 쪽 200px 는 남아야 함: ${JSON.stringify(sdMax)}`);
+      // 저장값이 있는 채 오른쪽 영역을 최대로 넓히면 코드 화면이 좁아져 목록이 범위로 줄고, 되돌리면 저장값대로 다시 늘어난다.
+      await js(`(() => { const l = document.querySelector('.layout'); l.style.setProperty('--cli-width', (l.clientWidth - 420) + 'px'); })()`);
+      await pause(500);
+      const sdNarrow = await sideBox();
+      assert.ok(Math.abs(sdNarrow.side - 260) <= 1 && sdNarrow.saved === sdMax.saved, `코드 화면이 좁아졌는데 목록이 260px 로 줄지 않았거나 저장값이 바뀜: ${JSON.stringify({ sdMax, sdNarrow })}`);
+      // 줄어 있는 동안 경계를 클릭만 하거나(1px 흔들림 포함) 해도 저장값은 그대로다.
+      const sdClick = await sideGrip();
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: sdClick.x, y: sdClick.y }); await pause(50);
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: sdClick.x, y: sdClick.y, button: 'left', clickCount: 1 });
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: sdClick.x + 1, y: sdClick.y, modifiers: ['leftButtonDown'] }); await pause(30);
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: sdClick.x + 1, y: sdClick.y, button: 'left', clickCount: 1 });
+      await pause(300);
+      assert.equal((await sideBox()).saved, sdMax.saved, '클릭만 했는데 왼쪽 목록 저장값이 줄어듦');
+      await js(`document.querySelector('.layout').style.removeProperty('--cli-width')`);
+      await pause(500);
+      const sdBack = await sideBox();
+      assert.ok(Math.abs(sdBack.side - sdMax.side) <= 2 && sdBack.saved === sdMax.saved, `오른쪽 영역을 되돌려도 왼쪽 목록이 원래 너비로 돌아오지 않음: ${JSON.stringify({ sdMax, sdBack })}`);
+      const sdGrab = await sideGrip();
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: sdGrab.x, y: sdGrab.y, button: 'left', clickCount: 2 });
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: sdGrab.x, y: sdGrab.y, button: 'left', clickCount: 2 });
+      await pause(300);
+      const sdReset = await sideBox();
+      assert.ok(sdReset.side === 280 && sdReset.saved === null, `두 번 클릭해도 왼쪽 목록이 기본 280px 로 돌아가지 않음: ${JSON.stringify(sdReset)}`);
+      sideResize = { default: sd0.side, wide: sdWide.side, min: sdMin.side, mainAtMax: sdMax.main, narrow: sdNarrow.side, back: sdBack.side, reset: sdReset.side };
+
+      // M1·작업 중 표시·폴더 전환 뒤 결과: 커밋이 도는 동안 쓴 글은 남고, 경과가 보이며, 다른 폴더에 있다가 돌아오면 결과 안내가 보인다.
+      putG('m1.txt', 'm1\n');
+      await gitRefresh();
+      await gpSet('M1 메시지');
+      const headM1 = headOf();
+      calls.delayGit = 8000; // 로그인 안내 기준(4초)보다 훨씬 길게: 4.5초 뒤에도 커밋 중이어야 「커밋 중에는 안내가 숨는다」를 확인할 수 있다
+      await js(`${pane('.gp-commit')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      await js(`${pane('.gp-confirm-ok')}.click()`);
+      await waitFor(`!${pane('.gp-busy')}.hidden && /^커밋 중… 0:0\\d$/.test(${pane('.gp-busy')}.textContent)`, 5000);
+      assert.equal(await gpOff('gp-commit'), true, '작업 중인데 Commit 이 켜져 있음');
+      assert.equal(await js(`${pane('.gp-login')}.hidden`), true, '커밋 작업 중에 로그인 창 안내가 보임');
+      await pause(4500);
+      assert.equal(await js(`!${pane('.gp-busy')}.hidden && /^커밋 중… 0:0[4-9]$/.test(${pane('.gp-busy')}.textContent)`), true, `4.5초 뒤에도 커밋 중이어야 함: ${await js(`${pane('.gp-busy')}.textContent`)}`);
+      assert.equal(await js(`${pane('.gp-login')}.hidden`), true, '커밋이 4초 넘게 이어져도 로그인 창 안내가 보임 (네트워크 작업이 아님)');
+      await gpSet('M1 메시지 뒤에 쓴 글');
+      // 커밋이 도는 중에 도착한 메시지 생성 결과는 입력란에 넣지 않고 적용 줄에 둔다 (커밋이 끝나도 입력란에 낡은 메시지가 남지 않게).
+      const gateOp = deferred();
+      scenario({ gate: gateOp, resultText: 'M1 도중 생성' });
+      const nOp = fake.spawns.length;
+      await js(`${pane('.gp-gen')}.click()`);
+      await waitCalls(() => fake.spawns.length === nOp + 1);
+      gateOp.open();
+      await waitFor(`!${pane('.gp-pending')}.hidden`, 3000);
+      assert.equal(await gpVal(), 'M1 메시지 뒤에 쓴 글', '커밋 중 도착한 생성 결과가 입력란에 들어감');
+      await settle(fake.spawns[nOp]);
+      await waitCalls(() => headOf() !== headM1, 15000);
+      await waitFor(`${pane('.gp-busy')}.hidden`, 10000);
+      calls.delayGit = 0;
+      assert.equal(await gpVal(), 'M1 메시지 뒤에 쓴 글', '커밋이 도는 동안 쓴 글이 지워짐');
+      assert.equal(gx('log', '-1', '--format=%s').trim(), 'M1 메시지');
+      await gpSet('');
+      putG('last.txt', 'last\n');
+      await gitRefresh();
+      await gpSet('LAST 메시지');
+      const headLast = headOf();
+      calls.delayGit = 2000;
+      await js(`${pane('.gp-commit')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      await js(`${pane('.gp-confirm-ok')}.click()`);
+      await selectFolderUi(FIX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(FIX)}`, 10000);
+      await waitCalls(() => headOf() !== headLast, 15000);
+      await pause(800);
+      calls.delayGit = 0;
+      await selectFolderUi(GITFX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(GITFX)}`, 10000);
+      await waitFor(gpNoteHas('커밋했습니다'), 5000);
+      assert.equal(await gpVal(), '', '다른 폴더에서 끝난 커밋의 메시지가 남음');
+      await waitFor(`${pane('.gp-note')}.hidden`, 8000); // 성공 안내는 폴더로 돌아와 보인 것도 4초 뒤 사라진다
+
+      // 느린 원격 작업: 푸시가 4초 넘게 이어지면 로그인 창 안내가 보이고, 끝나면 사라진다 (pre-push hook 으로 늘린다 — 원격은 로컬 폴더라 인증은 쓰지 않는다).
+      const slowHook = path.join(GITFX, '.git', 'hooks', 'pre-push');
+      fs.writeFileSync(slowHook, '#!/bin/sh\nsleep 6\nexit 0\n');
+      gx('commit', '--allow-empty', '-q', '-m', '느린 푸시 시험');
+      await gitRefresh();
+      await waitFor(`${pane('.gp-branch')}.textContent === 'main' && !${pane('.gp-push')}.disabled`, 10000);
+      assert.equal(await js(`${pane('.gp-login')}.hidden`), true, '작업이 없는데 로그인 창 안내가 보임');
+      await js(`${pane('.gp-push')}.click()`);
+      await waitFor(`!${pane('.gp-busy')}.hidden`, 5000);
+      assert.equal(await js(`${pane('.gp-login')}.hidden`), true, '푸시를 막 시작했는데 로그인 창 안내가 보임');
+      await waitFor(`!${pane('.gp-login')}.hidden`, 8000);
+      assert.deepEqual(await js(`[${pane('.gp-login')}.textContent, getComputedStyle(${pane('.gp-login')}).whiteSpace]`),
+        ['로그인 창에서 로그인을 진행하세요.\n로그인 창이 안 보이면 작업 표시줄을 확인하세요.', 'pre-wrap'], '로그인 안내 문구나 줄바꿈 표시가 사양과 다름');
+      await waitFor(gpRemoteNote('푸시했습니다'), 20000);
+      assert.equal(await js(`${pane('.gp-login')}.hidden`), true, '푸시가 끝났는데 로그인 창 안내가 남음');
+      assert.equal(remoteHead(), headOf(), '느린 푸시 뒤 원격이 로컬과 다름');
+      fs.rmSync(slowHook, { force: true });
+      await waitFor(`${pane('.gp-note')}.hidden`, 8000);
+
+      // M2·M3: 패널을 가장 낮춰도 Commit 단추는 스크롤 없이 보이고, 새로 뜬 「생성한 메시지」 줄·오류 안내는 (고정 영역을 아래로 내려 두었어도) 보이는 자리로 스크롤된다.
+      // 「생성한 메시지」 줄은 오류 안내와 따로 함께 보인다.
+      putG('m2.txt', 'm2\n');
+      await gitRefresh();
+      await gpSet('');
+      await dragGp(2000);
+      await waitFor(`${pane('.gp-note')}.hidden && ${pane('.gp-pending')}.hidden`, 5000);
+      const inFixed = q => js(`(() => { const f = ${pane('.gp-fixed')}.getBoundingClientRect(), e = ${pane(q)}.getBoundingClientRect(); return e.height > 0 && e.top >= f.top - 1 && e.bottom <= f.bottom + 1; })()`);
+      assert.equal(await inFixed('.gp-commit'), true, '가장 낮춘 패널에서 Commit 단추가 스크롤 없이 보이지 않음');
+      const gateM = deferred();
+      scenario({ gate: gateM, resultText: 'M2 생성' });
+      const nM = fake.spawns.length;
+      await js(`${pane('.gp-gen')}.click()`);
+      await waitCalls(() => fake.spawns.length === nM + 1);
+      await gpSet('M2 내 글');
+      await js(`${pane('.gp-fixed')}.scrollTop = 0`); // 고정 영역을 맨 위로 (생성 메시지 줄은 맨 아래에 뜬다)
+      gateM.open();
+      await waitFor(`!${pane('.gp-pending')}.hidden`, 10000);
+      await pause(200);
+      assert.equal(await inFixed('.gp-pending'), true, '새로 뜬 생성 메시지 줄이 보이는 범위 밖에 있음');
+      assert.equal(await js(`getComputedStyle(${pane('.gp-apply')}).borderTopWidth`), '1px', '적용·버림 단추 모양(CSS)이 빠짐');
+      assert.equal(await js(`!${pane('.gp-note')}.contains(${pane('.gp-pending')})`), true, '생성 메시지 줄이 안내 안에 있음');
+      await settle(fake.spawns[nM]);
+      await js(`${pane('.gp-fixed')}.scrollTop = ${pane('.gp-fixed')}.scrollHeight`); // 다시 맨 아래로 (오류 안내는 맨 위에 생긴다)
+      calls.failGit = { ch: 'code:git:commit', text: Array.from({ length: 12 }, (_, i) => `거부 줄 ${i + 1}`).join('\n') };
+      await js(`${pane('.gp-commit')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      await js(`${pane('.gp-fixed')}.scrollTop = ${pane('.gp-fixed')}.scrollHeight`);
+      await js(`${pane('.gp-confirm-ok')}.click()`);
+      await waitFor(gpNoteHas('거부 줄 12'), 10000);
+      await pause(200);
+      assert.equal(await inFixed('.gp-note'), true, '커밋 실패 안내가 보이는 범위 밖에 있음');
+      assert.equal(await js(`getComputedStyle(${pane('.gp-note-close')}).backgroundColor`), 'rgba(0, 0, 0, 0)', '안내 닫기(×)가 다른 단추 규칙에 덮임');
+      assert.equal(await js(`${pane('.gp-note-text')}.textContent.includes('Error invoking')`), false);
+      assert.equal(await js(`!${pane('.gp-pending')}.hidden && !${pane('.gp-note')}.hidden`), true, '생성 메시지 줄이 있는데 커밋 실패 안내가 안 보임');
+      assert.equal(await js(`${pane('.gp-note')}.scrollHeight > ${pane('.gp-note')}.clientHeight`), true, '12줄 안내가 최대 높이로 제한되지 않음');
+      const fx = await js(`(() => { const f = ${pane('.gp-fixed')}; return { sh: f.scrollHeight, ch: f.clientHeight, lists: ${pane('.gp-lists')}.clientHeight }; })()`);
+      assert.ok(fx.sh > fx.ch, `낮은 패널에서 고정 영역이 스크롤되지 않음: ${JSON.stringify(fx)}`);
+      assert.ok(fx.lists >= 59, `목록 최소 높이가 지켜지지 않음: ${JSON.stringify(fx)}`);
+      await js(`${pane('.gp-note-close')}.click()`);
+      await waitFor(`${pane('.gp-note')}.hidden`, 5000);
+      assert.equal(await js(`!${pane('.gp-pending')}.hidden`), true, '안내를 닫았더니 생성 메시지 줄도 사라짐');
+      assert.equal(await js(`${pane('.gp-note-close')}.getAttribute('aria-label')`), '안내 닫기');
+      await js(`${pane('.gp-discard')}.click()`);
+      await waitFor(`${pane('.gp-pending')}.hidden`, 5000);
+      calls.failGit = null;
+      const gpTop2 = await js(`Math.round(${pane('.gp-resizer')}.getBoundingClientRect().top + 4)`);
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: gpGrip.x, y: gpTop2, button: 'left', clickCount: 2 });
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: gpGrip.x, y: gpTop2, button: 'left', clickCount: 2 });
+      await pause(300);
+      await gpSet('');
+
+      // IPC 거부: 조회가 거부되면 안내만 보이고(머리말 없이) 쓰기는 꺼지며 콘솔 오류가 새지 않는다 (끝의 errors 단언). 풀리면 복구된다.
+      calls.failGit = { ch: 'code:git:state', text: '상태 거부 시험' };
+      await gitRefresh();
+      await waitFor(gpNoteHas('상태 거부 시험'), 10000);
+      assert.equal(await js(`${pane('.gp-note-text')}.textContent.includes('Error invoking')`), false);
+      await gpSet('거부 중');
+      assert.deepEqual([await gpOff('gp-commit'), await gpOff('gp-commit-push'), await gpOff('gp-commit-sync')], [true, true, true]);
+      assert.equal(await js(`${pane('.gp-lists')}.querySelectorAll('.gp-file').length`), 0);
+      calls.failGit = null;
+      await gitRefresh();
+      await waitFor(`${pane('.gp-branch')}.textContent === 'main' && ${pane('.gp-note')}.hidden`, 10000);
+      await gpSet('');
+
+      // ⑫ 입력 유지: 쓰던 메시지는 10초 갱신(11초 대기)과 폴더 왕복에도 폴더별로 남는다.
+      await gpSet('DRAFT 유지');
+      const gs0 = calls.gitState;
+      await pause(11000);
+      assert.ok(calls.gitState > gs0, '11초 동안 깃 조회가 돌지 않아 시험이 되지 않음');
+      assert.equal(await gpVal(), 'DRAFT 유지', '갱신 뒤 입력이 사라짐');
+      await selectFolderUi(FIX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(FIX)}`, 10000);
+      assert.equal(await gpVal(), '', '다른 폴더에 이전 폴더의 메시지가 보임');
+      await gpSet('FIX 초안');
+      await selectFolderUi(GITFX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(GITFX)}`, 10000);
+      assert.equal(await gpVal(), 'DRAFT 유지', '폴더를 왕복했더니 입력이 사라짐');
+      await selectFolderUi(FIX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(FIX)}`, 10000);
+      assert.equal(await gpVal(), 'FIX 초안');
+
+      // ⑨ 병합 중(FIX): 충돌 항목과 안내, 메시지가 있어도 커밋은 꺼진다. 깃이 아닌 폴더: 안내만 있고 모두 꺼진다.
+      await waitFor(`${gpNoteHas('병합 등 다른 git 작업이 진행 중')} && !!${pane('.gp-conflicts .gp-file[data-path="merge.txt"]')}`, 10000);
+      assert.equal(await js(`${pane('.gp-conflicts .gp-file[data-path="merge.txt"] .code-badge')}.textContent`), '!');
+      assert.equal(await js(`${pane('.gp-conflicts')}.hidden`), false);
+      assert.ok((await gpHeads()).includes('충돌 (1)'));
+      assert.deepEqual([await gpOff('gp-commit'), await gpOff('gp-commit-push'), await gpOff('gp-commit-sync')], [true, true, true], '병합 중인데 커밋이 켜져 있음');
+      const logsAtPlain = calls.gitLog;
+      await gpFolder(PLAIN);
+      await waitFor(gpNoteHas('깃 저장소에서만'), 10000);
+      assert.equal(await js(`${pane('.gp-lists')}.querySelectorAll('.gp-file').length`), 0);
+      // 갱신 주기의 상태 조회가 실패로 돌아와도 안내가 그대로다 (폴더를 연 뒤 git init 을 알아채려고 깃이 아닌 폴더에서도 묻는다). 콘솔 오류는 끝의 errors 단언이 본다.
+      const gsPlain = calls.gitState;
+      await pause(11000);
+      assert.ok(calls.gitState > gsPlain, '11초 동안 깃이 아닌 폴더의 상태 조회가 돌지 않아 시험이 되지 않음');
+      assert.equal(await js(gpNoteHas('깃 저장소에서만')), true, '상태 조회 실패 뒤 안내가 사라짐');
+      assert.equal(await js(`${pane('.gp-branch')}.textContent`), '', '깃이 아닌 폴더에 브랜치가 보임');
+      assert.equal(calls.gitLog, logsAtPlain, '깃이 아닌 폴더에서 code:git:log 를 부름');
+      assert.equal(await js(`document.querySelectorAll('#code-pane .gp-graph .gp-node').length`), 0, '깃이 아닌 폴더에 이전 폴더의 그래프가 남음');
+      assert.deepEqual(await js(`['fetch', 'pull', 'push'].map(c => document.querySelector('#code-pane .gp-' + c).disabled)`), [true, true, true]);
+      // 커밋이 하나도 없는 저장소: 그래프는 「커밋이 없습니다」
+      const EMPTY = path.join(FIXBASE, 'empty');
+      fs.mkdirSync(EMPTY); gitAt(EMPTY, 'init', '-q', '-b', 'main');
+      await gpFolder(EMPTY);
+      await waitFor(`${pane('.gp-graph-empty')}?.textContent === '커밋이 없습니다'`, 10000);
+      assert.equal(await js(`document.querySelectorAll('#code-pane .gp-graph .gp-node').length`), 0);
+      assert.deepEqual([await gpOff('gp-commit'), await gpOff('gp-commit-push'), await gpOff('gp-commit-sync'), await gpOff('gp-gen')], [true, true, true, true]);
+      await selectFolderUi(FIX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(FIX)}`, 10000);
+
+      // 깃이 아닌 폴더의 안내는 깃 폴더로 돌아오면 사라진다.
+      await selectFolderUi(GITFX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(GITFX)} && ${pane('.gp-branch')}.textContent === 'main' && !(${gpNoteHas('깃 저장소에서만')})`, 10000);
+      // 폴더를 연 뒤 터미널에서 git init 하면 ⟳ 을 누르지 않아도 갱신 주기 안에 저장소로 보인다 (PLAIN 을 재사용하지 않는 새 폴더).
+      const LATE = path.join(FIXBASE, 'late-init');
+      fs.mkdirSync(LATE); putG('late.txt', 'late\n', LATE);
+      await gpFolder(LATE);
+      await waitFor(gpNoteHas('깃 저장소에서만'), 10000);
+      gitAt(LATE, 'init', '-q', '-b', 'main'); gitAt(LATE, 'config', 'user.name', 'late'); gitAt(LATE, 'config', 'user.email', 'late@late.test');
+      await waitFor(`${pane('.gp-branch')}.textContent === 'main' && !(${gpNoteHas('깃 저장소에서만')}) && !!${pane('.gp-changes .gp-file[data-path="late.txt"]')}`, 15000);
+      await selectFolderUi(GITFX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(GITFX)}`, 10000);
+      // 긴 목록: 묶음마다 500줄까지만 그리고 나머지는 「외 N개」, 전체 + 는 전체 기준. (미추적 520개 짜리 임시 저장소)
+      const MANY = path.join(FIXBASE, 'many');
+      fs.mkdirSync(MANY); gitAt(MANY, 'init', '-q', '-b', 'main'); gitAt(MANY, 'config', 'user.name', 'm'); gitAt(MANY, 'config', 'user.email', 'm@m.test');
+      for (let i = 1; i <= 520; i++) fs.writeFileSync(path.join(MANY, `f${String(i).padStart(3, '0')}.txt`), `${i}\n`);
+      await gpFolder(MANY);
+      await waitFor(`document.querySelectorAll('#code-pane .gp-changes .gp-file').length === 500`, 20000);
+      assert.equal(await js(`${pane('.gp-more')}.textContent`), '외 20개');
+      assert.ok((await gpHeads()).includes('변경 (520)'), JSON.stringify(await gpHeads()));
+      await js(`${pane('.gp-all[data-act=stage]')}.click()`);
+      await waitFor(`${pane('.gp-lists')}.textContent.includes('스테이징된 변경 (520)')`, 20000);
+      assert.equal(gitAt(MANY, 'diff', '--cached', '--name-only').split('\n').filter(Boolean).length, 520, '전체 + 가 보이는 500개만 스테이징함');
+      await selectFolderUi(FIX);
+      await waitFor(`${pane('.code-folder')}.value === ${sel(FIX)}`, 10000);
+
+      // ───────── 하단 터미널 (가짜 pty: mode:'shell' 호출은 기록만, 출력은 pty:data·종료는 pty:exit 로 흉내) ─────────
+      // 분석 상태가 정해진 곳에서 시작한다: README.md 를 열어 그 파일 분석을 한 번 돌려 두고(캐시여도 된다) 분석 탭이 보이게. (이번 변경 분석은 FIX 의 변경이 커서 확인 화면이 뜬다)
+      await waitFor(`!!${node('README.md')}`, 20000); // 폴더를 막 바꾼 뒤라 트리가 올 때까지
+      await openPath('README.md');
+      await waitFor(`${pane('.code-path')}.textContent === 'README.md' && ${visible('.code-editor')} && !${A('.code-analyze-file')}.disabled`, 20000);
+      scenario({ structured: resultOf('TERM-SETUP') });
+      await js(`${A('.code-analyze-file')}.click()`);
+      await waitFor(`${panelShown} && !(${statusHas('분석 중…')}) && (${A('.ca-scope')}?.textContent === 'README.md' || ${A('.ca-scope-sel')}?.value === 'file:README.md')`, 15000);
+      const termHas = t => `((${pane('.code-terminal .xterm-rows')}?.textContent || '').replace(/\\u00a0/g, ' ')).includes(${sel(t)})`;
+      const termShown = `(() => { const e = ${pane('.code-terminal')}; return !!e && e.getClientRects().length > 0 && !!e.querySelector('.xterm'); })()`;
+      const bottomTabClick = id => js(`${pane(`.cb-tab[data-tab=${id}]`)}.click()`);
+      const termKey = (key, keyCode) => js(`(() => { const ta = ${pane('.code-terminal .xterm-helper-textarea')}; ta.focus(); ta.dispatchEvent(new KeyboardEvent('keydown', { key: ${sel(key)}, code: ${sel(key)}, keyCode: ${keyCode}, which: ${keyCode}, bubbles: true, cancelable: true })); })()`);
+      const termSend = (channel, payload) => win.webContents.send(channel, payload);
+
+      // 처음 열기 전에는 셸이 없다. 분석 탭이 보이고, 셸 선택·다시 시작은 숨겨져 있다.
+      assert.equal(term.creates.length, 0, '터미널을 열기 전에 셸이 만들어짐');
+      assert.equal(await js(`${A('.code-term-toggle')}.getAttribute('aria-pressed')`), 'false');
+      assert.equal(await js(`${A('.cb-shell')}.hidden && ${A('.cb-restart')}.hidden && ${A('.cb-dot')}.hidden`), true, '터미널을 열기 전에 셸 단추·● 가 보임');
+      assert.equal(await js(`${A('.cb-tabs')}.hidden`), true, '터미널을 열기 전에 탭줄이 보임 (분석 패널만 예전 모습 그대로여야 함)');
+
+      // 「터미널」을 열면: 분석 대신 터미널 탭, 등록된 폴더에서 PowerShell 이 mode:'shell' 로 만들어진다.
+      await js(`${A('.code-term-toggle')}.click()`);
+      await waitCalls(() => term.creates.length === 1);
+      const c1 = term.creates[0];
+      assert.equal(c1.mode, 'shell');
+      assert.equal(c1.shell, 'powershell');
+      assert.equal(c1.cwd, FIX, '등록된 작업 폴더에서 열어야 함');
+      assert.match(c1.tabId, /^code-term-\d+$/);
+      assert.notEqual(c1.tabId, tabId, '앱 탭 ID 와 겹침');
+      assert.ok(c1.cols > 0 && c1.rows > 0, JSON.stringify(c1));
+      assert.match(c1.cmd.file, /^[A-Za-z]:\\.*\\powershell\.exe$/i, 'PowerShell 은 절대 경로로 띄워야 함');
+      await waitFor(termShown, 5000);
+      assert.equal(await js(panelShown), false, '터미널 탭을 열었는데 분석 패널이 보임');
+      assert.equal(await js(`${A('.code-term-toggle')}.getAttribute('aria-pressed')`), 'true');
+      assert.equal(await js(`!${A('.cb-shell')}.hidden && ${A('.cb-shell')}.value === 'powershell' && !${A('.cb-restart')}.hidden`), true);
+      assert.equal(await js(`${A('.cb-tab[data-tab=terminal]')}.classList.contains('on')`), true);
+      const id1 = c1.tabId;
+
+      // 가짜 프롬프트(pty:data)는 터미널에만 나온다 — 앱 탭의 터미널·사무실 캐릭터로 새지 않는다.
+      termSend('pty:data', { tabId: id1, data: 'PS TERM-ONE> ' });
+      await waitFor(termHas('TERM-ONE'), 5000);
+      assert.equal(await js(`[...document.querySelectorAll('.xterm-rows')].some(e => !e.closest('#code-pane') && e.textContent.includes('TERM-ONE'))`), false, '터미널 출력이 앱 탭 터미널에 나옴');
+      termSend('pty:data', { tabId, data: 'APP-TAB-OK' }); // 앱 탭의 ID 는 가로채지 않고 앱 탭으로 간다 (위 단언이 항상 참이 아님을 보인다)
+      await waitFor(`[...document.querySelectorAll('.xterm-rows')].some(e => !e.closest('#code-pane') && e.textContent.includes('APP-TAB-OK'))`, 5000);
+      assert.equal(await js(termHas('APP-TAB-OK')), false, '앱 탭의 출력이 터미널에 나옴');
+
+      // 입력(붙여넣기·Enter)은 pty:write 로 그 터미널 ID 에 간다.
+      await js(`(() => { const ta = ${pane('.code-terminal .xterm-helper-textarea')}; ta.focus(); const dt = new DataTransfer(); dt.setData('text/plain', 'git-status'); ta.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); })()`);
+      await termKey('Enter', 13);
+      await waitCalls(() => term.writes.some(w => w.data.includes('git-status')) && term.writes.some(w => w.data === '\r'), 5000);
+      assert.ok(term.writes.every(w => w.tabId === id1), JSON.stringify(term.writes));
+
+      // 폴더를 바꾸면 그 폴더의 터미널로 바뀐다: 이전 출력은 안 보이고, 돌아오면 (숨은 동안 온 출력까지) 그대로, 셸은 새로 만들지 않는다.
+      await selectFolderUi(OTHER);
+      await waitFor(`${A('.code-folder')}.value === ${sel(OTHER)}`, 10000);
+      await waitCalls(() => term.creates.length === 2);
+      const c2 = term.creates[1];
+      assert.equal(c2.cwd, OTHER);
+      assert.match(c2.tabId, /^code-term-\d+$/);
+      assert.notEqual(c2.tabId, id1, '다른 폴더가 같은 터미널 ID 를 씀');
+      await waitFor(termShown, 5000);
+      assert.equal(await js(termHas('TERM-ONE')), false, '다른 폴더의 터미널에 이전 폴더 출력이 보임');
+      termSend('pty:data', { tabId: id1, data: 'ONE-BACKGROUND>' });
+      termSend('pty:data', { tabId: c2.tabId, data: 'PS TERM-TWO> ' });
+      await waitFor(termHas('TERM-TWO'), 5000);
+      assert.equal(await js(termHas('ONE-BACKGROUND')), false, '숨은 폴더의 출력이 보임');
+      await selectFolderUi(FIX);
+      await waitFor(`${A('.code-folder')}.value === ${sel(FIX)} && ${termHas('TERM-ONE')} && ${termHas('ONE-BACKGROUND')}`, 10000);
+      assert.equal(await js(termHas('TERM-TWO')), false);
+      await pause(400);
+      assert.equal(term.creates.length, 2, '폴더를 되돌렸는데 셸이 새로 만들어짐');
+
+      // 셸이 끝나면 안내하고, 「다시 시작」·Enter 로 같은 터미널 ID 로 다시 띄운다.
+      termSend('pty:exit', { tabId: id1, exitCode: 3 });
+      await waitFor(termHas('셸 종료 · 코드 3'), 5000);
+      await js(`${A('.cb-restart')}.click()`);
+      await waitCalls(() => term.creates.length === 3);
+      assert.equal(term.creates[2].tabId, id1);
+      assert.equal(term.creates[2].cwd, FIX);
+      termSend('pty:exit', { tabId: id1, exitCode: 0 });
+      await waitFor(termHas('셸 종료 · 코드 0'), 5000);
+      await termKey('Enter', 13);
+      await waitCalls(() => term.creates.length === 4);
+      assert.equal(term.creates[3].tabId, id1);
+      assert.equal(await js(termHas('셸을 다시 시작합니다')), true);
+
+      // 셸 종류 변경: 실행 중인 셸은 끊지 않고 값만 바꿔 안내한다 (createPty 호출이 늘지 않는다). 「다시 시작」이 새 셸로 띄운다. 고른 값은 저장한다.
+      const setShell = v => js(`(() => { const s = ${A('.cb-shell')}; s.value = ${sel(v)}; s.dispatchEvent(new Event('change')); })()`);
+      const restartClick = () => js(`${A('.cb-restart')}.click()`);
+      const nShell0 = term.creates.length;
+      await setShell('bash');
+      await pause(500);
+      assert.equal(term.creates.length, nShell0, '실행 중인 셸을 종류만 바꿨는데 다시 띄움');
+      await waitFor(termHas('다음 시작부터 Git Bash 을 씁니다'), 5000);
+      assert.equal(await js(`${A('.cb-shell')}.value`), 'bash');
+      assert.equal(await js(`localStorage.getItem('ao.termShell')`), 'bash');
+      assert.equal(await js(`${A('.cb-restart')}.title.includes('실행 중인 명령이 있으면 끝납니다')`), true);
+      await restartClick();
+      await waitCalls(() => term.creates.length === nShell0 + 1);
+      assert.equal(term.creates[nShell0].shell, 'bash');
+      assert.deepEqual(term.creates[nShell0].cmd, { file: 'C:\\Git\\bin\\bash.exe', args: ['--login', '-i'] });
+      // Git Bash 를 못 찾는 따위의 거부: 터미널에 ⚠ 로 보이고 콘솔로 새지 않으며, 살아 있던 셸은 그대로 두고(입력이 계속 간다) 셸 종류·저장값을 되돌린다.
+      term.failWith = 'Git Bash 를 찾지 못했습니다';
+      await setShell('powershell');
+      await restartClick();
+      await waitCalls(() => term.creates.length === nShell0 + 2);
+      await waitFor(termHas('⚠ Git Bash 를 찾지 못했습니다'), 5000);
+      assert.equal(await js(termHas('Error invoking')), false, 'IPC 거부 머리말이 그대로 보임');
+      term.failWith = null;
+      await waitFor(`${A('.cb-shell')}.value === 'bash'`, 5000);
+      assert.equal(await js(`localStorage.getItem('ao.termShell')`), 'bash', '실패했는데 저장값이 되돌아가지 않음');
+      const writes0 = term.writes.length;
+      await termKey('Enter', 13);
+      await waitCalls(() => term.writes.length > writes0, 5000);
+      assert.equal(term.creates.length, nShell0 + 2, '살아 있는 셸에서 Enter 가 셸을 다시 띄움');
+      await setShell('powershell');
+      await restartClick();
+      await waitCalls(() => term.creates.length === nShell0 + 3);
+      assert.equal(term.creates[nShell0 + 2].shell, 'powershell');
+      assert.equal(await js(`localStorage.getItem('ao.termShell')`), 'powershell');
+      // 폴더마다 셸이 따로다: A(FIX) PowerShell · B(OTHER) Git Bash 를 오가도 각자 값이 보이고 셸은 새로 만들지 않는다.
+      const nShell1 = term.creates.length;
+      await selectFolderUi(OTHER);
+      await waitFor(`${A('.code-folder')}.value === ${sel(OTHER)} && ${termShown}`, 10000);
+      assert.equal(await js(`${A('.cb-shell')}.value`), 'powershell');
+      await setShell('bash');
+      await pause(300);
+      assert.equal(await js(`${A('.cb-shell')}.value`), 'bash');
+      await selectFolderUi(FIX);
+      await waitFor(`${A('.code-folder')}.value === ${sel(FIX)} && ${A('.cb-shell')}.value === 'powershell'`, 10000);
+      await selectFolderUi(OTHER);
+      await waitFor(`${A('.code-folder')}.value === ${sel(OTHER)} && ${A('.cb-shell')}.value === 'bash'`, 10000);
+      await selectFolderUi(FIX);
+      await waitFor(`${A('.code-folder')}.value === ${sel(FIX)} && ${A('.cb-shell')}.value === 'powershell'`, 10000);
+      assert.equal(term.creates.length, nShell1, '폴더를 오가며 셸 종류 표시만 바꿨는데 셸이 새로 만들어짐');
+
+      // 터미널을 보는 동안 분석이 끝나도 가리지 않고 탭에 ● 만 켠다. 분석 탭을 보면 꺼진다.
+      await bottomTabClick('analysis');
+      await waitFor(`${panelShown} && !${A('.ca-act')}.disabled`, 10000); // 폴더를 막 바꾼 뒤라 트리를 다 받아야 분석을 시작할 수 있다
+      const gateTerm = deferred();
+      scenario({ gate: gateTerm, structured: resultOf('TERM-DONE') });
+      const nTerm = fake.spawns.length;
+      await clickBy('.ca-act', '다시 분석');
+      await waitCalls(() => fake.spawns.length === nTerm + 1);
+      await waitFor(`${panelShown} && ${statusHas('분석 중…')}`, 5000);
+      await bottomTabClick('terminal');
+      await waitFor(`${termShown} && !(${panelShown})`, 5000);
+      gateTerm.open();
+      await settle(fake.spawns[nTerm]);
+      await waitFor(`!${A('.cb-dot')}.hidden`, 10000);
+      assert.equal(await js(`${termShown} && !(${panelShown})`), true, '분석이 끝났다고 터미널 탭을 가림');
+      await bottomTabClick('analysis');
+      await waitFor(`${panelShown} && ${A('.cb-dot')}.hidden && ${bodyHas('TERM-DONE')}`, 5000);
+      // 사용자가 분석을 시작하면 (터미널 탭을 보고 있어도) 분석 탭으로.
+      await bottomTabClick('terminal');
+      await waitFor(`${termShown} && !(${panelShown})`, 5000);
+      await waitFor(`!!${node('README.md')}`, 20000);
+      await openPath('README.md'); // 폴더를 바꿨다 돌아오면 열린 파일이 비워진다
+      await waitFor(`${pane('.code-path')}.textContent === 'README.md' && !${A('.code-analyze-file')}.disabled`, 20000);
+      await js(`${A('.code-analyze-file')}.click()`);
+      await waitFor(panelShown, 5000);
+      await waitFor(`!(${statusHas('분석 중…')})`, 15000);
+      assert.equal(await js(termShown), false, '분석을 시작했는데 터미널 탭이 남음');
+
+      // 하단 닫기: 영역이 사라져도 셸은 유지된다 (다시 열어도 셸을 새로 만들지 않는다).
+      await bottomTabClick('terminal');
+      await waitFor(termShown, 5000);
+      termSend('pty:data', { tabId: id1, data: '\r\nKEEP-MARK>' });
+      await waitFor(termHas('KEEP-MARK'), 5000);
+      await js(`${A('.cb-close')}.click()`);
+      await waitFor(`${A('.code-bottom')}.hidden`, 5000);
+      assert.equal(await js(`${A('.code-term-toggle')}.getAttribute('aria-pressed')`), 'false');
+      const createdBeforeReopen = term.creates.length;
+      await js(`${A('.code-term-toggle')}.click()`);
+      await waitFor(termShown, 5000);
+      await pause(400);
+      assert.equal(term.creates.length, createdBeforeReopen, '하단을 다시 열었는데 셸이 새로 만들어짐');
+      assert.equal(await js(termHas('KEEP-MARK')), true, '하단을 닫았다 열었더니 출력이 사라짐');
+
+      // 코드 화면을 숨기는 동안에는 셸 크기를 맞추지 않고, 다시 보이면 맞춘다.
+      await pause(300);
+      const rz0 = term.resizes.length;
+      await js(`document.querySelector('#mode-office').click()`); await pause(300);
+      win.setSize(1300, 900); await pause(700);
+      assert.equal(term.resizes.length, rz0, '코드 화면을 숨긴 동안 셸 크기를 바꿈');
+      await js(`document.querySelector('#mode-code').click()`);
+      await waitFor(termShown, 5000);
+      await waitCalls(() => term.resizes.length > rz0, 5000);
+
+      // 좁은 창(1100x680)에서 CLI 영역을 최대로 넓혀도 터미널 탭줄이 넘치지 않고 터미널·코드 영역이 남는다.
+      win.setSize(1100, 680); await pause(500);
+      await js(`(() => { const l = document.querySelector('.layout'); l.style.setProperty('--cli-width', (l.clientWidth - 420) + 'px'); })()`);
+      await pause(500);
+      const smallTerm = await js(`(() => {
+        const fits = s => { const e = document.querySelector('#code-pane ' + s); return { s, sw: e.scrollWidth, cw: e.clientWidth }; };
+        const h = s => Math.round(document.querySelector('#code-pane ' + s).getBoundingClientRect().height);
+        return { heads: ['.cb-tabs', '.code-bottom', '.code-terminal'].map(fits), viewH: h('.code-view'), tabsH: h('.cb-tabs'), termH: h('.code-terminal'), noPageScroll: document.documentElement.scrollWidth <= innerWidth };
+      })()`);
+      for (const x of smallTerm.heads) assert.ok(x.sw <= x.cw, `좁은 창에서 터미널 영역이 넘침: ${JSON.stringify(smallTerm)}`);
+      assert.ok(smallTerm.viewH >= 150 && smallTerm.termH >= 60 && smallTerm.noPageScroll, `좁은 창에서 터미널 영역이 너무 작음: ${JSON.stringify(smallTerm)}`);
+      await js(`document.querySelector('.layout').style.removeProperty('--cli-width')`);
+      win.setSize(1600, 1000); await pause(500);
+      await capture('code-terminal');
+
       // 모나코(AMD 로더)를 불러온 뒤에도 새 탭의 터미널이 정상으로 뜬다.
       assert.equal(await js(`typeof define`), 'function', '모나코 로더가 주입되지 않음');
       const xterms = await js(`document.querySelectorAll('.xterm').length`);
@@ -1133,9 +2262,11 @@ if (!process.versions.electron) {
       assert.ok(calls.poll > 0, 'code:poll 호출이 세어지지 않음');
       await js(`document.querySelector('#mode-office').click()`); await pause(500);
       assert.equal(await js(`document.querySelector('#code-pane').hidden`), true);
-      const pollsAtHide = calls.poll;
+      const pollsAtHide = calls.poll, gitStatesAtHide = calls.gitState, gitLogsAtHide = calls.gitLog;
       await pause(12000);
       assert.equal(calls.poll - pollsAtHide, 0, `숨긴 뒤에도 code:poll 이 불림: ${calls.poll - pollsAtHide}회`);
+      assert.equal(calls.gitState - gitStatesAtHide, 0, `숨긴 뒤에도 code:git:state 가 불림: ${calls.gitState - gitStatesAtHide}회`);
+      assert.equal(calls.gitLog - gitLogsAtHide, 0, `숨긴 뒤에도 code:git:log 가 불림: ${calls.gitLog - gitLogsAtHide}회`);
     } finally {
       await cleanup();
     }
@@ -1144,7 +2275,7 @@ if (!process.versions.electron) {
     assert.ok(editorWorkerLoads >= 1 && editorWorkerLoads <= 2, `모나코 워커가 파일을 열 때마다 새로 뜸: ${editorWorkerLoads}회`);
     assert.deepEqual(errors, []);
     console.log('코드 화면 점검 통과');
-    console.log(JSON.stringify({ hiddenSecond: { draw: after.draw - before.draw, update: after.update - before.update, notify: after.notify - before.notify }, walker, camera, geometry, fixture: ['README.md', 'src/a.js', 'docs/×표.md', 'merge.txt'], polls: calls.poll, narrowAnalysis: { viewH: Math.round(narrowAnalysis.viewH), heights: narrowAnalysis.heights }, analysisResize, analysisSpawns: fake.spawns.length, output: [path.join(OUT, 'code-analysis-panel.png'), path.join(OUT, 'code-analysis-jump-diff.png'), path.join(OUT, 'code-analysis-notes.png'), path.join(OUT, 'code-view-toggle.png'), path.join(OUT, 'code-view.png'), path.join(OUT, 'code-view-diff.png')] }, null, 2));
+    console.log(JSON.stringify({ hiddenSecond: { draw: after.draw - before.draw, update: after.update - before.update, notify: after.notify - before.notify }, walker, camera, geometry, fixture: ['README.md', 'src/a.js', 'docs/×표.md', 'merge.txt'], polls: calls.poll, gitStates: calls.gitState, gitLogs: calls.gitLog, narrowAnalysis: { viewH: Math.round(narrowAnalysis.viewH), heights: narrowAnalysis.heights }, analysisResize, gitPanelResize, sideResize, analysisSpawns: fake.spawns.length, output: [path.join(OUT, 'code-git-panel.png'), path.join(OUT, 'code-analysis-panel.png'), path.join(OUT, 'code-analysis-jump-diff.png'), path.join(OUT, 'code-analysis-notes.png'), path.join(OUT, 'code-view-toggle.png'), path.join(OUT, 'code-view.png'), path.join(OUT, 'code-view-diff.png')] }, null, 2));
     clearTimeout(timeout); app.exit(0);
   }).catch(async e => {
     clearTimeout(timeout);

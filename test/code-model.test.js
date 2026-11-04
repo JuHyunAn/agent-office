@@ -98,7 +98,7 @@ test('TouchedList: 같은 파일은 하나로 합쳐 맨 앞, 한 번이라도 e
   const l = new TouchedList();
   assert.equal(l.add({ rel: 'a.js', kind: 'read', cli: 'claude', at: 1 }), true);
   assert.equal(l.add({ rel: 'a.js', kind: 'edit', cli: 'claude', at: 2 }), true);
-  assert.deepEqual(l.items(), [{ rel: 'a.js', kind: 'edit', cli: 'claude', at: 2 }]);
+  assert.deepEqual(l.items(), [{ rel: 'a.js', kind: 'edit', cli: 'claude', at: 2, editAt: 2 }]);
 
   l.add({ rel: 'b.js', kind: 'edit', cli: 'codex', at: 3 });
   assert.deepEqual(l.items().map((x) => x.rel), ['b.js', 'a.js']);
@@ -107,12 +107,25 @@ test('TouchedList: 같은 파일은 하나로 합쳐 맨 앞, 한 번이라도 e
   assert.equal(l.items()[0].at, 4); // 시각은 최신
 });
 
+test('TouchedList: editAt 은 마지막 수정 시각 — 읽기가 나중에 와도 유지, 읽기만 했으면 없음', () => {
+  const l = new TouchedList();
+  l.add({ rel: 'a.js', kind: 'read', cli: 'claude', at: 1 });
+  assert.equal('editAt' in l.items()[0], false, '읽기만 했는데 editAt 이 있음');
+  l.add({ rel: 'a.js', kind: 'edit', cli: 'claude', at: 5 });
+  assert.equal(l.items()[0].editAt, 5);
+  l.add({ rel: 'a.js', kind: 'read', cli: 'claude', at: 9 });
+  assert.equal(l.items()[0].at, 9);
+  assert.equal(l.items()[0].editAt, 5, '읽기가 editAt 을 덮어씀');
+  l.add({ rel: 'A.js', kind: 'edit', cli: 'codex', at: 12 });
+  assert.equal(l.items()[0].editAt, 12);
+});
+
 test('TouchedList: 대소문자만 다른 경로는 같은 파일로 합치고 표기는 최신 항목 것', () => {
   const l = new TouchedList();
   l.add({ rel: 'src/A.js', kind: 'read', cli: 'claude', at: 1 });
   l.add({ rel: 'SRC/a.js', kind: 'edit', cli: 'claude', at: 2 });
   assert.equal(l.items().length, 1);
-  assert.deepEqual(l.items()[0], { rel: 'SRC/a.js', kind: 'edit', cli: 'claude', at: 2 });
+  assert.deepEqual(l.items()[0], { rel: 'SRC/a.js', kind: 'edit', cli: 'claude', at: 2, editAt: 2 });
   l.add({ rel: 'src/a.js', kind: 'read', cli: 'claude', at: 3 });
   assert.deepEqual(l.items().map((x) => [x.rel, x.kind]), [['src/a.js', 'edit']]);
 });
@@ -402,4 +415,64 @@ test('createRefresher: 실행 중 stop 하면 끝난 뒤 타이머 자체를 걸
   release();
   await flush();
   assert.deepEqual(calls, []);
+});
+
+test('createRefresher: bump(ms) 로 당길 시간을 정함 — 대기 중 bump(0) 은 곧바로, 더 긴 ms 로는 당기지 않음', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  let n = 0;
+  const r = createRefresher({ run: async () => { n++; } });
+  r.start();
+  await flush();
+  assert.equal(n, 1);
+  r.bump(0); // 남은 10초 > 0 이므로 바로 다시 예약
+  t.mock.timers.tick(0);
+  await flush();
+  assert.equal(n, 2);
+  t.mock.timers.tick(5000); // 남은 5초
+  r.bump(8000); // 남은 시간보다 긴 값으로는 늦추지 않는다
+  t.mock.timers.tick(4999);
+  await flush();
+  assert.equal(n, 2);
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(n, 3);
+  r.bump(1000); // 기본 3초가 아니라 지정한 1초
+  t.mock.timers.tick(1000);
+  await flush();
+  assert.equal(n, 4);
+  r.stop();
+});
+
+test('createRefresher: 실행 중 bump(0) 은 끝나는 즉시 다음 실행, 더 큰 bump 가 뒤에 와도 작은 값을 지킨다', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  let n = 0;
+  let release;
+  const r = createRefresher({ run: () => { n++; return new Promise((resolve) => { release = resolve; }); } });
+  r.start();
+  r.bump(0);
+  r.bump(); // 기본 3초는 더 크므로 0 이 남는다
+  release();
+  await flush();
+  t.mock.timers.tick(0);
+  await flush();
+  assert.equal(n, 2); // 3초도 10초도 아니라 바로
+  release();
+  await flush();
+  t.mock.timers.tick(9999);
+  await flush();
+  assert.equal(n, 2); // 그다음은 다시 10초 주기
+  t.mock.timers.tick(1);
+  await flush();
+  assert.equal(n, 3);
+  r.stop();
+});
+
+test('createRefresher: 꺼진 상태의 bump(0) 도 무시', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  let n = 0;
+  const r = createRefresher({ run: async () => { n++; } });
+  r.bump(0);
+  t.mock.timers.tick(30000);
+  await flush();
+  assert.equal(n, 0);
 });

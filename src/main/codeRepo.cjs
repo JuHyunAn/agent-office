@@ -2,12 +2,14 @@
 
 // 코드 화면의 메인 쪽: 허용된 폴더(깃 저장소) 안에서만 git 조회와 파일 읽기를 한다 (electron 에 기대지 않아 테스트할 수 있다).
 // 렌더러는 폴더·상대 경로만 보내고, 여기서 등록 여부·경로 안쪽 여부를 모두 다시 검사한다.
+// 이 파일의 git 은 읽기 전용 조회가 기본이고, Git 패널의 쓰기(스테이징·커밋·푸시 등)는 codeGit.cjs 가 맡는다 (git() 의 input·env 옵션으로 호출).
 
 const { execFile, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const claudeCli = require('./claudeCli.cjs');
 const { cleanEnv } = require('./env.cjs');
+const { createGitOps } = require('./codeGit.cjs');
 
 const MAX_TREE = 20000; // 트리에 올리는 파일 수 상한
 const MAX_READ = 2 * 1024 * 1024; // 읽는 파일 크기 상한
@@ -122,17 +124,34 @@ function killTree(child) {
 }
 const isAlive = (child) => child.exitCode === null && child.signalCode === null;
 
+// git(.., { track: true }) 로 띄운 자식들. 로그인 창을 띄운 채 앱을 끄면 git·창이 살아남아 병합·푸시를 이어 가므로 앱 종료 때 함께 끝낸다.
+const trackedGit = new Set();
+let closing = false;
+// closing: 앱 종료 중이다. 그 뒤의 track 실행은 띄우지 않고 거부한다 — 조회 중에 종료되면 다음 단계 재시도가 뒤늦게 떠서 로그인 창이 남는다.
+function killTrackedGit({ closing: closingNow = false } = {}) {
+  if (closingNow) closing = true;
+  for (const c of trackedGit) if (isAlive(c)) killTree(c);
+  trackedGit.clear();
+}
+const trackedGitCount = () => trackedGit.size; // 시험용: 추적 중인 자식 수
+
 // git(root, args, { buffer }) → stdout (buffer 면 Buffer, 아니면 문자열). 실패는 kind 가 붙은 Error:
 // 'no-git'(실행 파일 없음) · 'unsafe'(dubious ownership) · 'nodir'(폴더 없음) · 'timeout'(시간 초과) · 'fail'(그 밖의 실패, 종료 코드가 있으면 exitCode).
 // --no-optional-locks: 에이전트의 git add·commit 과 .git/index.lock 을 다투거나 인덱스를 다시 쓰지 않는다.
 // core.fsmonitor=false: 저장소 설정에 적힌 fsmonitor 명령이 조회 때마다 실행되는 것을 막는다.
 // 시간 초과는 execFile 의 timeout 옵션(최상위 프로세스만 끝낸다) 대신 직접 걸어 자식 트리를 정리한다.
-async function git(root, args, { buffer = false, maxBuffer = GIT_MAX_BUFFER, timeoutMs = GIT_TIMEOUT_MS } = {}) {
+// input: 표준 입력으로 넘길 문자열 (없으면 표준 입력을 건드리지 않는다). env: 환경에 더할 값 (GIT_DIR 등 제거 뒤에 덮어쓴다).
+// track: true 면 자식을 killTrackedGit() 이 앱 종료 때 끝낼 수 있게 기억한다 (오래 걸리는 네트워크 명령용).
+// refuseClosing: 끝내지는 않되 앱 종료가 시작된 뒤에는 새로 시작하지 않는다 (pull 의 병합 단계: 충돌이 나면 취소할 주체가 곧 사라진다).
+// 실패 오류에는 e.stderr·e.stdout (원문 뒤쪽 4000자 — 원인은 끝에 온다) 이 붙는다 — 호출 쪽이 문구로 원인을 가른다.
+async function git(root, args, { buffer = false, maxBuffer = GIT_MAX_BUFFER, timeoutMs = GIT_TIMEOUT_MS, input, env: extraEnv, track = false, refuseClosing = false } = {}) {
   const file = await findGit();
   if (!file) throw gitError('no-git', 'git 을 찾지 못했습니다');
   const env = cleanEnv({ LC_ALL: 'C' });
   for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete env[k];
+  Object.assign(env, extraEnv);
   const argv = ['--no-optional-locks', '-c', 'core.quotepath=false', '-c', 'core.fsmonitor=false', ...args];
+  if ((track || refuseClosing) && closing) throw gitError('fail', '앱을 종료하는 중입니다'); // findGit 을 기다리는 사이 종료됐을 수 있어 띄우기 직전에 본다
   return new Promise((resolve, reject) => {
     let timer = null;
     let timedOut = false;
@@ -142,6 +161,11 @@ async function git(root, args, { buffer = false, maxBuffer = GIT_MAX_BUFFER, tim
         if (timedOut) return; // 이미 시간 초과로 거부했다
         if (!err) return resolve(buffer ? stdout : stdout.toString('utf8'));
         const text = (stderr || Buffer.alloc(0)).toString('utf8').trim();
+        const failed = (e) => {
+          e.stderr = text.slice(-4000);
+          e.stdout = (stdout || Buffer.alloc(0)).toString('utf8').trim().slice(-4000);
+          return reject(e);
+        };
         // cwd 가 없어도 spawn 은 ENOENT 를 내므로 폴더부터 확인한다
         if (err.code === 'ENOENT') {
           if (!fs.existsSync(root)) return reject(gitError('nodir', `폴더가 없습니다: ${root}`));
@@ -153,8 +177,13 @@ async function git(root, args, { buffer = false, maxBuffer = GIT_MAX_BUFFER, tim
           if (isAlive(child)) killTree(child);
           return reject(gitError('fail', 'git 출력이 너무 큽니다'));
         }
-        return reject(gitError('fail', `git 실행 실패: ${text.slice(0, 200) || err.message}`, typeof err.code === 'number' ? err.code : undefined));
+        return failed(gitError('fail', `git 실행 실패:\n${text.slice(0, 200) || err.message}`, typeof err.code === 'number' ? err.code : undefined));
       });
+    // git 이 입력을 읽기 전에 끝나면 쓰기가 EPIPE·EOF 오류를 내는데, 처리하지 않으면 메인 프로세스가 죽는다 (실측).
+    // 실패는 위 콜백의 종료 코드로 알려진다.
+    if (track) { trackedGit.add(child); child.once('close', () => trackedGit.delete(child)); }
+    child.stdin?.on?.('error', () => {});
+    if (input !== undefined) child.stdin.end(input, 'utf8');
     timer = setTimeout(() => {
       timedOut = true;
       if (isAlive(child)) killTree(child);
@@ -376,7 +405,7 @@ function createCodeService({ roots }) {
 
 // handleMain: 보낸 쪽 검사를 마치고 이벤트를 뗀 인자만 넘기는 ipcGuard 의 handleMain.
 // 폴더 등록(code:allow)은 렌더러가 탭을 열 때 알린다 — 허용 폴더는 실수 방지 장치이고, 신뢰 경계는 pty:create 와 같다.
-function registerCodeIpc(handleMain, { roots, service, pickFolder, checkFolder }) {
+function registerCodeIpc(handleMain, { roots, service, pickFolder, checkFolder, gitOps = createGitOps({ git, rootKey, roots }) }) {
   const req = (v, key = 'root') => {
     if (!v || typeof v !== 'object' || typeof v[key] !== 'string') throw new Error(ERR_BAD);
     return v;
@@ -398,9 +427,19 @@ function registerCodeIpc(handleMain, { roots, service, pickFolder, checkFolder }
   handleMain('code:read', async (v) => service.read(req(v).root, v.rel));
   handleMain('code:base', async (v) => service.base(req(v).root, v.rel));
   handleMain('code:search', async (v) => service.search(req(v).root, v.term));
+  // Git 패널: 렌더러는 폴더·경로·메시지만 보내고 git 인자는 codeGit 이 고정한다. 결과는 던지지 않고 { ok, ... } 로 돌려준다.
+  handleMain('code:git:state', async (v) => gitOps.state(req(v).root));
+  handleMain('code:git:stage', async (v) => gitOps.stage(req(v).root, v.paths));
+  handleMain('code:git:unstage', async (v) => gitOps.unstage(req(v).root, v.paths));
+  handleMain('code:git:commit', async (v) => gitOps.commit(req(v).root, { message: v.message, expected: v.expected, stage: v.stage, then: v.then }));
+  handleMain('code:git:fetch', async (v) => gitOps.fetch(req(v).root));
+  handleMain('code:git:pull', async (v) => gitOps.pull(req(v).root));
+  handleMain('code:git:push', async (v) => gitOps.push(req(v).root));
+  handleMain('code:git:sync', async (v) => gitOps.sync(req(v).root, { hasMessage: v.hasMessage }));
+  handleMain('code:git:log', async (v) => gitOps.log(req(v).root));
 }
 
 module.exports = {
   resolveInside, toGitPath, rootKey, createCodeRoots, repoInfo, listFiles, statusOf,
-  readText, statMtime, headText, hasHead, diffText, diffStat, searchText, createCodeService, registerCodeIpc, git,
+  readText, statMtime, headText, hasHead, diffText, diffStat, searchText, createCodeService, registerCodeIpc, git, killTrackedGit, trackedGitCount,
 };

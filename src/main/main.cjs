@@ -21,13 +21,14 @@ const { ClaudeChat, CodexChat, GrokChat, MuseChat, AgyChat, claudeModels, killTr
 const { trackGrokSession, trackGrokTab, attachGrokRoom, dropGrokRoom } = require('./grokTools.cjs');
 const { PtyManager } = require('./ptyManager.cjs');
 const { cleanEnv } = require('./env.cjs');
+const { startShellPty } = require('./shellCmd.cjs');
 const { createWeatherService } = require('./weather.cjs');
 const { createPetController } = require('./pet.cjs');
 const { PET_KINDS, PET_ID_RE } = require('./petRules.cjs');
 const petImport = require('./petImport.cjs');
 const { createMainGuard } = require('./ipcGuard.cjs');
 const { createUsageService, createUsageLocator } = require('./usage.cjs');
-const { createCodeRoots, createCodeService, registerCodeIpc } = require('./codeRepo.cjs');
+const { createCodeRoots, createCodeService, registerCodeIpc, killTrackedGit } = require('./codeRepo.cjs');
 const { createCodeAnalyzer, registerAnalysisIpc, DENY_SETTINGS: ANALYSIS_SETTINGS } = require('./codeAnalysis.cjs');
 const { statusSnapshot } = require('./statusShape.cjs');
 const { createModelCatalog } = require('./modelCatalog.cjs');
@@ -373,8 +374,13 @@ function collabRunning() {
   return n;
 }
 
-async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli }) {
+async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli, shell }) {
   if (!TAB_RE.test(String(tabId))) throw new Error('잘못된 탭 ID');
+  if (mode === 'shell') {
+    // 코드 화면 하단 터미널: 등록된 폴더에서 PowerShell·Git Bash 만 — 화면이 보낸 문자열은 셸 종류(고정 두 값)와 폴더 선택에만 쓰고 인자에는 넣지 않는다. 세션이 아니므로 AGENT_OFFICE_TAB 은 싣지 않는다.
+    await startShellPty({ ptys, env: cleanEnv(), tabId, cwd, cols, rows, shell, roots: codeRoots, checkFolder, findBash: claudeCli.findGitBash });
+    return { sessionId: null };
+  }
   if (mode === 'install') {
     // 설치: 레지스트리에 적힌 공식 설치 명령(PowerShell)을 홈 폴더에서 띄운다 — 화면이 보낸 문자열은 실행하지 않고 AI id 만 받는다. normAgent 는 모르는 값을 Claude 로 바꾸므로 쓰지 않는다.
     if (typeof cli !== 'string' || !AGENT_IDS.includes(cli)) throw new Error('알 수 없는 AI 입니다');
@@ -537,7 +543,7 @@ function showWindow() {
 }
 
 async function quitFromTray() {
-  const running = ptys.count() + collabRunning();
+  const running = ptys.count('session') + collabRunning();
   if (running) {
     const opts = {
       type: 'question',
@@ -866,6 +872,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     quitting = true;
     usage?.dispose(); // 진행 중인 /usage 읽기(숨긴 claude)와 타이머를 정리한다
+    killTrackedGit({ closing: true }); // 로그인 창을 기다리는 git 이 앱보다 오래 남아 병합·푸시를 이어 가지 않게 (이후 재시도도 띄우지 않는다)
     dropSessions();
     pet?.shutdown(); // dropSessions 가 펫 상태를 지우는 뒤에 닫고, 이후 창을 다시 만들지 않는다
     hook?.releaseAll(); // 보류 중인 응답이 서버 종료를 막지 않게 먼저 {} 로 푼다

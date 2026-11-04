@@ -798,6 +798,74 @@ if (!process.versions.electron) {
       assert.ok(r.body>0&&r.orange===0,cli+' '+JSON.stringify({body:r.body,orange:r.orange}));
     }
     win.setSize(1600,1000);await pause(200);
+    // 오른쪽 영역 경계선은 마우스를 올리지 않아도 보라색이다. 활동 기록은 위쪽 경계를 끌어 높이를 조절한다 (최소 2줄, 사무실 칸 200px 유지, 두 번 클릭하면 기본).
+    const cliLineColor = await win.webContents.executeJavaScript(`getComputedStyle(document.querySelector('.cli-resizer'), '::after').backgroundColor`);
+    assert.equal(cliLineColor, 'rgb(138, 118, 176)', '터미널 경계선이 항상 보라색이 아님: ' + cliLineColor);
+    const feedBox = () => win.webContents.executeJavaScript(`(() => { const h = s => Math.round(document.querySelector(s).getBoundingClientRect().height); const c = document.querySelector('#office');
+      return { panel: h('.feed-panel'), feed: h('.feed'), stage: h('.office-stage'), stageClient: document.querySelector('.office-stage').clientHeight, canvasH: c.height, dpr: window.devicePixelRatio, saved: localStorage.getItem('ao.feedHeight') }; })()`);
+    const feedGrip = () => win.webContents.executeJavaScript(`(() => { const r = document.querySelector('#feed-resizer').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+    const dragFeed = async dy => {
+      const g = await feedGrip();
+      const ev = (type, y) => win.webContents.sendInputEvent({ type, x: g.x, y, button: 'left', clickCount: 1, ...(type === 'mouseMove' ? { modifiers: ['leftButtonDown'] } : {}) });
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: g.x, y: g.y }); await pause(50);
+      ev('mouseDown', g.y); for (let i = 1; i <= 5; i++) { ev('mouseMove', g.y + Math.round(dy * i / 5)); await pause(30); } ev('mouseUp', g.y + dy);
+      await pause(300);
+    };
+    const feed0 = await feedBox();
+    assert.equal(feed0.saved, null, '활동 기록 조절 전 저장값이 있음');
+    await dragFeed(-100);
+    const feedUp = await feedBox();
+    assert.ok(Math.abs(feedUp.panel - (feed0.panel + 100)) <= 2 && Math.abs(feedUp.feed - (feed0.feed + 100)) <= 2 && feedUp.stage < feed0.stage, `위로 끌어도 활동 기록이 높아지지 않음: ${JSON.stringify({ feed0, feedUp })}`);
+    assert.ok(Math.abs(Number(feedUp.saved) - feedUp.panel) <= 1, `조절한 활동 기록 높이를 저장하지 않음: ${JSON.stringify(feedUp)}`);
+    assert.ok(Math.abs(feedUp.canvasH - Math.floor(feedUp.stageClient * feedUp.dpr)) <= 1, `사무실 캔버스가 칸 높이를 따라가지 않음: ${JSON.stringify(feedUp)}`);
+    await dragFeed(2000);
+    const feedLow = await feedBox();
+    assert.ok(Math.abs(feedLow.feed - 34) <= 1, `가장 낮게 끌면 활동 기록 목록이 2줄(34px) 이어야 함: ${JSON.stringify(feedLow)}`);
+    await dragFeed(-2000);
+    const feedHigh = await feedBox();
+    assert.ok(Math.abs(feedHigh.stage - 200) <= 2, `가장 높게 끌어도 사무실 칸 200px 는 남아야 함: ${JSON.stringify(feedHigh)}`);
+    const feedGrab = await feedGrip();
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: feedGrab.x, y: feedGrab.y, button: 'left', clickCount: 2 });
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: feedGrab.x, y: feedGrab.y, button: 'left', clickCount: 2 });
+    await pause(300);
+    const feedReset = await feedBox();
+    assert.ok(Math.abs(feedReset.panel - feed0.panel) <= 1 && feedReset.saved === null, `두 번 클릭해도 활동 기록이 기본 높이로 돌아가지 않음: ${JSON.stringify({ feed0, feedReset })}`);
+    // 창을 한 번에 줄일 때: 최대로 키우고 사무실을 확대한 채 1100x680 으로 줄여도 칸(200px)·최소 높이가 지켜지고 카메라 값이 NaN 으로 굳지 않는다. 다시 키우면 저장 높이로 돌아온다.
+    const camState = () => win.webContents.executeJavaScript(`(() => { const c = window.__view.camera; return { ox: c.ox, oy: c.oy, scale: c.scale }; })()`);
+    const feedHeadH = await win.webContents.executeJavaScript(`document.querySelector('.feed-heading').offsetHeight`);
+    await dragFeed(-2000);
+    await win.webContents.executeJavaScript(`window.__view.zoomBy(2 / window.__view.camera.zoom)`);
+    const shrinkBefore = await feedBox();
+    win.setSize(1100, 680); await pause(500);
+    const shrinkSmall = await feedBox(), shrinkCam = await camState();
+    assert.ok(Math.abs(shrinkSmall.stage - 200) <= 2, `창을 한 번에 줄여도 사무실 칸 200px 는 남아야 함: ${JSON.stringify({ shrinkBefore, shrinkSmall })}`);
+    assert.ok(shrinkSmall.panel >= feedHeadH + 61 - 2, `창을 한 번에 줄이면 활동 기록이 최소 높이 아래로 눌림: ${JSON.stringify({ feedHeadH, shrinkSmall })}`);
+    assert.ok(Object.values(shrinkCam).every(Number.isFinite), `창을 한 번에 줄이면 카메라 값이 유한하지 않음: ${JSON.stringify(shrinkCam)}`);
+    win.setSize(1600, 1000); await pause(500);
+    const shrinkBack = await feedBox(), backCam = await camState();
+    assert.equal(shrinkBack.saved, shrinkBefore.saved, `창 크기만 바꿨는데 활동 기록 저장값이 바뀜: ${JSON.stringify({ shrinkBefore, shrinkBack })}`);
+    assert.ok(Math.abs(shrinkBack.panel - shrinkBefore.panel) <= 2, `창을 다시 키워도 활동 기록이 저장 높이로 돌아오지 않음: ${JSON.stringify({ shrinkBefore, shrinkBack })}`);
+    assert.ok(Object.values(backCam).every(Number.isFinite), `창을 다시 키우면 카메라 값이 유한하지 않음: ${JSON.stringify(backCam)}`);
+    // 끌지 않고 클릭만 하면(줄어 있던 중) 저장값을 덮어쓰지 않는다
+    win.setSize(1100, 680); await pause(500);
+    const clickGrip = await feedGrip(), clickBefore = await feedBox();
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: clickGrip.x, y: clickGrip.y, button: 'left', clickCount: 1 });
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: clickGrip.x, y: clickGrip.y + 1, modifiers: ['leftButtonDown'] }); await pause(30); // 클릭 중 1px 흔들림
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: clickGrip.x, y: clickGrip.y + 1, button: 'left', clickCount: 1 });
+    await pause(300);
+    const clickAfter = await feedBox();
+    assert.equal(clickAfter.saved, clickBefore.saved, `움직이지 않은 클릭이 활동 기록 저장값을 바꿈: ${JSON.stringify({ clickBefore, clickAfter })}`);
+    win.setSize(1600, 1000); await pause(500);
+    const clickBack = await feedBox();
+    assert.ok(Math.abs(clickBack.panel - shrinkBefore.panel) <= 2, `클릭 뒤 창을 다시 키워도 저장 높이로 돌아오지 않음: ${JSON.stringify({ shrinkBefore, clickBack })}`);
+    // 기본 상태로 복구: 카메라 전체 보기 + 두 번 클릭으로 기본 높이 (뒤 점검·캡처에 영향이 없게)
+    await win.webContents.executeJavaScript(`window.__view.fit()`);
+    const restoreGrip = await feedGrip();
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: restoreGrip.x, y: restoreGrip.y, button: 'left', clickCount: 2 });
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: restoreGrip.x, y: restoreGrip.y, button: 'left', clickCount: 2 });
+    await pause(300);
+    const feedRestored = await feedBox();
+    assert.ok(Math.abs(feedRestored.panel - feed0.panel) <= 1 && feedRestored.saved === null, `크기 조절 점검 뒤 활동 기록이 기본 상태로 복구되지 않음: ${JSON.stringify({ feed0, feedRestored })}`);
     // 새 탭 대화상자: 협업을 고르면 참여 AI 체크박스(연결된 2개)가 보이고 폴더 열기가 열려 있다
     await win.webContents.executeJavaScript(`document.querySelector('#new-tab').click();document.querySelector('input[name="tab-kind"][value="collab"]').click();`);
     const collabPick = await win.webContents.executeJavaScript(`({ checked: document.querySelectorAll('input[name=collab-agent]:checked').length, fieldsetHidden: document.querySelector('#collab-agents').hidden,

@@ -39,6 +39,22 @@ test('세로로 긴 화면의 전체 보기는 위아래 빈칸 없이 세로에
   assert.equal(camera.scale, 1600 / 3200); assert.equal(camera.ox, 0); assert.equal(camera.canPan, false);
 });
 
+test('칸이 0 으로 눌렸다 돌아와도 배율·위치가 유한하고 보던 중심을 유지한다', () => {
+  const camera = new OfficeCamera(); camera.resize(1000, 700, 3200, 2000);
+  camera.zoomAt(2);
+  const before = { ox: camera.ox, oy: camera.oy, scale: camera.scale }, center = camera.toScene(500, 350);
+  camera.resize(1000, 0, 3200, 2000); // 창을 한 번에 줄여 칸 높이가 0 이 된 순간
+  assert.deepEqual({ ox: camera.ox, oy: camera.oy, scale: camera.scale }, before);
+  assert.ok([camera.ox, camera.oy, camera.scale].every(Number.isFinite));
+  camera.resize(1000, 700, 3200, 2000);
+  assert.ok([camera.ox, camera.oy, camera.scale].every(Number.isFinite));
+  const after = camera.toScene(camera.cw / 2, camera.ch / 2);
+  assert.ok(Math.abs(after.x - center.x) < 1e-6 && Math.abs(after.y - center.y) < 1e-6, '보던 중심 유지');
+  const first = new OfficeCamera(); first.resize(0, 0, 3200, 2000); // 첫 호출이 0 이어도
+  first.resize(1000, 700, 3200, 2000);
+  assert.ok([first.ox, first.oy, first.scale].every(Number.isFinite), '다음 호출이 NaN 이 되지 않는다');
+});
+
 test('축소 하한을 낮추면 100% 아래로 줄어들고 가운데에 고정되며, 되돌리면 다시 100% 가 하한이다', () => {
   const camera = new OfficeCamera(); camera.resize(1120, 680, 3200, 2000);
   camera.zoomAt(0.1); assert.equal(camera.zoom, 1);

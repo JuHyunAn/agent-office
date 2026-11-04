@@ -6,7 +6,9 @@ export class OfficeCamera {
   constructor() { this.zoom = 1; this.minZoom = 1; this.scale = 1; this.ox = 0; this.oy = 0; this.cw = 1; this.ch = 1; }
 
   resize(cw, ch, width, height) {
-    const center = this.width ? this.toScene(this.cw / 2, this.ch / 2) : { x: width / 2, y: height / 2 };
+    // 칸이 0 으로 눌린 동안(창을 한 번에 줄일 때)은 배율이 0 이 되어 다음 계산이 NaN 으로 굳는다 — 보던 곳을 그대로 두고 다음 크기를 기다린다.
+    if (this.width && !(cw > 0 && ch > 0)) return;
+    const center = this.width && this.scale ? this.toScene(this.cw / 2, this.ch / 2) : { x: width / 2, y: height / 2 };
     Object.assign(this, { cw, ch, width, height });
     this.base = Math.max(Math.min(cw / width, (ch / height) * FIT_FILL), ch / height);
     this.scale = this.base * this.zoom;

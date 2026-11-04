@@ -1,11 +1,13 @@
 // 코드 화면: 폴더 선택 · 이번 작업에서 건드린 파일 · 전체 파일 트리 · 모나코 보기/변경 비교 · 10초 갱신.
-// 읽기 전용이다 (파일을 바꾸는 기능이 없다). 화면(DOM)은 시작 때 만들고, 모나코는 첫 파일을 열 때 불러온다.
+// 편집기는 읽기 전용이고, 저장소를 바꾸는 일(스테이징·커밋)은 왼쪽 Git 패널(gitPanel.js)만 한다. 화면(DOM)은 시작 때 만들고, 모나코는 첫 파일을 열 때 불러온다.
 import { touchedFrom, TouchedList, buildTree, createRefresher } from './model.js';
 import { loadMonaco } from './monaco.js';
 import { jumpLine, splitLines, notesForFile } from './analysis.js';
 import { createNotesLayer } from './notes.js';
 import { createAnalysisPanel } from './analysisPanel.js';
-import { setupAnalysisResizer } from '../layout.js';
+import { createGitPanel } from './gitPanel.js';
+import { createTerminalPanel } from './terminalPanel.js';
+import { setupAnalysisResizer, setupSideResizer } from '../layout.js';
 
 function node(tag, props = {}, ...children) {
   const n = document.createElement(tag);
@@ -51,7 +53,7 @@ const mmss = (ms) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
-export function createCodePanel({ api, host }) {
+export function createCodePanel({ api, host, newTerminal }) {
   const folders = []; // setFolders 로 받은 탭 폴더 — 더하기만 한다 (탭을 닫아도 앱을 끌 때까지 목록에서 고를 수 있다)
   const picked = []; // 「폴더 열기…」로 직접 고른 폴더
   const touchedBy = new Map(); // keyOf(폴더) → TouchedList — 앱 시작부터 모은다 (보이든 안 보이든)
@@ -64,6 +66,7 @@ export function createCodePanel({ api, host }) {
   let folderGen = 0;
   let treeSeq = 0;
   let treeBusy = false;
+  let pollWanted = false; // 트리를 받은 뒤 상태 조회가 필요함 — 앞선 요청이 더 새로운 loadTree 에 밀려도 이어받는다 (⟳ 가 최대 10초 늦게 반영되지 않게)
   let treeInfo = null; // codeTree 결과 ({ git: true, files, truncated } | { git: false, reason })
   let tree = null;
   let fileSet = new Set();
@@ -72,6 +75,8 @@ export function createCodePanel({ api, host }) {
   let status = new Map(); // 경로 → 두 글자 코드
   let dirty = new Set(); // 변경이 든 폴더 경로
   let lastMissing = ''; // 마지막으로 트리를 다시 받게 한 「트리에 없는 변경 경로」 — 같은 이유로 되풀이하지 않게
+  let lastOid = null; // 이 폴더에서 마지막으로 본 HEAD 커밋 (폴더를 바꾸면 비운다) — 바뀌면 트리의 파일 목록도 다시 받는다
+  let tickSkipped = false; // 트리를 받는 중이라 건너뛴 갱신이 있다 — 트리를 다 받으면 바로 이어서 한다
   let open = null; // 열린 파일 { rel, kind('error' 면 열기 실패), text, base, mtimeMs, code, loading }
   let diffPref = true; // 「변경 비교」 토글 (변경이 있고 원본을 받았을 때만 효력)
 
@@ -89,12 +94,17 @@ export function createCodePanel({ api, host }) {
   const analysisByRoot = new Map(); // keyOf(폴더) → { active, results: Map(scopeKey → {...}), run, error, stopped, confirm, closed, notesOn, collapsed, jumpNote }
   let pendingJump = null; // { g, item } — 파일이 열린 뒤 옮길 자리 (g 가 지금 gen 과 같을 때만 적용)
   let diffReveal = null; // 비교 보기에서 삭제 줄 영역이 끼어든 뒤 다시 맞출 줄 (한 번 쓰고 비운다)
+  // 하단 영역(.code-bottom): 분석 패널과 터미널이 탭으로 나눠 쓴다. bottomOpen 은 영역 자체(× 로 닫아도 셸은 유지), termOpened 는 터미널을 한 번이라도 열었는지.
+  let bottomOpen = true;
+  let termOpened = false;
+  let bottomTab = 'analysis'; // 'analysis' | 'terminal' — 둘 다 있을 때 보는 쪽
   let reopenTimer = null; // 닫힌 패널의 「분석 중 m:ss」 단추 글자를 1초마다 갱신
 
   // ───────── DOM ─────────
   const folderSel = node('select', { class: 'code-folder', 'aria-label': '작업 폴더', onchange: () => selectFolder(folderSel.value) });
   const pickBtn = node('button', { class: 'code-pick', type: 'button', onclick: pick }, '폴더 열기…');
-  const refreshBtn = node('button', { class: 'code-refresh', type: 'button', title: '지금 새로 고침', 'aria-label': '새로 고침', onclick: () => { loadTree(); } }, '⟳');
+  const refreshBtn = node('button', { class: 'code-refresh', type: 'button', title: '지금 새로 고침', 'aria-label': '새로 고침', onclick: () => { loadTree(); gitPanel.refreshGraph(); } }, '⟳');
+  const termToggle = node('button', { class: 'code-term-toggle', type: 'button', 'aria-pressed': 'false', title: '하단 터미널을 열거나 닫습니다 (셸은 닫아도 유지)', onclick: toggleTerminal }, '터미널');
   const statusEl = node('span', { class: 'code-status' });
   const touchedEl = node('ul', { class: 'code-touched' });
   const noteEl = node('p', { class: 'code-note', hidden: true });
@@ -121,7 +131,7 @@ export function createCodePanel({ api, host }) {
     onJump: (item) => { openFile(item.file, item); },
     onSearch: searchIn,
     onStop: stopAnalysis,
-    onClose: () => { const s = curAnalysis(); if (s) { s.closed = true; renderAnalysis(); } },
+    onClose: () => { const s = curAnalysis(); if (s) { s.closed = true; if (termOpened) bottomTab = 'terminal'; renderAnalysis(); } },
     onToggleNotes: (on) => { const s = curAnalysis(); if (s) { s.notesOn = on; applyNotes(); renderAnalysis(); } },
     onRerun: rerunAnalysis,
     onConfirm: confirmAnalysis,
@@ -129,18 +139,43 @@ export function createCodePanel({ api, host }) {
     onScope: (key) => { const s = curAnalysis(); if (s && s.results.has(key)) { s.active = key; renderAnalysis(); } },
   });
 
+  // Git 패널: 조회는 pollCore 가 넘겨 주고, 쓰기가 끝나면 곧바로 다시 조회하게 한다 (refresher 는 아래에서 만든다).
+  const gitPanel = createGitPanel({
+    api,
+    onOpenFile: (rel) => openFile(rel),
+    onChanged: () => refresher.bump(0),
+    agentEdits: () => (current ? touchedBy.get(keyOf(current))?.items() ?? [] : []),
+  });
+  const terminal = createTerminalPanel({ api, newTerminal, onShellChange: () => { shellSel.value = terminal.getShell(); } });
+  const analysisTabBtn = node('button', { class: 'cb-tab', type: 'button', role: 'tab', 'data-tab': 'analysis', onclick: () => { bottomTab = 'analysis'; syncBottom(); } }, node('span', {}, '분석'), node('span', { class: 'cb-dot', 'aria-label': '새 분석 결과', hidden: true }, '●'));
+  const termTabBtn = node('button', { class: 'cb-tab', type: 'button', role: 'tab', 'data-tab': 'terminal', onclick: openTerminal }, '터미널');
+  const shellSel = node('select', { class: 'cb-shell', 'aria-label': '셸 종류', title: '이 폴더의 셸 종류 — 실행 중이면 바로 바꾸지 않고, 「다시 시작」을 누르면 새 셸로 띄웁니다', hidden: true, onchange: () => terminal.setShell(shellSel.value) },
+    node('option', { value: 'powershell' }, 'PowerShell'), node('option', { value: 'bash' }, 'Git Bash'));
+  const restartBtn = node('button', { class: 'cb-restart', type: 'button', hidden: true, title: '이 폴더의 셸을 새로 띄웁니다 — 실행 중인 명령이 있으면 끝납니다', onclick: () => terminal.restart() }, '다시 시작');
+  const bottomCloseBtn = node('button', { class: 'cb-close', type: 'button', 'aria-label': '하단 닫기', title: '하단 영역 닫기 (터미널의 셸은 유지)', onclick: () => { bottomOpen = false; syncBottom(); } }, '×');
+  const tabsEl = node('div', { class: 'cb-tabs', role: 'tablist', 'aria-label': '하단 영역' }, analysisTabBtn, termTabBtn, shellSel, restartBtn, bottomCloseBtn);
+  // 위쪽 경계(분석 패널의 resizer)는 하단 영역의 첫 자식으로 옮긴다 — 어느 탭이든 같은 높이를 끈다.
+  const bottomEl = node('div', { class: 'code-bottom', hidden: true }, analysis.resizer, tabsEl, analysis.el, terminal.el);
+  const sideTopEl = node('div', { class: 'code-side-top' },
+    node('h3', { class: 'code-section' }, '이번 작업에서 건드린 파일'), touchedEl,
+    node('h3', { class: 'code-section' }, '전체 파일'), noteEl, treeEl);
+
   const viewEl = node('div', { class: 'code-view' }, editorEl, diffEl, messageEl, idleEl);
+  const sideEl = node('div', { class: 'code-side' }, sideTopEl, gitPanel.el);
+  const sideResizer = node('div', { class: 'code-side-resizer', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': '왼쪽 목록 너비 조절', title: '끌어서 너비 조절 · 두 번 클릭하면 기본 너비' });
+  const bodyEl = node('div', { class: 'code-body' },
+    sideEl, sideResizer,
+    node('div', { class: 'code-main' },
+      node('div', { class: 'code-file-head' }, pathEl, toggleBtn, analyzeBox),
+      viewEl,
+      bottomEl));
   host.replaceChildren(
-    node('div', { class: 'code-head' }, folderSel, pickBtn, refreshBtn, statusEl),
-    node('div', { class: 'code-body' },
-      node('div', { class: 'code-side' },
-        node('h3', { class: 'code-section' }, '이번 작업에서 건드린 파일'), touchedEl,
-        node('h3', { class: 'code-section' }, '전체 파일'), noteEl, treeEl),
-      node('div', { class: 'code-main' },
-        node('div', { class: 'code-file-head' }, pathEl, toggleBtn, analyzeBox),
-        viewEl,
-        analysis.el)));
-  const resizeAnalysis = setupAnalysisResizer(analysis.el, analysis.head, viewEl, analysis.resizer);
+    node('div', { class: 'code-head' }, folderSel, pickBtn, refreshBtn, termToggle, statusEl),
+    bodyEl);
+  // 최소 높이는 탭줄 + (분석 탭이면) 분석 머리줄 + 본문 48px
+  const resizeAnalysis = setupAnalysisResizer(bottomEl, () => tabsEl.offsetHeight + (shownTab() === 'analysis' ? analysis.head.offsetHeight : 0), viewEl, analysis.resizer);
+  const resizeGit = setupAnalysisResizer(gitPanel.el, gitPanel.head, sideTopEl, gitPanel.resizer, { key: 'ao.gitPanelHeight', cssVar: '--gp-height', bodyMin: 170 });
+  setupSideResizer(bodyEl, sideEl, sideResizer);
 
   // 트리에 대소문자만 다른 같은 경로가 있으면 트리 표기로 맞춘다 (정확히 같은 표기가 먼저, 없으면 원래 표기 그대로).
   function canon(rel) {
@@ -221,7 +256,7 @@ export function createCodePanel({ api, host }) {
   function updateReopen(can = true) {
     const s = curAnalysis();
     const has = !!s && (s.run || s.results.size || s.confirm || s.error || s.stopped);
-    const show = can && !!s && s.closed && !!has;
+    const show = can && !!s && (s.closed || !bottomOpen) && !!has; // 분석 패널을 닫았거나 하단 영역을 닫아 둔 경우
     reopenBtn.hidden = !show;
     if (show) reopenBtn.textContent = s.run ? `분석 중 ${mmss(Date.now() - s.run.startedAt)}` : '분석 결과';
     const need = show && !!s.run && visible;
@@ -233,6 +268,7 @@ export function createCodePanel({ api, host }) {
     const s = curAnalysis();
     if (!s) return;
     s.closed = false;
+    bottomOpen = true; bottomTab = 'analysis'; // 하단을 닫아 두었어도 열고 분석 탭으로
     renderAnalysis();
   }
 
@@ -269,9 +305,46 @@ export function createCodePanel({ api, host }) {
     };
   }
 
+  // 지금 하단에 보이는 탭: 둘 다 있으면 bottomTab, 하나뿐이면 그것, 아무것도 없으면 null (영역 숨김)
+  function shownTab() {
+    if (!bottomOpen) return null;
+    if (bottomTab === 'terminal' && termOpened) return 'terminal';
+    if (!analysis.el.hidden) return 'analysis';
+    return termOpened ? 'terminal' : null;
+  }
+
+  function syncBottom() {
+    const shown = shownTab();
+    const hasA = !analysis.el.hidden;
+    const s = curAnalysis();
+    if (shown === 'analysis' && s) s.unseen = false;
+    bottomEl.hidden = shown === null;
+    analysis.el.classList.toggle('cb-off', shown !== 'analysis');
+    terminal.el.classList.toggle('cb-off', shown !== 'terminal');
+    tabsEl.hidden = !termOpened; // 터미널을 한 번 열기 전에는 탭줄 없이 분석 패널만 (예전 모습 그대로)
+    analysisTabBtn.hidden = !hasA;
+    analysisTabBtn.querySelector('.cb-dot').hidden = !(hasA && !!s?.unseen && shown !== 'analysis'); // 터미널을 보는 동안 끝난 분석
+    for (const [b, id] of [[analysisTabBtn, 'analysis'], [termTabBtn, 'terminal']]) { b.classList.toggle('on', shown === id); b.setAttribute('aria-selected', String(shown === id)); }
+    shellSel.hidden = restartBtn.hidden = shown !== 'terminal';
+    shellSel.value = terminal.getShell();
+    termToggle.setAttribute('aria-pressed', String(shown === 'terminal'));
+    resizeAnalysis.apply(); // 영역이 방금 보였으면 저장된 높이를 그리기 전에 맞춘다
+    if (visible && shown === 'terminal') terminal.activate(); else terminal.deactivate();
+    updateAnalyzeControls(); // 하단을 열고 닫으면 「분석 결과」 단추 표시도 달라진다
+  }
+
+  function openTerminal() {
+    bottomOpen = true; termOpened = true; bottomTab = 'terminal';
+    syncBottom();
+  }
+
+  function toggleTerminal() {
+    if (shownTab() === 'terminal') { bottomOpen = false; syncBottom(); } else openTerminal();
+  }
+
   function renderAnalysis() {
     analysis.render(analysisView());
-    resizeAnalysis.apply(); // 패널이 방금 보였으면 저장된 높이를 그리기 전에 맞춘다
+    syncBottom();
     updateAnalyzeControls();
   }
 
@@ -289,6 +362,7 @@ export function createCodePanel({ api, host }) {
     if (s.run) return;
     s.run = { scopeKey, startedAt: Date.now(), statusAtStart: statusSig(scopeKey) };
     s.active = scopeKey; s.error = ''; s.stopped = false; s.confirm = null; s.closed = false; s.jumpNote = '';
+    bottomOpen = true; bottomTab = 'analysis'; // 사용자가 분석을 시작하면 분석 탭으로
     renderAnalysis();
     let r;
     try {
@@ -299,7 +373,9 @@ export function createCodePanel({ api, host }) {
     const run = s.run;
     s.run = null;
     s.closed = false; // 실행 중 닫았어도 끝나면 다시 보인다
+    s.unseen = true; // 터미널 탭을 보는 중이면 가리지 않고 탭의 ● 만 켠다 (분석 탭을 보면 꺼진다)
     const here = !!current && keyOf(current) === keyOf(root);
+    if (here && !bottomOpen) { bottomOpen = true; bottomTab = 'analysis'; } // 하단을 닫아 둔 채 끝났으면 결과가 보이게
     if (r && r.ok) {
       // 성공 때만 결과를 바꾼다 (실패·중단은 문구만 — 이전 결과 유지)
       // 시작 시점의 상태·시각을 적는다: 분석 중에 바뀐 코드는 끝난 뒤 「분석 후 코드가 바뀜」으로 드러난다
@@ -443,12 +519,14 @@ export function createCodePanel({ api, host }) {
     const same = options().find((d) => keyOf(d) === keyOf(dir));
     current = same || dir;
     gen++; folderGen++;
-    treeInfo = null; tree = null; fileSet = new Set(); fileByLower = new Map(); treeError = ''; status = new Map(); dirty = new Set(); lastMissing = '';
+    treeInfo = null; tree = null; fileSet = new Set(); fileByLower = new Map(); treeError = ''; status = new Map(); dirty = new Set(); lastMissing = ''; lastOid = null;
     expanded.clear();
     open = null;
     pendingJump = null;
     release();
     applyNotes();
+    gitPanel.setRoot(current);
+    terminal.setRoot(current);
     renderFolders(); renderTouched(); renderTree(); renderFileHead(); renderMain(); renderAnalysis();
     loadTree();
   }
@@ -468,28 +546,36 @@ export function createCodePanel({ api, host }) {
     if (!root) return;
     const fg = folderGen;
     const my = ++treeSeq;
+    pollWanted = pollWanted || withPoll;
     treeBusy = true;
     updateAnalyzeControls();
     setStatus('불러오는 중…');
     try {
       const t = await api.codeTree(root);
       if (fg !== folderGen || my !== treeSeq) return;
+      const poll = pollWanted;
+      pollWanted = false;
       treeInfo = t;
       treeError = '';
       if (t.git) { tree = buildTree(t.files); fileSet = new Set(t.files); fileByLower = new Map(t.files.map((f) => [f.toLowerCase(), f])); } else { tree = null; fileSet = new Set(); fileByLower = new Map(); }
       renderTree();
       if (!open) renderMain();
-      if (!t.git) { setStatus(GIT_TEXT[t.reason] || '지원하지 않는 폴더입니다', true); return; }
-      if (withPoll) await pollCore();
+      if (!t.git) { gitPanel.setUnavailable(GIT_TEXT[t.reason] || '지원하지 않는 폴더입니다'); setStatus(GIT_TEXT[t.reason] || '지원하지 않는 폴더입니다', true); return; }
+      if (poll) await pollCore();
       else setStatus(`${clock()} 갱신`);
     } catch (e) {
       if (fg === folderGen && my === treeSeq) {
         treeError = errText(e);
+        gitPanel.setUnavailable(`⚠ ${treeError}`);
         setStatus(`⚠ ${treeError}`, true);
         if (!open && !treeInfo) renderMain(); // 「불러오는 중…」에 머물지 않고 오류를 안내한다
       }
     } finally {
-      if (my === treeSeq) { treeBusy = false; renderAnalysis(); } // 변경 상태를 다 받았으니 「분석 후 바뀜」을 다시 판단
+      if (my === treeSeq) {
+        treeBusy = false;
+        renderAnalysis(); // 변경 상태를 다 받았으니 「분석 후 바뀜」을 다시 판단
+        if (tickSkipped) { tickSkipped = false; refresher.bump(0); } // 트리를 받는 동안 건너뛴 갱신을 바로 이어서
+      }
     }
   }
 
@@ -771,13 +857,22 @@ export function createCodePanel({ api, host }) {
     const fg = folderGen;
     const g = gen;
     const o = open;
-    const r = await api.codePoll(root, o && o.kind !== 'error' ? o.rel : null); // 열기에 실패한 파일은 시각을 묻지 않는다
+    // 깃 상태(Git 패널)도 같은 주기로 함께 묻는다. 거부돼도 패널 안내로만 보이고 콘솔 오류로 새지 않는다.
+    const [r, gs] = await Promise.all([
+      api.codePoll(root, o && o.kind !== 'error' ? o.rel : null), // 열기에 실패한 파일은 시각을 묻지 않는다
+      Promise.resolve().then(() => api.codeGitState(root)).catch((e) => ({ ok: false, code: 'ipc', error: errText(e) })),
+    ]);
     if (fg !== folderGen) return;
     applyStatus(r.changes);
+    gitPanel.setState(gs);
+    // HEAD 가 달라졌다(Pull·터미널의 git pull·checkout 등): 새로 들어온 파일·지워진 파일이 트리에 반영되게 목록을 다시 받는다 (첫 값은 비교 대상이 아니다).
+    const headMoved = !!gs && gs.ok !== false && !!gs.oid && lastOid !== null && lastOid !== gs.oid;
+    if (gs && gs.ok !== false && gs.oid) lastOid = gs.oid;
     setStatus(`${clock()} 갱신`);
     if (o && o.kind !== 'error' && g === gen && open === o && !o.loading) await syncOpen(root, o, g, r.mtimeMs);
     if (fg === folderGen) renderAnalysis(); // 변경 상태·열린 파일 시각이 달라졌으면 「분석 후 코드가 바뀜」을 반영
     await reloadTreeIfNew(r.changes, fg);
+    if (headMoved && fg === folderGen) await loadTree(false);
   }
 
   async function syncOpen(root, o, g, mtimeMs) {
@@ -809,9 +904,17 @@ export function createCodePanel({ api, host }) {
 
   // 갱신기가 부르는 한 번의 확인. 트리를 아직 못 받았으면(오류 뒤 포함) 트리부터 받는다.
   async function tick() {
-    if (!current || treeBusy) return;
+    if (!current) return;
+    if (treeBusy) { tickSkipped = true; return; }
     if (!treeInfo) { await loadTree(); return; }
-    if (!treeInfo.git) return;
+    // 깃 저장소가 아니던 폴더: 터미널에서 git init 했을 수 있으니 상태만 묻고, 저장소가 됐으면 트리부터 다시 받는다.
+    if (!treeInfo.git) {
+      const root = current;
+      const fg = folderGen;
+      const gs = await Promise.resolve().then(() => api.codeGitState(root)).catch(() => null);
+      if (fg === folderGen && !treeInfo?.git && gs && gs.ok !== false) await loadTree(); // 기다리는 사이 ⟳ 가 이미 받았으면 다시 받지 않는다
+      return;
+    }
     await pollCore();
   }
 
@@ -828,15 +931,21 @@ export function createCodePanel({ api, host }) {
       renderTouched(); // 숨겨진 동안 쌓인 것을 반영
       applyNotes(); // 숨겨진 동안 끝난 분석 반영 (Task 5)
       renderAnalysis();
+      resizeGit.apply(); gitPanel.show(); // 저장된 높이를 그리기 전에 맞춘다
       analysis.refresh(); // 멈췄던 경과 시간을 지금 시각으로
       refresher.start();
     },
     hide() {
       visible = false;
+      gitPanel.hide();
+      terminal.deactivate();
       if (reopenTimer) { clearInterval(reopenTimer); reopenTimer = null; }
       analysis.stopTimer();
       refresher.stop();
     },
+    // 터미널 ID 의 출력·종료면 터미널이 처리하고 true (app.js 가 탭으로 찾지 않게).
+    onPtyData: (tabId, data) => terminal.onPtyData(tabId, data),
+    onPtyExit: (tabId, exitCode) => terminal.onPtyExit(tabId, exitCode),
     // 열린 탭(login 제외)의 작업 폴더 목록. 받은 폴더를 기존 목록에 더하기만 한다 (대소문자 무시 중복 제거, 순서 유지, 제거 없음).
     setFolders(list) {
       const seen = new Set(folders.map(keyOf));
