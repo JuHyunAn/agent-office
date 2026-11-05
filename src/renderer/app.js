@@ -1019,22 +1019,54 @@ function resetCollabChecks() {
   for (const [id, c] of kindUi.checks) c.input.checked = chosen.includes(id);
 }
 
+// 탭을 만들기 전에 폴더를 확인한다. 문제가 있으면 팝업으로 알리고 false. 확인 자체가 실패하면 막지 않는다 (탭의 실행 실패 안내가 남아 있다).
+let checkingFolder = false;
+async function folderOk(cwd) {
+  if (checkingFolder) return false; // 연달아 눌러 탭이 두 개 열리지 않게
+  checkingFolder = true;
+  try {
+    const r = await api.codeFolderCheck(cwd).catch(() => null);
+    if (!r?.problem) return true;
+    showFolderProblem(cwd, r.problem);
+    return false;
+  } finally {
+    checkingFolder = false;
+  }
+}
+
+function showFolderProblem(cwd, text) {
+  $('#folderdlg-text').textContent = text;
+  $('#folderdlg-path').textContent = cwd;
+  const remove = $('#folderdlg-remove');
+  remove.hidden = !store.get('ao.recent', []).includes(cwd);
+  remove.onclick = () => {
+    store.set('ao.recent', store.get('ao.recent', []).filter((p) => p !== cwd));
+    renderRecent();
+    renderKindPick();
+    $('#folderdlg').close();
+  };
+  $('#folderdlg').showModal();
+}
+
 // 고른 실행 종류로 폴더를 연다. 열 수 없는 상태(버튼이 막히기 전에 눌렸거나 도중에 상태가 바뀜)면 무시한다.
-function openHere(cwd) {
-  if (!canOpenSelected()) return;
+async function openHere(cwd) {
+  if (!canOpenSelected() || !(await folderOk(cwd)) || !canOpenSelected()) return;
   const kind = selectedKind();
   const agents = kind === 'collab' ? selectedCollabAgents() : null;
   $('#newtab').close();
   openTab({ cwd, kind, agents });
 }
 
-function openNewTabDialog() {
-  const dlg = $('#newtab');
-  const recent = $('#recent');
-  resetCollabChecks();
-  recent.replaceChildren(...store.get('ao.recent', []).map((p) => el('li', {},
+function renderRecent() {
+  $('#recent').replaceChildren(...store.get('ao.recent', []).map((p) => el('li', {},
     el('span', { class: 'grow', title: p }, `📁 ${p}`),
     el('button', { type: 'button', class: 'btn small', onclick: () => openHere(p) }, '열기'))));
+}
+
+function openNewTabDialog() {
+  const dlg = $('#newtab');
+  resetCollabChecks();
+  renderRecent();
 
   const g = state.status && state.status.hook && state.status.hook.global;
   const claudeFound = !!currentAgents().find((e) => e.id === 'claude')?.found;
@@ -1048,8 +1080,8 @@ function openNewTabDialog() {
   $('#external').replaceChildren(...ext.map((x) => el('li', {},
     el('span', { class: 'grow', title: x.cwd }, `🖥 ${baseName(x.cwd)} `, el('span', { class: 'sub' }, `${x.cwd} · ${ago(x.at)}`)),
     el('button', { type: 'button', class: 'btn small', onclick: () => openHere(x.cwd) }, '이 폴더에서 새 세션'),
-    el('button', { type: 'button', class: 'btn small', 'data-resume': '', onclick: () => {
-      if (!connectedIds(currentAgents()).includes('claude')) return;
+    el('button', { type: 'button', class: 'btn small', 'data-resume': '', onclick: async () => {
+      if (!connectedIds(currentAgents()).includes('claude') || !(await folderOk(x.cwd))) return;
       dlg.close();
       openTab({ cwd: x.cwd, mode: 'resume', resumeId: x.sessionId });
     } }, '이어받기(복제)'))));

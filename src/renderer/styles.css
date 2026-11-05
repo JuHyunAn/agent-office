@@ -486,6 +486,9 @@ body.code-mode .custom-builder { display: none; }
 .list .sub { color: var(--muted); font-size: 11px; }
 .hint { color: var(--muted); font-size: 12px; margin: 0; }
 .dialog-actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+#folderdlg-text { margin: 0 0 8px; white-space: pre-line; }
+#folderdlg-path { margin: 0; word-break: break-all; }
+#folderdlg .dialog-actions { gap: 8px; }
 .kind-pick { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; }
 .kind-pick label { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid transparent; border-radius: 5px; cursor: pointer; }
 .kind-pick label:hover { background: var(--panel-2); }

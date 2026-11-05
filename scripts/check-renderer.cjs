@@ -537,6 +537,7 @@ if (!process.versions.electron) {
     assert.equal(citypopCheck.neon.allocations,0);assert.equal(citypopCheck.neon.filters,0);assert.ok(citypopCheck.neon.released);
     await pause(100);fs.writeFileSync(path.join(OUT,'office-citypop.png'),(await win.webContents.capturePage()).toPNG());
     fs.writeFileSync(path.join(OUT,'citypop-background.png'),Buffer.from(await win.webContents.executeJavaScript('window.__citypopBackground'),'base64'));
+    const japanCheck = await require('./check-japan-theme.cjs')(win, selectTheme, OUT);
     await selectTheme('pixel-office');
     const weatherVideo = await win.webContents.executeJavaScript(`(async()=>{
       const v=window.__view,originalClock=v.environment.now;
@@ -1030,7 +1031,7 @@ if (!process.versions.electron) {
 
     assert.deepEqual(errors, []);
     await permCardCheck();
-    console.log(JSON.stringify({petMode,status,small,attention,spriteChanges:spriteCheck.changes,codexSprites,codexScene,artCheck,lightingCheck,neonCheck,sunsetCheck,themeSwitch,plainCheck,citypopCheck,interactionCheck,consoleErrors:errors,output:OUT}, null, 2));
+    console.log(JSON.stringify({petMode,status,small,attention,spriteChanges:spriteCheck.changes,codexSprites,codexScene,artCheck,lightingCheck,neonCheck,sunsetCheck,themeSwitch,plainCheck,citypopCheck,japanCheck,interactionCheck,consoleErrors:errors,output:OUT}, null, 2));
     clearTimeout(watchdog);
     app.exit(0);
   }).catch(e => { console.error(e.stack || e); console.error(JSON.stringify({ consoleErrors: errors })); clearTimeout(watchdog); app.exit(1); });

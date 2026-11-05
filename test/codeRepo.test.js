@@ -16,7 +16,7 @@ process.env.GIT_CONFIG_NOSYSTEM = '1';
 
 const require = createRequire(import.meta.url);
 const {
-  resolveInside, toGitPath, createCodeRoots, repoInfo, listFiles, statusOf,
+  resolveInside, toGitPath, createCodeRoots, folderProblem, repoInfo, listFiles, statusOf,
   readText, statMtime, headText, indexFile, createCodeService, registerCodeIpc, git: gitRun,
   rootKey, diffText, diffStat, searchText, hasHead, killTrackedGit, trackedGitCount,
 } = require('../src/main/codeRepo.cjs');
@@ -296,6 +296,17 @@ test('createCodeService: 작업 트리가 아닌 .git 폴더를 등록하면 tre
   await assert.rejects(service.read(gitDir, 'config'), { message: '깃 저장소가 아닙니다' });
 });
 
+test('folderProblem: 있는 폴더는 null, 없는 폴더·파일·열 수 없는 폴더는 안내 글', async (t) => {
+  const dir = mkdir('fp');
+  assert.equal(await folderProblem(dir), null);
+  assert.match(await folderProblem(path.join(dir, '없는 폴더')), /^폴더가 없습니다/);
+  const file = path.join(dir, 'f.txt');
+  fs.writeFileSync(file, 'x');
+  assert.match(await folderProblem(file), /^폴더가 아닙니다/);
+  t.mock.method(fs.promises, 'opendir', async () => { throw Object.assign(new Error('x'), { code: 'EPERM' }); });
+  assert.match(await folderProblem(dir), /^폴더를 열 수 없습니다/);
+});
+
 test('createCodeService: 나중에 git init 한 폴더는 트리를 다시 받으면 열린다', { skip }, async () => {
   const roots = createCodeRoots();
   const service = createCodeService({ roots });
@@ -322,7 +333,7 @@ test('registerCodeIpc: 17개 채널, 잘못된 요청 거부, 폴더 등록·선
   const call = (ch, payload) => handlers.get(ch)(payload);
 
   assert.deepEqual([...handlers.keys()].sort(), [
-    'code:allow', 'code:base', 'code:git:commit', 'code:git:fetch', 'code:git:log', 'code:git:pull', 'code:git:push', 'code:git:stage',
+    'code:allow', 'code:base', 'code:folder:check', 'code:git:commit', 'code:git:fetch', 'code:git:log', 'code:git:pull', 'code:git:push', 'code:git:stage',
     'code:git:state', 'code:git:sync', 'code:git:unstage', 'code:index', 'code:pick', 'code:poll', 'code:read', 'code:search', 'code:tree',
   ]);
 

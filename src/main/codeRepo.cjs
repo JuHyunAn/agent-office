@@ -199,6 +199,19 @@ const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 // 중첩 저장소는 `dir/` 로 나온다 — 트리·상태가 같은 경로로 맞도록 끝 `/` 를 뗀다
 const noSlash = (p) => p.replace(/\/+$/, '');
 
+// 탭을 열 수 있는 폴더인지. 문제가 있으면 안내 글, 없으면 null (열어 보기까지 하므로 권한 문제도 잡는다).
+async function folderProblem(dir) {
+  try {
+    const d = await fs.promises.opendir(dir);
+    await d.close();
+    return null;
+  } catch (e) {
+    if (e?.code === 'ENOENT') return '폴더가 없습니다.\n삭제되었거나 이름이 바뀌었거나, 드라이브가 연결되지 않았을 수 있습니다.';
+    if (e?.code === 'ENOTDIR') return '폴더가 아닙니다.';
+    return '폴더를 열 수 없습니다.\n접근 권한이나 드라이브 연결을 확인해 주세요.';
+  }
+}
+
 // ---------- 깃 조회 ----------
 
 // prefix: 저장소 루트에서 이 폴더까지의 경로 ('sub/' 형식, 루트면 '')
@@ -435,6 +448,7 @@ function registerCodeIpc(handleMain, { roots, service, pickFolder, checkFolder, 
     roots.add(cwd);
     return true;
   });
+  handleMain('code:folder:check', async (v) => ({ problem: await folderProblem(req(v, 'cwd').cwd) }));
   handleMain('code:pick', async () => {
     const dir = await pickFolder();
     if (typeof dir !== 'string' || !dir) return null;
@@ -460,6 +474,6 @@ function registerCodeIpc(handleMain, { roots, service, pickFolder, checkFolder, 
 }
 
 module.exports = {
-  resolveInside, toGitPath, rootKey, createCodeRoots, repoInfo, listFiles, statusOf,
+  resolveInside, toGitPath, rootKey, createCodeRoots, folderProblem, repoInfo, listFiles, statusOf,
   readText, statMtime, headText, indexFile, hasHead, diffText, diffStat, searchText, createCodeService, registerCodeIpc, git, killTrackedGit, trackedGitCount,
 };

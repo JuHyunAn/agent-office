@@ -3,8 +3,9 @@ import pixelOffice from './pixel-office/theme.js';
 import plainOffice from './pixel-office/plain.js';
 import citypopOffice from './pixel-office/citypop.js';
 import customOffice from './custom/theme.js';
+import japanOffice from './japan/theme.js';
 
-export const THEMES = [pixelOffice, plainOffice, citypopOffice, customOffice];
+export const THEMES = [pixelOffice, plainOffice, citypopOffice, customOffice, japanOffice];
 
 export function getTheme(id) {
   return THEMES.find((t) => t.id === id) || THEMES[0];

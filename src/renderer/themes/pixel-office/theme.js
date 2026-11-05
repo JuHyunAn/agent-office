@@ -584,14 +584,19 @@ export default {
   },
   unmount(next) { if (next?.layout !== layout) releaseCaches(); },
   drawScene(ctx, agents, t, state = {}) {
+    const rasterScale = state.rasterScale || 1;
+    const width = Math.round(WIDTH * DETAIL * rasterScale), height = Math.round(HEIGHT * DETAIL * rasterScale);
+    if (frameCanvas.width !== width || frameCanvas.height !== height) { frameCanvas.width = width; frameCanvas.height = height; }
     const pixel = frameCanvas.getContext('2d');
-    pixel.setTransform(DETAIL, 0, 0, DETAIL, 0, 0);
+    pixel.setTransform(DETAIL * rasterScale, 0, 0, DETAIL * rasterScale, 0, 0);
+    pixel.imageSmoothingEnabled = rasterScale !== 1;
     const environment = { ...(state.environment || { night: false, condition: 'clear' }), neon: this.id === 'pixel-office-citypop' && !!state.environment?.neon,
       sunset: ['pixel-office', 'pixel-office-plain'].includes(this.id) && !state.environment?.night && !!state.environment?.sunset };
     const sunny = !environment.night && !environment.sunset && ['clear', 'unknown'].includes(environment.condition);
     const showExterior = this.exteriorVisible !== false;
-    if (!showExterior) { pixel.fillStyle = this.sceneBackground(environment); pixel.fillRect(0, 0, WIDTH, HEIGHT); }
-    const backdrop = this.windowStyle === 'simple' ? null : exterior.drawBackground(pixel, t, environment, showExterior);
+    if (state.windowBackdrop) pixel.clearRect(0, 0, WIDTH, HEIGHT);
+    else if (!showExterior) { pixel.fillStyle = this.sceneBackground(environment); pixel.fillRect(0, 0, WIDTH, HEIGHT); }
+    const backdrop = state.windowBackdrop || (this.windowStyle === 'simple' ? null : exterior.drawBackground(pixel, t, environment, showExterior));
     pixel.drawImage(sunny ? floorCache : shadedFloorCache, 0, 0, WIDTH, HEIGHT);
     atmosphere.drawWindows(pixel, t, environment, backdrop, this.windowStyle);
     const hover = layout.interactions.find(p => p.id === state.hoveredItem);
@@ -632,6 +637,6 @@ export default {
     const occupied = [];
     for (const a of agents) if (a.bubble) bubble(pixel, a, projectPoint(a.x, a.y), t, occupied);
     ctx.save(); ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(frameCanvas, 0, 0, WIDTH * 2, HEIGHT * 2); ctx.restore();
+    ctx.drawImage(frameCanvas, 0, 0, frameCanvas.width, frameCanvas.height); ctx.restore();
   },
 };

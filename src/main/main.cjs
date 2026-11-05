@@ -625,7 +625,7 @@ async function smokeCollab() {
     document.querySelector('input[name=tab-kind][value=${kind}]').click();document.querySelector('#recent button').click();return document.querySelectorAll('.tab').length;})()`);
   // codexConnected: 새 탭에서 Codex 를 고를 수 있다 (설치되어 있고 로그인까지 확인됨)
   const out = { codexConnected: await js('!!document.querySelector("input[name=tab-kind][value=codex]:not(:disabled)")') };
-  await open('collab');
+  await open('collab'); await new Promise((r) => setTimeout(r, 500)); // 폴더 확인 뒤에 탭이 생긴다
   // 모델·단계 선택지를 각 CLI 에서 받아 왔는지 — 받아 온 새 단계(Low)로 실제 대화도 해 본다.
   const sels = `document.querySelectorAll('.pane:not([hidden]) .collab .collab-agent select')`;
   out.catalogLoaded = await wait(`(()=>{const s=${sels};return s[0].options.length>4&&s[2].options.length>3;})()`, 40000);
@@ -677,7 +677,7 @@ async function smokeCollab() {
   out.headcount = await js("document.querySelector('#headcount').textContent");
   const img = await win.webContents.capturePage();
   if (!img.isEmpty()) { fs.mkdirSync(path.join(ROOT, 'output', 'design'), { recursive: true }); fs.writeFileSync(path.join(ROOT, 'output', 'design', 'collab-chat.png'), img.toPNG()); }
-  await open('codex');
+  await open('codex'); await new Promise((r) => setTimeout(r, 500));
   await new Promise((r) => setTimeout(r, 12000));
   out.codexTab = await js(`(document.querySelector('.pane:not([hidden]) .xterm-rows')?.innerText||'').replace(/\\s+/g,' ').slice(0,300)`);
   return out;

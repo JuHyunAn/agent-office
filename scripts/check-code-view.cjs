@@ -2312,6 +2312,20 @@ if (!process.versions.electron) {
       await js(`document.querySelector('#pick-folder').click()`);
       await waitFor(`document.querySelectorAll('.xterm').length > ${xterms} && !!document.querySelector('.pane:not([hidden]) .xterm .xterm-screen')`, 10000);
 
+      // 없는 폴더: 최근 폴더의 「열기」를 눌러도 탭을 만들지 않고 팝업으로 알린다. 제거하면 최근 목록에서 빠진다.
+      const goneDir = path.join(FIXBASE, 'no-such-folder');
+      const tabsBefore = await js(`document.querySelectorAll('#tabs .tab').length`);
+      await js(`localStorage.setItem('ao.recent', JSON.stringify([${JSON.stringify(goneDir)}]))`);
+      await js(`document.querySelector('#new-tab').click(); document.querySelector('#recent button').click()`);
+      await waitFor(`document.querySelector('#folderdlg').open`, 5000);
+      assert.match(await js(`document.querySelector('#folderdlg-text').textContent`), /^폴더가 없습니다/);
+      assert.equal(await js(`document.querySelector('#folderdlg-path').textContent`), goneDir);
+      assert.equal(await js(`document.querySelectorAll('#tabs .tab').length`), tabsBefore, '없는 폴더로 탭이 열림');
+      assert.equal(await js(`document.querySelector('#newtab').open`), true, '다른 폴더를 고르도록 새 탭 창은 남아야 함');
+      await js(`document.querySelector('#folderdlg-remove').click()`);
+      assert.equal(await js(`!document.querySelector('#folderdlg').open && document.querySelectorAll('#recent li').length === 0 && !localStorage.getItem('ao.recent').includes('no-such-folder')`), true, '최근 목록에서 빠지지 않음');
+      await js(`document.querySelector('#newtab').close()`);
+
       // 탭을 모두 닫아도 그 탭의 작업 폴더는 폴더 목록에 남는다 (앱을 끌 때까지 고를 수 있다).
       await js(`(window.confirm = () => true, 0)`); // 탭 닫기 확인 대화상자를 자동으로 승인
       await js(`for (const c of document.querySelectorAll('#tabs .tab .close')) c.click()`);

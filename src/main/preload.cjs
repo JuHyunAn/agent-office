@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('office', {
   status: () => ipcRenderer.invoke('app:status'),
   getWeather: () => ipcRenderer.invoke('weather:current'),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
+  codeFolderCheck: (cwd) => ipcRenderer.invoke('code:folder:check', { cwd }),
   createPty: (opts) => ipcRenderer.invoke('pty:create', opts),
   writePty: (tabId, data) => ipcRenderer.send('pty:write', { tabId, data }),
   resizePty: (tabId, cols, rows) => ipcRenderer.send('pty:resize', { tabId, cols, rows }),
