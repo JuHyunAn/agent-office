@@ -31,6 +31,7 @@ const dirOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) :
 
 // 상태 글자: 병합 충돌 → !, ?? → U, 그 밖엔 두 글자 중 공백이 아닌 첫 글자 (M 수정 · A 추가 · D 삭제 · R 이름 바뀜 · C 복사).
 const CONFLICTS = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
+const isStagedCode = (code) => !!code && code[0] !== ' ' && code[0] !== '?' && !CONFLICTS.has(code); // v1 상태 XY 의 X 가 스테이징 쪽
 const letterOf = (code) => (CONFLICTS.has(code) ? '!' : code === '??' ? 'U' : code.trim()[0] || '');
 const LETTER_TITLE = { M: '수정됨', A: '추가됨', D: '삭제됨', R: '이름이 바뀜', C: '복사됨', U: '추적하지 않는 새 파일', '!': '병합 충돌' };
 
@@ -44,6 +45,7 @@ const FILE_NOTE = {
   large: (r) => `파일이 커서(${(r.size / 1048576).toFixed(1)} MB) 표시하지 않습니다`,
   dir: () => '폴더(서브모듈)는 표시하지 않습니다',
   missing: () => '파일이 없습니다 (삭제되었거나 이름이 바뀜)',
+  unshown: () => '스테이징된 내용이 바이너리이거나 커서 표시하지 않습니다',
 };
 const EDITOR_FONT = '"Cascadia Mono", Consolas, "D2Coding", "Malgun Gothic", monospace';
 const MODEL_TITLE = { opus: 'Opus 는 Sonnet 보다 사용량이 더 듭니다', fable: 'Fable 은 Sonnet 보다 사용량이 훨씬 더 듭니다' };
@@ -142,7 +144,7 @@ export function createCodePanel({ api, host, newTerminal }) {
   // Git 패널: 조회는 pollCore 가 넘겨 주고, 쓰기가 끝나면 곧바로 다시 조회하게 한다 (refresher 는 아래에서 만든다).
   const gitPanel = createGitPanel({
     api,
-    onOpenFile: (rel) => openFile(rel),
+    onOpenFile: (rel, src) => openFile(rel, null, src),
     onChanged: () => refresher.bump(0),
     agentEdits: () => (current ? touchedBy.get(keyOf(current))?.items() ?? [] : []),
   });
@@ -215,7 +217,7 @@ export function createCodePanel({ api, host, newTerminal }) {
   }
 
   function updateToggle() {
-    const can = !!open && typeof open.base === 'string' && open.kind === 'text';
+    const can = !!open && typeof open.base === 'string' && open.kind === 'text' && !open.gone;
     toggleBtn.disabled = !can;
     toggleBtn.setAttribute('aria-pressed', String(can && diffPref));
     updateAnalyzeControls();
@@ -248,7 +250,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     analyzeBox.hidden = !can;
     const common = canStart();
     analyzeChangesBtn.disabled = !common;
-    analyzeFileBtn.disabled = !(common && open?.kind === 'text' && !open.loading);
+    analyzeFileBtn.disabled = !(common && open?.kind === 'text' && !open.loading && !open.gone);
     updateReopen(can);
   }
 
@@ -566,7 +568,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     } catch (e) {
       if (fg === folderGen && my === treeSeq) {
         treeError = errText(e);
-        gitPanel.setUnavailable(`⚠ ${treeError}`);
+        if (!treeInfo?.git) gitPanel.setUnavailable(`⚠ ${treeError}`);
         setStatus(`⚠ ${treeError}`, true);
         if (!open && !treeInfo) renderMain(); // 「불러오는 중…」에 머물지 않고 오류를 안내한다
       }
@@ -655,7 +657,7 @@ export function createCodePanel({ api, host, newTerminal }) {
 
   // ───────── 파일 열기·보기 ─────────
   function renderFileHead() {
-    pathEl.textContent = open ? open.rel : '';
+    pathEl.textContent = open ? (open.staged ? `${open.rel} (스테이징된 내용)` : open.rel) : '';
     updateToggle();
   }
 
@@ -717,7 +719,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     const top = keep ? scrollTop() : 0;
     release();
     const modified = makeModel('disk', open.rel, open.text);
-    const useDiff = typeof open.base === 'string' && diffPref;
+    const useDiff = typeof open.base === 'string' && (diffPref || open.gone);
     if (useDiff) {
       const original = makeModel('git-head', open.rel, open.base);
       revealFirst = !keep;
@@ -771,9 +773,10 @@ export function createCodePanel({ api, host, newTerminal }) {
     return typeof b?.text === 'string' ? b.text : null;
   }
 
-  // o.text 가 있는 상태에서 원본(HEAD)을 받아 보여 준다. 상태 코드가 없으면(변경 없음·삭제) 원본은 필요 없다.
+  // o.text 가 있는 상태에서 원본(HEAD)을 받아 보여 준다. 상태 코드도 없고 스테이징된 내용 보기도 아니면(변경 없음) 원본은 필요 없다.
+  // 이름이 바뀐 스테이징 항목은 옛 경로(baseRel)의 HEAD 와 비교한다.
   async function present(root, o, g, keep) {
-    o.base = o.code ? await fetchBase(root, o.rel) : null;
+    o.base = o.code || o.staged ? await fetchBase(root, o.baseRel) : null;
     if (g !== gen || open !== o) return;
     if (!monaco) {
       try { monaco = await loadMonaco(); } catch (e) {
@@ -788,8 +791,15 @@ export function createCodePanel({ api, host, newTerminal }) {
 
   // 파일을 읽어 o 에 반영하고 보여 준다 (열 때·파일이 바뀌었을 때 공통).
   async function readOpen(root, o, g, keep) {
-    const r = await api.codeRead(root, o.rel);
+    let r = await (o.staged ? api.codeIndex(root, o.rel) : api.codeRead(root, o.rel));
     if (g !== gen || open !== o) return;
+    // 삭제된 파일: HEAD 내용을 빈 글과 비교해 무엇이 지워지는지 보인다 (HEAD 에 없으면 안내만).
+    o.gone = false;
+    if (r.kind === 'missing' && (o.code || o.staged)) {
+      const b = await fetchBase(root, o.baseRel);
+      if (g !== gen || open !== o) return;
+      if (typeof b === 'string') { r = { kind: 'text', text: '', mtimeMs: null }; o.gone = true; }
+    }
     o.kind = r.kind;
     // 안내만 보이는 파일(바이너리·큰 파일·폴더)의 시각은 첫 갱신 때 기억한다 (그래야 매번 다시 읽지 않는다).
     o.mtimeMs = r.kind === 'text' ? r.mtimeMs : r.kind === 'missing' ? null : undefined;
@@ -805,14 +815,15 @@ export function createCodePanel({ api, host, newTerminal }) {
   }
 
   // jump: 분석 결과에서 온 이동 { file, line, anchor? } — 파일이 열린 뒤 그 줄로 옮긴다.
-  async function openFile(rel, jump = null) {
+  async function openFile(rel, jump = null, src = null) {
     rel = canon(rel);
     if (!current) return;
-    if (open?.rel === rel && open.kind !== 'error') { if (jump) jumpOpen(jump); return; } // 열기에 실패한 파일은 다시 누르면 다시 연다
+    const staged = !!src?.staged;
+    if (open?.rel === rel && open.kind !== 'error' && !!open.staged === staged) { if (jump) jumpOpen(jump); return; } // 열기에 실패한 파일은 다시 누르면 다시 연다
     const root = current;
     const g = ++gen;
     pendingJump = jump ? { g, item: jump } : null;
-    const o = { rel, kind: null, text: null, base: null, mtimeMs: undefined, code: status.get(rel) ?? null, loading: true };
+    const o = { rel, kind: null, text: null, base: null, mtimeMs: undefined, code: status.get(rel) ?? null, loading: true, staged, baseRel: src?.orig ? canon(src.orig) : rel, gone: false };
     open = o;
     renderFileHead();
     markCurrent();
@@ -858,33 +869,54 @@ export function createCodePanel({ api, host, newTerminal }) {
     const g = gen;
     const o = open;
     // 깃 상태(Git 패널)도 같은 주기로 함께 묻는다. 거부돼도 패널 안내로만 보이고 콘솔 오류로 새지 않는다.
-    const [r, gs] = await Promise.all([
-      api.codePoll(root, o && o.kind !== 'error' ? o.rel : null), // 열기에 실패한 파일은 시각을 묻지 않는다
+    const [polled, gs] = await Promise.all([
+      Promise.resolve().then(() => api.codePoll(root, o && o.kind !== 'error' ? o.rel : null)).then((r) => ({ r }), (error) => ({ error })), // 열기에 실패한 파일은 시각을 묻지 않는다
       Promise.resolve().then(() => api.codeGitState(root)).catch((e) => ({ ok: false, code: 'ipc', error: errText(e) })),
     ]);
     if (fg !== folderGen) return;
+    // 변경 목록을 못 받아도 패널에는 상태 조회 결과를 알린다 (폴더가 지워졌으면 비우고, 시간 초과면 안내만). 실패는 상태 줄로 넘긴다.
+    if (polled.error) { gitPanel.setState(gs); throw polled.error; }
+    const { r } = polled;
     applyStatus(r.changes);
     gitPanel.setState(gs);
     // HEAD 가 달라졌다(Pull·터미널의 git pull·checkout 등): 새로 들어온 파일·지워진 파일이 트리에 반영되게 목록을 다시 받는다 (첫 값은 비교 대상이 아니다).
     const headMoved = !!gs && gs.ok !== false && !!gs.oid && lastOid !== null && lastOid !== gs.oid;
     if (gs && gs.ok !== false && gs.oid) lastOid = gs.oid;
     setStatus(`${clock()} 갱신`);
-    if (o && o.kind !== 'error' && g === gen && open === o && !o.loading) await syncOpen(root, o, g, r.mtimeMs);
+    if (o && o.kind !== 'error' && g === gen && open === o && !o.loading) await syncOpen(root, o, g, r.mtimeMs, headMoved);
     if (fg === folderGen) renderAnalysis(); // 변경 상태·열린 파일 시각이 달라졌으면 「분석 후 코드가 바뀜」을 반영
     await reloadTreeIfNew(r.changes, fg);
     if (headMoved && fg === folderGen) await loadTree(false);
   }
 
-  async function syncOpen(root, o, g, mtimeMs) {
+  async function syncOpen(root, o, g, mtimeMs, headMoved = false) { // headMoved: HEAD 가 움직여 비교 원본이 달라졌을 수 있다 (상태 코드·내용이 같아도 다시 받는다)
+    // 스테이징된 내용 보기: 더 이상 스테이징되어 있지 않으면 작업 폴더 보기로 돌아가고, 인덱스가 바뀌었을 때만 다시 그린다.
+    if (o.staged) {
+      const code = status.get(o.rel) ?? null;
+      o.loading = true;
+      try {
+        if (!isStagedCode(code)) { o.staged = false; o.baseRel = o.rel; o.code = code; renderFileHead(); await readOpen(root, o, g, true); return; }
+        const r = await api.codeIndex(root, o.rel);
+        if (g !== gen || open !== o) return;
+        const same = !headMoved && code === o.code && (r.kind === 'text' ? !o.gone && r.text === o.text : r.kind === 'missing' ? o.gone || o.kind === 'missing' : r.kind === o.kind);
+        if (same) return;
+        o.code = code;
+        await readOpen(root, o, g, true);
+      } finally {
+        o.loading = false;
+        updateAnalyzeControls();
+      }
+      return;
+    }
     if (o.mtimeMs === undefined) { o.mtimeMs = mtimeMs; return; }
     const code = status.get(o.rel) ?? null;
     const fileChanged = mtimeMs !== o.mtimeMs;
     const codeChanged = code !== o.code;
-    if (!fileChanged && !codeChanged) return;
+    if (!fileChanged && !codeChanged && !headMoved) return;
     o.code = code;
     o.loading = true;
     try {
-      if (fileChanged) await readOpen(root, o, g, true);
+      if (fileChanged || o.gone) await readOpen(root, o, g, true); // 삭제 보기는 상태가 바뀌면 다시 판단한다 (커밋되면 안내로)
       else if (o.kind === 'text') await present(root, o, g, true);
     } finally {
       o.loading = false;

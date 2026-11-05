@@ -141,7 +141,7 @@ test('parseStatusV2: 중첩 저장소·서브모듈 경로의 끝 / 를 뗀다',
     '2 R. N... 100644 100644 100644 h1 h2 R100 new dir/', 'old dir/',
   ));
   assert.deepEqual(r.entries, [
-    { kind: 'untracked', x: '?', y: '?', path: 'nested' },
+    { kind: 'untracked', x: '?', y: '?', path: 'nested', nested: true },
     { kind: 'ordinary', x: '.', y: 'M', sub: 'S.M.', path: 'mod' },
     { kind: 'rename', x: 'R', y: '.', sub: 'N...', path: 'new dir', orig: 'old dir' },
   ]);
@@ -272,12 +272,24 @@ test('errorOf: stdout 에만 있는 문구, 시간 초과, 실행 파일 없음,
   assert.equal(errorOf({ kind: 'unsafe', message: 'u' }).code, 'unsafe');
   assert.equal(errorOf({ kind: 'nodir', message: 'n' }).code, 'nodir');
 
-  const hook = errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: `lint 실패 ${'z'.repeat(500)}` }, 'commit');
+  const hook = errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: 'lint 실패 ' + 'z'.repeat(500) }, 'commit');
   assert.equal(hook.code, 'hook');
-  assert.ok(hook.error.startsWith('커밋 전 검사(hook)가 실패했습니다:\nlint 실패'));
-  assert.equal(hook.error.length, '커밋 전 검사(hook)가 실패했습니다:\n'.length + 300);
+  assert.ok(hook.error.startsWith('커밋 전 검사(hook)가 실패했습니다:\nlint 실패'), '600자 이하는 그대로');
+  assert.equal(hook.error.length, '커밋 전 검사(hook)가 실패했습니다:\n'.length + 'lint 실패 '.length + 500);
+  const long = errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: 'a'.repeat(700) + 'END' }, 'commit');
+  assert.ok(long.error.startsWith('커밋 전 검사(hook)가 실패했습니다:\n…\n'), '600자 초과는 앞을 줄인다');
+  assert.ok(long.error.endsWith('aaaEND'), '끝 글자가 남는다');
+  assert.ok(long.error.length <= '커밋 전 검사(hook)가 실패했습니다:\n…\n'.length + 600);
+  const lines = errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: Array.from({ length: 60 }, (_, i) => 'line-' + i + ' ' + 'x'.repeat(20)).join('\n') }, 'commit');
+  assert.ok(lines.error.includes('\nline-59 '), '끝 줄이 남는다');
+  assert.ok(/:\n…\nline-[0-9]+ /.test(lines.error), '줄 경계에서 자른다');
+  assert.equal(errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: '' }, 'commit').error, '커밋 전 검사(hook)가 실패했습니다.');
+  assert.equal(errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: '\u001b[31mred\u001b[0m 실패' }, 'commit').error, '커밋 전 검사(hook)가 실패했습니다:\nred 실패', '색 코드는 지운다');
   assert.equal(errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: 'lint' }, 'push').code, 'fail', '커밋 단계가 아니면 hook 이 아니다');
-  assert.equal(errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: 'nothing to commit' }, 'commit').code, 'nothing', '앞선 문구가 우선');
+  assert.equal(errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: 'nothing to commit' }, 'commit').code, 'hook', 'hook 출력의 글자로 가르지 않는다');
+  assert.equal(errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: '', stdout: 'nothing to commit, working tree clean' }, 'commit').code, 'nothing', 'git 자신의 「변경 없음」은 stdout');
+  assert.equal(errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: 'hint: x\nAborting commit due to empty commit message.\n', stdout: '' }, 'commit').code, 'empty', 'git 자신의 「빈 메시지」는 stderr 끝 줄');
+  assert.equal(errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr: 'Aborting commit due to empty commit message.\nhook: 이어서 출력', stdout: '' }, 'commit').code, 'hook', '끝 줄이 아니면 hook');
   assert.equal(errorOf(new Error('plain')).code, 'fail');
 });
 
@@ -659,7 +671,7 @@ test('잠금: index.lock 이 있으면 재시도 뒤 lock 오류, 값으로 돌�
   const r = await ops.stage(repo, ['n.txt']);
   assert.equal(r.ok, false);
   assert.equal(r.code, 'lock');
-  assert.equal(r.error, '다른 git 작업이 저장소를 잠그고 있습니다.\n잠시 뒤 다시 시도해 주세요.');
+  assert.equal(r.error, '다른 git 작업이 저장소를 잠그고 있습니다.\n잠시 뒤 다시 시도해 주세요.\n실행 중인 git 이 없는데 계속되면 .git 폴더의 index.lock 을 확인해 주세요.');
   assert.deepEqual(sleeps, [300, 700, 1500], '재시도 3번, 간격');
   fs.rmSync(lock);
   assert.deepEqual(await ops.stage(repo, ['n.txt']), { ok: true }, '잠금이 풀리면 다시 쓸 수 있다');
@@ -934,6 +946,19 @@ function divergedRemote() {
   s.remoteCommit('r.txt', 'r\n');
   return s;
 }
+
+test('errorOf: 푸시 실패는 git 의 상태 줄·오류 줄로만 가르고, pre-push hook 은 stdout 까지 원문을 보인다', () => {
+  const f = (stderr, stdout = '') => ({ kind: 'fail', exitCode: 1, message: 'm', stderr, stdout });
+  const refs = "error: failed to push some refs to 'x'";
+  const out = errorOf(f(refs, 'tests failed: 3 errors'), 'push');
+  assert.equal(out.code, 'fail');
+  assert.match(out.error, /tests failed: 3 errors/);
+  assert.equal(errorOf(f(`hook check: src refspec feature does not match any\n${refs}`), 'push').code, 'fail', 'hook 의 src refspec 글자');
+  assert.equal(errorOf(f(refs, 'policy [rejected] by lint'), 'push').code, 'fail', 'hook stdout 의 [rejected] 글자');
+  assert.equal(errorOf(f(`error: src refspec main does not match any\n${refs}`), 'push').code, 'no-src');
+  assert.equal(errorOf(f(refs, 'To x\n!\trefs/heads/main:refs/heads/main\t[rejected] (fetch first)\nDone'), 'push').code, 'rejected');
+  assert.equal(errorOf(f(refs, 'To x\n!\trefs/heads/main:refs/heads/main\t[remote rejected] (declined)\nDone'), 'push').code, 'remote-rejected');
+});
 
 test('errorOf: lock 문구는 종료 코드 1(hook 출력 등)이면 lock 으로 보지 않는다, remote-rejected·꼬리 문구', () => {
   const hookOut = { kind: 'fail', exitCode: 1, message: 'm', stderr: 'hook: index.lock 을 검사합니다', stdout: '' };
@@ -1524,7 +1549,7 @@ test('push: SSH·http·URL 에 자격이 든 원격과 그 밖의 도우미(aws)
 
 test('push·fetch: 인증이 아닌 실패(거절·호스트 없음·시간 초과)는 재시도도 조회도 없다, 네트워크 시간 초과는 로그인 창 안내', { skip }, async () => {
   const { repo } = seedRemote();
-  const rejected = netFake({ net: { push: [throws(() => failErr("! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'https://example.invalid/r.git'", { exitCode: 1 }))] } });
+  const rejected = netFake({ net: { push: [throws(() => failErr("error: failed to push some refs to 'https://example.invalid/r.git'", { exitCode: 1, stdout: '!\trefs/heads/main:refs/heads/main\t[rejected] (fetch first)' }))] } });
   assert.equal((await makeOps(repo, { git: rejected.fake }).ops.push(repo)).code, 'rejected');
   const noHost = netFake({ net: { fetch: [throws(() => failErr('fatal: unable to access \'https://example.invalid/r.git/\': Could not resolve host: example.invalid'))] } });
   assert.equal((await makeOps(repo, { git: noHost.fake }).ops.fetch(repo)).code, 'no-remote');
@@ -1547,7 +1572,7 @@ test('pull: fetch → 다시 읽기 → pull 순서, 로그인 없이 성공하�
   const { repo } = seedRemote();
   const fk = netFake({ net: { fetch: ['ok'], pull: ['ok'] } });
   const { ops, calls } = makeOps(repo, { git: fk.fake });
-  assert.deepEqual(await ops.pull(repo), { ok: true });
+  assert.deepEqual(await ops.pull(repo), { ok: true, upToDate: true });
   const at = (cmd) => calls.findIndex((a) => a[0] === cmd);
   const readBetween = calls.slice(at('fetch') + 1, at('pull')).some((a) => a[0] === 'status');
   assert.ok(at('fetch') >= 0 && at('fetch') < at('pull'), 'fetch 가 pull 보다 먼저');
@@ -1568,7 +1593,7 @@ test('pull: fetch → 다시 읽기 → pull 순서, 로그인 없이 성공하�
 test('pull: fetch 가 재시도로 성공하면 pull 도 같은 GCM 인자로', { skip }, async () => {
   const { repo } = seedRemote();
   const fk = netFake({ net: { fetch: [throws(NO_READ), 'ok'], pull: ['ok'] } });
-  assert.deepEqual(await makeOps(repo, { git: fk.fake }).ops.pull(repo), { ok: true });
+  assert.deepEqual(await makeOps(repo, { git: fk.fake }).ops.pull(repo), { ok: true, upToDate: true });
   const pull = fk.of('pull')[0].args;
   assert.equal(hasGcm(pull), true);
   assert.deepEqual(pull.slice(GCM_ARGS.length), ['pull', '--no-rebase', '--no-edit', 'origin', 'main']);
@@ -1771,7 +1796,7 @@ test('pull 단계: 인증 실패는 도우미에 맞는 안내 (gh → gh auth l
 test('pull: 도우미가 manager 이고 fetch 가 거부되면 접두어 없이 한 번 더, pull 도 빈 접두어·전용 저장 공간 없음', { skip }, async () => {
   const { repo } = seedRemote();
   const fk = netFake({ helper: 'manager', net: { fetch: [throws(REJECT), 'ok'], pull: ['ok'] } });
-  assert.deepEqual(await makeOps(repo, { git: fk.fake }).ops.pull(repo), { ok: true });
+  assert.deepEqual(await makeOps(repo, { git: fk.fake }).ops.pull(repo), { ok: true, upToDate: true });
   assert.equal(fk.of('fetch').length, 2);
   assert.equal(startsWithCommand(fk.of('fetch')[1].args, 'fetch'), true);
   assert.equal(fk.of('fetch')[1].opts.env, NET_ENV);
@@ -2033,7 +2058,7 @@ test('sync: 가져온 뒤 푸시가 실패하면 그 사실을 밝히고, 병합
   const { bare, repo, remoteCommit } = seedRemote();
   remoteCommit('r.txt', 'r\n');
   commitFile(repo, 'l.txt', 'l\n', 'local');
-  const rejected = () => failErr("! [rejected]        main -> main (fetch first)\nerror: failed to push some refs to 'https://example.invalid/r.git'", { exitCode: 1 });
+  const rejected = () => failErr("error: failed to push some refs to 'https://example.invalid/r.git'", { exitCode: 1, stdout: '!\trefs/heads/main:refs/heads/main\t[rejected] (fetch first)' });
   const fk = netFake({ net: { fetch: ['real'], pull: ['real'], push: [throws(rejected)] } });
   const { ops, calls } = makeOps(repo, { git: fk.fake });
   const r = await ops.sync(repo);
@@ -2247,12 +2272,8 @@ test('errorOf: 커밋 단계에서는 hook 이 같은 문장을 끝 줄로 내�
   for (const line of [L_UNRELATED, L_403, L_404, L_FF]) {
     const stderr = `hook: 검사 결과\n${line}\n`;
     const r = errorOf({ kind: 'fail', exitCode: 1, message: 'm', stderr, stdout: '' }, 'commit');
-    if (line === L_403) { // 기존 RULES 의 「unable to access」가 먼저 맞아 no-remote (RULES 는 그대로) — 전용 no-access 안내만 아니면 된다
-      assert.deepEqual(r, { code: 'no-remote', error: '원격 저장소에 연결하지 못했습니다' });
-      continue;
-    }
     assert.equal(r.code, 'hook', line);
-    assert.equal(r.error, `커밋 전 검사(hook)가 실패했습니다:\n${stderr}`, `${line}: 원문 유지`);
+    assert.equal(r.error, '커밋 전 검사(hook)가 실패했습니다:\n' + stderr.trim(), line + ': 원문 유지');
   }
 });
 
@@ -2390,4 +2411,134 @@ test('안내 명령: branch.main.mergeoptions=--ff-only 로도 ff-only 가 나�
   assert.equal(git(repo, 'config', '--get', 'branch.main.mergeoptions').trim(), '--ff-only', '설정이 그대로');
   assert.deepEqual(await ops.push(repo), { ok: true });
   assert.equal(git(bare, 'rev-parse', 'main').trim(), headOf(repo));
+});
+
+// ---------- Git 패널 개선 (D-083~085) ----------
+
+test('errorOf 표: 커밋 종료 코드 1 은 hook 출력의 글자와 상관없이 hook, 종료 코드 128 은 기존 코드', () => {
+  const f = (stderr, exitCode, stdout = '') => ({ kind: 'fail', exitCode, message: 'm', stderr, stdout });
+  for (const text of ['fatal: unable to access x: Could not resolve host: x', 'CONFLICT (content): Merge conflict in f.txt', "fatal: Authentication failed for 'https://x'",
+    'error: failed to write commit object', 'error: unresolved conflict 입니다']) {
+    const r = errorOf(f(text, 1), 'commit');
+    assert.equal(r.code, 'hook', text);
+    assert.ok(r.error.includes(text), `${text}: 원문 포함`);
+  }
+  const codes128 = [
+    ["fatal: Unable to create '/r/.git/index.lock': File exists.", 'lock'],
+    ['error: gpg failed to sign the data', 'sign'],
+    ['*** Please tell me who you are.', 'no-identity'],
+    ['error: Committing is not possible because you have unmerged files.', 'unmerged'],
+  ];
+  for (const [text, code] of codes128) assert.equal(errorOf(f(text, 128), 'commit').code, code, text);
+});
+
+test('errorOf 표: 푸시 종료 코드 1 은 거절·원격 거부·로컬 main 없음 외에는 pre-push hook(fail+원문), 128 은 기존 코드, 색 코드는 지운다', () => {
+  const f = (stderr, exitCode, stdout = '') => ({ kind: 'fail', exitCode, message: 'm', stderr, stdout });
+  for (const text of ['fatal: unable to access x: Could not resolve host: x', '! [rejected]        main -> main (fetch first)']) {
+    const r = errorOf(f(text, 1), 'push');
+    assert.equal(r.code, 'fail', text);
+    assert.ok(r.error.includes(text), `${text}: 원문 포함`);
+  }
+  assert.equal(errorOf(f('error: failed to push some refs', 1, '!\trefs/heads/main:refs/heads/main\t[rejected] (fetch first)'), 'push').code, 'rejected');
+  assert.equal(errorOf(f('error: failed to push some refs', 1, '!\trefs/heads/main:refs/heads/main\t[remote rejected] (declined)'), 'push').code, 'remote-rejected');
+  assert.equal(errorOf(f('error: src refspec main does not match any', 1), 'push').code, 'no-src');
+  assert.equal(errorOf(f("fatal: Authentication failed for 'https://x'", 128), 'push').code, 'auth');
+  assert.equal(errorOf(f('fatal: unable to access x: Could not resolve host: x', 128), 'push').code, 'no-remote');
+  const colored = errorOf(f('\u001b[31mpre-push 실패\u001b[0m', 1), 'push');
+  assert.equal(colored.error, 'git 실행 실패:\npre-push 실패');
+});
+
+test('실제 git: pre-commit hook 이 「Could not resolve host」를 내도 hook, 원문 포함 · 긴 출력은 끝 줄이 남는다', { skip }, async () => {
+  const repo = mkRepo('hk-real');
+  commitFile(repo, 'a.txt', 'a\n');
+  const hook = path.join(repo, '.git', 'hooks', 'pre-commit');
+  const { ops } = makeOps(repo);
+  fs.writeFileSync(hook, '#!/bin/sh\necho "fatal: unable to access x: Could not resolve host: x" >&2\nexit 1\n');
+  fs.chmodSync(hook, 0o755);
+  put(repo, 'a.txt', 'a2\n');
+  git(repo, 'add', 'a.txt');
+  const r = await ops.commit(repo, { message: 'x', expected: ['a.txt'] });
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'hook');
+  assert.match(r.error, /Could not resolve host: x/);
+
+  fs.writeFileSync(hook, '#!/bin/sh\ni=0\nwhile [ $i -lt 60 ]; do echo "noise-line-$i xxxxxxxxxxxxxxxx" >&2; i=$((i+1)); done\necho "FINAL-CAUSE" >&2\nexit 1\n');
+  const long = await ops.commit(repo, { message: 'x', expected: ['a.txt'] });
+  assert.equal(long.code, 'hook');
+  assert.ok(long.error.startsWith('커밋 전 검사(hook)가 실패했습니다:\n…\n'));
+  assert.ok(long.error.endsWith('FINAL-CAUSE'), long.error);
+  assert.ok(!long.error.includes('noise-line-0 '), '앞부분은 줄인다');
+});
+
+test('실제 git: pre-push hook 이 「Could not resolve host」를 내면 fail, 원문 포함', { skip }, async () => {
+  const { repo } = seedRemote();
+  const hook = path.join(repo, '.git', 'hooks', 'pre-push');
+  fs.writeFileSync(hook, '#!/bin/sh\necho "fatal: unable to access x: Could not resolve host: pp" >&2\nexit 1\n');
+  fs.chmodSync(hook, 0o755);
+  commitFile(repo, 'p.txt', 'p\n', 'p');
+  const r = await makeOps(repo).ops.push(repo);
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'fail');
+  assert.match(r.error, /Could not resolve host: pp/);
+});
+
+test('중첩 저장소: stageable:false·nested:true, 다른 파일과 함께 커밋하면 다른 파일만 들어가고, 스테이징 요청은 changed', { skip }, async () => {
+  for (const [outerCommit, innerCommit] of [[true, true], [true, false], [false, true], [false, false]]) {
+    const repo = mkRepo('nest');
+    if (outerCommit) commitFile(repo, 'a.txt', 'a\n');
+    const inner = path.join(repo, 'inner');
+    fs.mkdirSync(inner);
+    git(inner, 'init', '-q', '-b', 'main');
+    git(inner, 'config', 'user.name', 't');
+    git(inner, 'config', 'user.email', 't@t');
+    put(inner, 'x.txt', 'x\n');
+    if (innerCommit) { git(inner, 'add', '-A'); git(inner, 'commit', '-q', '-m', 'in'); }
+    put(repo, 'b.txt', 'b\n');
+    const label = `outer ${outerCommit} inner ${innerCommit}`;
+    const { ops } = makeOps(repo);
+    const st = await ops.state(repo);
+    assert.deepEqual(st.changes.find((c) => c.path === 'inner'), { path: 'inner', code: 'U', stageable: false, nested: true }, label);
+    assert.deepEqual(st.changes.find((c) => c.path === 'b.txt'), { path: 'b.txt', code: 'U' }, label);
+    assert.equal((await ops.stage(repo, ['inner'])).code, 'changed', label);
+    const r = await ops.commit(repo, { message: 'b', expected: [], stage: ['b.txt'] });
+    assert.equal(r.ok, true, `${label}: ${JSON.stringify(r)}`);
+    const tree = git(repo, 'ls-tree', '-r', 'HEAD');
+    assert.ok(tree.includes('b.txt'), label);
+    assert.ok(!tree.includes('160000') && !tree.includes('inner'), `${label}: gitlink 없음`);
+  }
+});
+
+test('state: 다른 브랜치·분리된 HEAD 의 ahead/behind 는 자기 upstream 기준(없으면 null), main 은 기존과 같다', { skip }, async () => {
+  const { repo } = seedRemote();
+  const { ops } = makeOps(repo);
+  git(repo, 'checkout', '-q', '-b', 'dev');
+  commitFile(repo, 'd1.txt', 'd1\n', 'dev1');
+  git(repo, 'push', '-q', '-u', 'origin', 'dev');
+  commitFile(repo, 'd2.txt', 'd2\n', 'dev2');
+  let st = await ops.state(repo);
+  assert.deepEqual([st.branch, st.upstream, st.ahead, st.behind], ['dev', 'origin/dev', 1, 0], 'origin/main 기준(2)이 아니다');
+  git(repo, 'checkout', '-q', '-b', 'nouplink');
+  st = await ops.state(repo);
+  assert.deepEqual([st.branch, st.upstream, st.ahead, st.behind], ['nouplink', null, null, null]);
+  git(repo, 'checkout', '-q', '--detach');
+  st = await ops.state(repo);
+  assert.deepEqual([st.detached, st.ahead, st.behind], [true, null, null]);
+  git(repo, 'checkout', '-q', 'main');
+  st = await ops.state(repo);
+  assert.deepEqual([st.branch, st.upstream, st.ahead, st.behind], ['main', 'origin/main', 0, 0]);
+});
+
+test('state: git 이 시간 초과를 던지면 timeout 코드와 조회 문구', async () => {
+  const repo = mkdir('st-timeout');
+  const { ops } = makeOps(repo, { git: async () => { throw Object.assign(new Error('git 조회 시간이 초과되었습니다'), { kind: 'timeout' }); } });
+  assert.deepEqual(await ops.state(repo), { ok: false, code: 'timeout', error: 'git 상태 조회 시간이 초과되었습니다.\n잠시 뒤 다시 확인합니다.' });
+});
+
+test('pull: 받을 것이 없으면 upToDate:true, 받으면 upToDate 없음', { skip }, async () => {
+  const { repo, remoteCommit } = seedRemote();
+  const { ops } = makeOps(repo);
+  assert.deepEqual(await ops.pull(repo), { ok: true, upToDate: true });
+  remoteCommit('r.txt', 'r\n');
+  assert.deepEqual(await ops.pull(repo), { ok: true });
+  assert.deepEqual(await ops.pull(repo), { ok: true, upToDate: true });
 });

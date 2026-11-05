@@ -1746,6 +1746,68 @@ if (!process.versions.electron) {
       await gpSet('');
       await gitRefresh();
 
+      // ⑫-b 비교 화면과 커밋 보호: 스테이징된 항목은 스테이징된 내용(HEAD ↔ 인덱스), 변경 항목은 작업 폴더 내용, 삭제는 지워질 내용.
+      // 비밀 파일 이름은 확인 줄에 경고하고, 안에 별도 git 저장소가 있는 폴더는 스테이징할 수 없다. 끝에서 만든 변경을 되돌린다.
+      const cmpVal = (scheme, rel) => `(monaco.editor.getModels().find(m => m.uri.scheme === ${sel(scheme)} && m.uri.path === ${sel('/' + rel)})?.getValue() ?? null)`;
+      const cmpHas = (scheme, rel, text) => `((${cmpVal(scheme, rel)} ?? '').includes(${sel(text)}))`;
+      const stagedBtn = rel => pane(`.gp-staged .gp-file[data-path=${sel(rel)}]`);
+      const changesBtn = rel => pane(`.gp-changes .gp-file[data-path=${sel(rel)}]`);
+      const headIn = gx('show', 'HEAD:sub/in.txt');
+      putG('sub/in.txt', '스테이징한 글\n'); gx('add', 'sub/in.txt'); putG('sub/in.txt', '나중에 고친 글\n');
+      await gitRefresh();
+      await waitFor(`!!${stagedBtn('sub/in.txt')} && !!${changesBtn('sub/in.txt')}`, 10000);
+      await js(`${stagedBtn('sub/in.txt')}.click()`);
+      await waitFor(`${pane('.code-path')}.textContent === 'sub/in.txt (스테이징된 내용)' && ${cmpHas('disk', 'sub/in.txt', '스테이징한 글')}`, 20000);
+      assert.equal(await js(cmpHas('disk', 'sub/in.txt', '나중에 고친 글')), false, '스테이징된 내용 보기에 작업 폴더의 나중 글이 보임');
+      assert.equal(await js(cmpHas('git-head', 'sub/in.txt', headIn.trim())), true, '비교 원본이 HEAD 내용이 아님');
+      await js(`${changesBtn('sub/in.txt')}.click()`);
+      await waitFor(`${pane('.code-path')}.textContent === 'sub/in.txt' && ${cmpHas('disk', 'sub/in.txt', '나중에 고친 글')}`, 20000);
+      assert.equal(await js(cmpHas('disk', 'sub/in.txt', '스테이징한 글')), false, '변경 항목이 스테이징된 내용을 보임');
+      // 스테이징을 해제하면 스테이징된 내용 보기가 작업 폴더 보기로 돌아간다.
+      await js(`${stagedBtn('sub/in.txt')}.click()`);
+      await waitFor(`${pane('.code-path')}.textContent === 'sub/in.txt (스테이징된 내용)' && ${cmpHas('disk', 'sub/in.txt', '스테이징한 글')}`, 20000);
+      gx('restore', '--staged', 'sub/in.txt');
+      await gitRefresh();
+      await waitFor(`${pane('.code-path')}.textContent === 'sub/in.txt' && ${cmpHas('disk', 'sub/in.txt', '나중에 고친 글')}`, 20000);
+      // 삭제(git rm 으로 스테이징): 지워진 내용을 빈 글과 비교해 보인다.
+      putG('sub/in.txt', headIn); gx('rm', '-q', '-f', 'sub/in.txt');
+      await gitRefresh();
+      await waitFor(`!!${stagedBtn('sub/in.txt')}`, 10000);
+      await js(`${stagedBtn('sub/in.txt')}.click()`);
+      await waitFor(`${pane('.code-path')}.textContent === 'sub/in.txt (스테이징된 내용)' && ${cmpHas('git-head', 'sub/in.txt', headIn.trim())} && ${cmpVal('disk', 'sub/in.txt')} === ''`, 20000);
+      gx('reset', '-q', 'HEAD', '--', 'sub/in.txt'); putG('sub/in.txt', headIn);
+      await gitRefresh();
+      await waitFor(`${pane('.code-path')}.textContent === 'sub/in.txt'`, 20000);
+      // 비밀 파일 이름: 스테이징된 .env 로 Commit & Push 를 누르면 확인 줄에 경고하고, 취소하면 커밋하지 않는다.
+      putG('.env', 'TOKEN=1\n');
+      await gitRefresh();
+      await waitFor(`!!${gpAct('stage', '.env')}`, 10000);
+      await js(`${gpAct('stage', '.env')}.click()`);
+      await waitFor(`!!${stagedBtn('.env')}`, 10000);
+      await gpSet('비밀 시험');
+      const headSecret = headOf();
+      await js(`${pane('.gp-commit-push')}.click()`);
+      await waitFor(`!${pane('.gp-confirm')}.hidden`, 5000);
+      assert.ok((await gpConfirmText()).includes('비밀 파일일 수 있습니다: .env'), `비밀 파일 경고가 없음: ${await gpConfirmText()}`);
+      await js(`${pane('.gp-confirm-no')}.click()`);
+      await waitFor(`${pane('.gp-confirm')}.hidden`, 5000);
+      await pause(300);
+      assert.equal(headOf(), headSecret, '취소했는데 커밋됨');
+      await js(`${gpAct('unstage', '.env')}.click()`);
+      await waitFor(`!${stagedBtn('.env')}`, 10000);
+      fs.rmSync(path.join(GITFX, '.env'));
+      await gpSet('');
+      // 커밋 없는 중첩 저장소 폴더는 + 가 없고 안내가 title 에 붙는다.
+      const NEST = path.join(GITFX, 'nest-empty');
+      fs.mkdirSync(NEST); gitAt(NEST, 'init', '-q', '-b', 'main'); putG('f.txt', 'f\n', NEST);
+      await gitRefresh();
+      await waitFor(`!!${changesBtn('nest-empty')}`, 10000);
+      assert.equal(await js(`!${gpAct('stage', 'nest-empty')}`), true, '중첩 저장소 폴더에 + 가 있음');
+      assert.match(await js(`${changesBtn('nest-empty')}.title`), /별도 git 저장소/);
+      fs.rmSync(NEST, { recursive: true, force: true });
+      await gitRefresh();
+      await waitFor(`!${changesBtn('nest-empty')}`, 10000);
+
       // ⑬ 높이 조절: 위쪽 경계를 끌어 높이고 낮추며, 위 목록 최소 높이·패널 머리줄은 남기고, 두 번 클릭하면 기본 높이. 저장 키는 ao.gitPanelHeight.
       const gpBox = () => js(`(() => { const h = s => Math.round(document.querySelector('#code-pane ' + s).getBoundingClientRect().height);
         return { panel: h('.git-panel'), top: h('.code-side-top'), head: h('.gp-head'), saved: localStorage.getItem('ao.gitPanelHeight') }; })()`);

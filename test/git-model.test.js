@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toLocal, expectedPaths, stageablePaths, capList, recentEditSet, gitFingerprint, aheadBehindText, reasonText, refChips, logTime, logKey, loginHint, canSyncOnly } from '../src/renderer/code/gitModel.js';
+import { toLocal, expectedPaths, stageablePaths, capList, recentEditSet, secretPaths, secretWarning, gitFingerprint, aheadBehindText, reasonText, refChips, logTime, logKey, loginHint, canSyncOnly } from '../src/renderer/code/gitModel.js';
 
 test('toLocal: 열린 폴더(prefix) 기준 경로로 바꾸고, 폴더 밖이나 폴더 자신은 null', () => {
   assert.equal(toLocal('src/a.js', ''), 'src/a.js', 'prefix 가 비면 저장소 루트가 열린 폴더');
@@ -152,4 +152,22 @@ test('canSyncOnly: 커밋이 불가능하고 주고받을 커밋이 있을 때�
   assert.equal(canSyncOnly({ ...gs, hasRemote: false }, ''), false);
   assert.equal(canSyncOnly(null, ''), false);
   assert.equal(canSyncOnly(undefined, ''), false);
+});
+
+test('secretPaths: 비밀 파일 이름만 (이름 변경 전 이름 포함), 일반 파일·잘못된 입력은 제외', () => {
+  assert.deepEqual(secretPaths([{ path: 'a.js' }, { path: 'cfg/.env' }, { path: 'k/server.PEM' }]), ['cfg/.env', 'k/server.PEM']);
+  assert.deepEqual(secretPaths([{ path: 'new.txt', orig: 'old/id_rsa' }, { path: 'x.txt', orig: 'y.txt' }]), ['new.txt'], '옛 이름이 비밀 파일이면 새 경로를 알린다');
+  assert.deepEqual(secretPaths([{ path: 'src/env.js' }, { path: 'keyboard.js' }, { path: 'dir.key/a.js' }]), [], '이름이 닮은 일반 파일');
+  assert.deepEqual(secretPaths(null), []);
+  assert.deepEqual(secretPaths(undefined), []);
+  assert.deepEqual(secretPaths([]), []);
+});
+
+test('secretWarning: 3개까지 나열하고 넘으면 「외 N개」, 빈 목록은 빈 글', () => {
+  assert.equal(secretWarning([]), '');
+  assert.equal(secretWarning(['.env']), '비밀 파일일 수 있습니다: .env');
+  assert.equal(secretWarning(['a', 'b', 'c']), '비밀 파일일 수 있습니다: a, b, c');
+  assert.equal(secretWarning(['a', 'b', 'c', 'd']), '비밀 파일일 수 있습니다: a, b, c 외 1개');
+  assert.equal(secretWarning(['a', 'b', 'c', 'd', 'e', 'f']), '비밀 파일일 수 있습니다: a, b, c 외 3개');
+  assert.equal(secretWarning(['a', 'b', 'c', 'd'], 2), '비밀 파일일 수 있습니다: a, b 외 2개');
 });

@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('office', {
   codePoll: (root, rel) => ipcRenderer.invoke('code:poll', { root, rel }),
   codeRead: (root, rel) => ipcRenderer.invoke('code:read', { root, rel }),
   codeBase: (root, rel) => ipcRenderer.invoke('code:base', { root, rel }),
+  codeIndex: (root, rel) => ipcRenderer.invoke('code:index', { root, rel }),
   codeSearch: (root, term) => ipcRenderer.invoke('code:search', { root, term }),
   codeAnalyze: (req) => ipcRenderer.invoke('code:analyze', req),
   codeAnalyzeStop: (root) => ipcRenderer.invoke('code:analyze:stop', { root }),

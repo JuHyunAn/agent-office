@@ -2,7 +2,7 @@
 // 상태 조회는 하지 않는다 — panel.js 의 10초 갱신(pollCore)이 setState 로 넘겨 준다. 쓰기가 끝나면 onChanged 로 바로 다시 조회하게 한다.
 // 예외는 그래프(읽기 전용 커밋 목록)뿐이다: 펼쳐져 있고 커밋 위치·원격이 바뀌었을 때만 code:git:log 를 직접 부른다.
 // 고정 노드는 만들 때 한 번만 만들고 textarea 는 다시 만들지 않는다. 결과·경로·메시지는 모두 textContent 로만 표시한다.
-import { toLocal, expectedPaths, stageablePaths, capList, recentEditSet, gitFingerprint, aheadBehindText, reasonText, refChips, logTime, logKey, loginHint, canSyncOnly } from './gitModel.js';
+import { toLocal, expectedPaths, stageablePaths, capList, recentEditSet, secretPaths, secretWarning, gitFingerprint, aheadBehindText, reasonText, refChips, logTime, logKey, loginHint, canSyncOnly } from './gitModel.js';
 
 function node(tag, props = {}, ...children) {
   const n = document.createElement(tag);
@@ -41,6 +41,7 @@ const letterOf = (code) => (code === 'T' ? 'M' : code); // 파일 종류만 바�
 const AGENT_TITLE = '에이전트가 방금 수정 (앱에서 연 AI 기준)';
 const OUTSIDE_TITLE = '열린 폴더 밖 파일 — 스테이징만 할 수 있습니다';
 const SUBMODULE_TITLE = '서브모듈 안에서 커밋해 주세요.';
+const NESTED_TITLE = '안에 별도 git 저장소가 있는 폴더입니다.\n서브모듈로 추가하거나 .gitignore 에 넣어 주세요.';
 const NO_REMOTE_TITLE = 'origin 원격이 없습니다';
 const NOTHING_TO_PUSH_TITLE = '올릴 커밋이 없습니다';
 const SYNC_ONLY_TITLE = '커밋할 것이 없어 Pull 후 Push 합니다';
@@ -70,6 +71,8 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   let dismissed = ''; // 닫기(×)로 숨긴 안내 글
   let refocus = null; // + − 를 누른 자리: 항목이 다른 목록으로 가면 다음 줄(또는 전체 단추)로 초점을 잇는다 (초점이 그 단추나 body 일 때만)
   let fp = ''; // 마지막으로 그린 목록의 지문
+  let listFp = ''; // 에이전트 표시를 뺀 목록의 지문
+  let staleNote = ''; // 조회 시간 초과 안내 (마지막 목록은 그대로 둔다)
   let visible = false;
   let busyTimer = null;
   let graphOpen = false; // 그래프 펼침 (펼치면 localStorage 에 저장)
@@ -183,6 +186,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     let err = false;
     if (flash) { text = flash.text; err = flash.err; }
     else if (unavailable) text = unavailable;
+    else if (staleNote) text = staleNote;
     else if (gs && !gs.canWrite) text = reasonText(gs) || '';
     const shown = text && text !== dismissed ? text : '';
     noteTextEl.textContent = shown;
@@ -271,7 +275,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     genPath.setAttribute('d', generating ? STOP_D : SPARKLE_D);
     genBtn.title = genLabel;
     genBtn.setAttribute('aria-label', genLabel);
-    genBtn.disabled = !generating && !(!!gs && !unavailable && gs.staged.length + gs.changes.length > 0 && typeof api.codeGitMessage === 'function');
+    genBtn.disabled = !generating && !(!!gs && !unavailable && (gs.staged.length > 0 || hasStageable()) && typeof api.codeGitMessage === 'function');
     syncBusy();
   }
 
@@ -300,7 +304,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     const fileBtn = node('button', {
       class: 'gp-file', type: 'button', 'data-path': item.path, 'data-key': `${section}|${item.path}|file`,
       title: local == null ? `${title}\n${OUTSIDE_TITLE}` : title, disabled: local == null,
-      onclick: () => { if (local != null) onOpenFile(local); },
+      onclick: () => { if (local != null) onOpenFile(local, { staged: section === 'staged', orig: item.orig ? toLocal(item.orig, gs.prefix) : null }); },
     },
     node('span', { class: 'code-badge', 'data-code': letter, title: LETTER_TITLE[letter] || '', 'aria-label': LETTER_TITLE[letter] || letter }, letter),
     node('span', { class: 'gp-name' }, baseOf(item.path)),
@@ -308,7 +312,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     dirOf(item.path) ? node('span', { class: 'gp-dir' }, dirOf(item.path)) : null);
     const li = node('li', {}, fileBtn);
     if (act === 'stage' && item.stageable === false) {
-      fileBtn.title = `${fileBtn.title}\n${SUBMODULE_TITLE}`;
+      fileBtn.title = `${fileBtn.title}\n${item.nested ? NESTED_TITLE : SUBMODULE_TITLE}`;
     } else if (act) {
       const stage = act === 'stage';
       li.append(node('button', {
@@ -400,7 +404,8 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     else if (kind === 'syncOnly') {
       text = r.pushed === false ? OK_TEXT.pull : OK_TEXT.syncOnly; // 받을 것만 있었으면 푸시하지 않았다
       if (r.left > 0) text += `\n변경 ${r.left}개는 커밋하지 않고 그대로 뒀습니다.`;
-    } else if (OK_TEXT[kind]) text = OK_TEXT[kind];
+    } else if (kind === 'pull' && r.upToDate) text = '이미 최신 상태입니다';
+    else if (OK_TEXT[kind]) text = OK_TEXT[kind];
     if (here) setFlash(text, err, err ? 0 : OK_NOTE_MS);
     else d.last = text ? { text, err } : null;
     // 커밋·Fetch·Pull·Push 로 커밋 그래프가 바뀌었을 수 있다 (다른 브랜치만 가져와 logKey 가 그대로여도 다시 받는다)
@@ -474,9 +479,11 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     const targets = stageAll ? gs.changes.filter((c) => c.stageable !== false) : gs.staged;
     marks = recentEditSet(agentEdits(), gs.prefix, Date.now());
     const agent = targets.some((t) => marks.has(t.path.toLowerCase()) || (!!t.orig && marks.has(t.orig.toLowerCase())));
-    if (!stageAll && !agent) { runCommit(then); return; }
+    const secret = secretPaths(targets);
+    if (!stageAll && !agent && !secret.length) { runCommit(then); return; }
     const act = COMMIT_TEXT[then || 'commit'];
     const parts = [];
+    if (secret.length) parts.push(secretWarning(secret));
     if (agent) parts.push('에이전트가 방금 파일을 수정했습니다');
     parts.push(stageAll ? `변경 ${targets.length}개를 모두 스테이징하고 ${act}할까요?` : `${act}할까요?`);
     confirmThen = { then, stageAll };
@@ -616,6 +623,8 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   function clearLists() {
     gs = null;
     fp = '';
+    listFp = '';
+    staleNote = '';
     marks = new Set();
     renderLists();
     renderHead();
@@ -659,21 +668,28 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     },
     // 조회 결과 (ok:false 도 받는다). 지문이 같으면 목록은 그대로 두고 단추 상태만 갱신한다.
     setState(next) {
+      // 잠깐 느린 것: 마지막 목록·확인 줄을 그대로 두고 안내만 한다 (쓰기는 메인이 다시 검사한다). 그 밖의 실패는 쓸 수 없는 상태로.
+      if (next && next.ok === false && next.code === 'timeout' && gs) { staleNote = next.error; renderNote(); return; }
+      staleNote = '';
       if (!next || next.ok === false) { setUnavailable((next && next.error) || '깃 상태를 읽지 못했습니다'); return; }
       const prev = gs;
       unavailable = '';
       gs = next;
       // 쓸 수 있는지·이유가 바뀌면 지난 성공 안내는 지운다 (오류 안내는 남긴다)
       if (prev && (prev.canWrite !== next.canWrite || prev.reason !== next.reason) && flash && !flash.err) { clearTimeout(flashTimer); flash = null; }
+      const prevMarks = marks;
       marks = recentEditSet(agentEdits(), next.prefix, Date.now());
       const now = gitFingerprint(next, marks);
+      const list = gitFingerprint(next);
       if (now !== fp) {
+        const contentChanged = list !== listFp || [...marks].some((m) => !prevMarks.has(m));
         fp = now;
         renderLists();
         renderHead();
         // 확인 줄이 열려 있는 동안 목록이 바뀌었으면 닫는다: 확인 줄이 가리킨 변경과 실제 커밋 대상이 어긋나지 않게
-        if (confirmThen) { closeConfirm(); setFlash(STALE_TEXT); }
+        if (confirmThen && contentChanged) { closeConfirm(); setFlash(STALE_TEXT); }
       }
+      listFp = list;
       renderNote();
       updateControls();
       refreshGraph();

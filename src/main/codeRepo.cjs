@@ -291,6 +291,21 @@ async function headText(root, rel, maxBytes = MAX_READ) {
   }
 }
 
+// 스테이징된 내용(인덱스). { kind:'text', text } · 인덱스에 없으면 { kind:'missing' } · 바이너리·상한 초과는 { kind:'unshown' }. 시간 초과 등은 던진다.
+async function indexFile(root, rel, maxBytes = MAX_READ) {
+  const gitRel = toGitPath(path.relative(root, resolveInside(root, rel)));
+  let buf;
+  try {
+    buf = await git(root, ['cat-file', 'blob', ':./' + gitRel], { buffer: true, maxBuffer: maxBytes + 1 });
+  } catch (e) {
+    if (e.kind === 'fail' && e.exitCode === 128) return { kind: 'missing' };
+    if (e.kind === 'fail' && /너무 큽니다/.test(e.message)) return { kind: 'unshown' };
+    throw e;
+  }
+  if (buf.length > maxBytes || isBinary(buf)) return { kind: 'unshown' };
+  return { kind: 'text', text: decode(buf) };
+}
+
 // ---------- 변경 내용·검색 ----------
 
 const SEARCH_TERM_MAX = 200;
@@ -396,6 +411,10 @@ function createCodeService({ roots }) {
       await repo(root);
       return { text: await headText(root, rel) };
     },
+    async index(root, rel) {
+      await repo(root);
+      return indexFile(root, rel);
+    },
     async search(root, term) {
       await repo(root);
       return searchText(root, term);
@@ -426,6 +445,7 @@ function registerCodeIpc(handleMain, { roots, service, pickFolder, checkFolder, 
   handleMain('code:poll', async (v) => service.poll(req(v).root, v.rel ?? null));
   handleMain('code:read', async (v) => service.read(req(v).root, v.rel));
   handleMain('code:base', async (v) => service.base(req(v).root, v.rel));
+  handleMain('code:index', async (v) => service.index(req(v).root, v.rel));
   handleMain('code:search', async (v) => service.search(req(v).root, v.term));
   // Git 패널: 렌더러는 폴더·경로·메시지만 보내고 git 인자는 codeGit 이 고정한다. 결과는 던지지 않고 { ok, ... } 로 돌려준다.
   handleMain('code:git:state', async (v) => gitOps.state(req(v).root));
@@ -441,5 +461,5 @@ function registerCodeIpc(handleMain, { roots, service, pickFolder, checkFolder, 
 
 module.exports = {
   resolveInside, toGitPath, rootKey, createCodeRoots, repoInfo, listFiles, statusOf,
-  readText, statMtime, headText, hasHead, diffText, diffStat, searchText, createCodeService, registerCodeIpc, git, killTrackedGit, trackedGitCount,
+  readText, statMtime, headText, indexFile, hasHead, diffText, diffStat, searchText, createCodeService, registerCodeIpc, git, killTrackedGit, trackedGitCount,
 };

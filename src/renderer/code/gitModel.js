@@ -1,6 +1,8 @@
 // Git 패널의 순수 로직: 경로 변환·스테이징 대상·에이전트 수정 표시·지문·안내 글·그래프 줄 표시.
 // 화면(DOM)·IPC 와 무관해서 화면 없이 테스트할 수 있다. 경로는 모두 저장소 루트 기준(「/」 구분)이다.
 
+import { isSecretPath } from '../../shared/secretPath.js';
+
 // 저장소 기준 경로 → 열린 폴더 기준 경로. 열린 폴더(prefix, 예: 'sub/') 밖이거나 폴더 자신이면 null.
 // prefix 비교만 대소문자를 무시하고 결과는 원래 표기를 그대로 둔다.
 export function toLocal(p, prefix) {
@@ -19,6 +21,16 @@ export function expectedPaths(staged) {
 // 스테이징할 수 있는 변경의 경로 (서브모듈 내용만 더러운 항목은 뺀다). 이름 변경이면 옛 경로도 함께.
 export function stageablePaths(changes) {
   return (Array.isArray(changes) ? changes : []).filter((c) => c.stageable !== false).flatMap((c) => (c.orig ? [c.path, c.orig] : [c.path]));
+}
+
+// 커밋 대상 중 비밀 파일 이름인 것 (이름 변경 전 이름 포함). 이름 기준이라 경고일 뿐 막지는 않는다.
+export function secretPaths(targets) {
+  return (Array.isArray(targets) ? targets : []).filter((t) => isSecretPath(t.path) || (!!t.orig && isSecretPath(t.orig))).map((t) => t.path);
+}
+export function secretWarning(paths, max = 3) {
+  if (!paths.length) return '';
+  const more = paths.length - max;
+  return `비밀 파일일 수 있습니다: ${paths.slice(0, max).join(', ')}${more > 0 ? ` 외 ${more}개` : ''}`;
 }
 
 // 목록이 길 때 max 줄까지만 보이고 나머지 개수를 알려 준다 (원본 배열은 건드리지 않는다).

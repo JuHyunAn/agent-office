@@ -10,6 +10,7 @@ const { spawn: nodeSpawn } = require('node:child_process');
 const codeRepo = require('./codeRepo.cjs');
 const { STATUS_ARGS, parseStatusV2, statusLists } = require('./codeGit.cjs');
 const { spawnCli, lineReader, killTree } = require('./collabAgents.cjs');
+const { isSecretPath } = require('../shared/secretPath.js');
 
 const MODELS = ['sonnet', 'opus', 'fable'];
 const EFFORT = 'high'; // 렌더러가 바꿀 수 없는 상수
@@ -71,17 +72,6 @@ const DENY_SETTINGS = {
   disableAllHooks: true,
   permissions: { deny: ['Read(**/.env)', 'Read(**/.env.*)', 'Read(**/*.pem)', 'Read(**/*.key)', 'Read(**/id_rsa*)', 'Read(**/.git/**)'] },
 };
-
-// 비밀이 담기기 쉬운 경로 (DENY_SETTINGS 의 Read 거부와 같은 범위): .env, .env.*, *.pem, *.key, id_rsa*, .git/ 아래.
-// 어느 깊이에서든 대소문자 무시. 이 경로의 내용은 프롬프트에 싣지 않는다.
-const SECRET_FILE = /^(\.env(\..*)?|.*\.pem|.*\.key|id_rsa.*)$/i;
-
-function isSecretPath(rel) {
-  if (typeof rel !== 'string' || !rel) return false;
-  const pieces = rel.replace(/\\/g, '/').split('/');
-  if (pieces.some((d) => d.toLowerCase() === '.git')) return true;
-  return SECRET_FILE.test(pieces[pieces.length - 1]);
-}
 
 // --setting-sources 는 쓰지 않는다: 분석 대상의 .claude/settings.local.json 이 제한을 풀어 바깥 파일이 읽혔다 (실측).
 function analysisArgs({ model, settingsPath }) {
@@ -585,7 +575,7 @@ function createCodeAnalyzer({
     const { staged, changes } = statusLists(parseStatusV2(await codeRepo.git(root, STATUS_ARGS, { buffer: true })).entries);
     if (cancelled()) return STOPPED();
     const useStaged = staged.length > 0;
-    const targets = useStaged ? staged : changes;
+    const targets = useStaged ? staged : changes.filter((c) => c.stageable !== false); // 커밋에 들어갈 수 없는 항목(중첩 저장소 등)은 뺀다
     if (!targets.length) return fail(ERR.msgNoChanges);
 
     const head = await codeRepo.hasHead(root);

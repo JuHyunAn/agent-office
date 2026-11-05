@@ -17,7 +17,7 @@ process.env.GIT_CONFIG_NOSYSTEM = '1';
 const require = createRequire(import.meta.url);
 const {
   resolveInside, toGitPath, createCodeRoots, repoInfo, listFiles, statusOf,
-  readText, statMtime, headText, createCodeService, registerCodeIpc, git: gitRun,
+  readText, statMtime, headText, indexFile, createCodeService, registerCodeIpc, git: gitRun,
   rootKey, diffText, diffStat, searchText, hasHead, killTrackedGit, trackedGitCount,
 } = require('../src/main/codeRepo.cjs');
 
@@ -220,6 +220,30 @@ test('headText: 커밋 당시 내용, 새 파일·큰 파일은 null', { skip },
   await assert.rejects(headText(fx.sub, '../top.js'), DENIED);
 });
 
+test('indexFile: 스테이징된 내용(하위 폴더·한글·공백), 인덱스에 없으면 missing, 바이너리·상한 초과는 unshown, .git 거부', { skip }, async () => {
+  const repo = initRepo('index');
+  put(repo, '한글 폴더/파일 1.txt', 'v1\n');
+  put(repo, 'gone.txt', 'gone\n');
+  put(repo, 'bin.dat', Buffer.from([1, 2, 0, 3]));
+  git(repo, 'add', '-A');
+  git(repo, 'commit', '-q', '-m', 'init');
+  put(repo, '한글 폴더/파일 1.txt', 'v2 staged\n');
+  git(repo, 'add', '한글 폴더/파일 1.txt');
+  put(repo, '한글 폴더/파일 1.txt', 'v3 working\n');
+  git(repo, 'rm', '-q', 'gone.txt');
+  put(repo, 'untracked.txt', 'u\n');
+  const sub = path.join(repo, '한글 폴더');
+  assert.deepEqual(await indexFile(repo, '한글 폴더/파일 1.txt'), { kind: 'text', text: 'v2 staged\n' }, '작업 폴더가 아니라 인덱스');
+  assert.deepEqual(await indexFile(sub, '파일 1.txt'), { kind: 'text', text: 'v2 staged\n' }, '하위 폴더 기준 경로');
+  assert.deepEqual(await indexFile(repo, 'gone.txt'), { kind: 'missing' }, '삭제가 스테이징됨');
+  assert.deepEqual(await indexFile(repo, 'untracked.txt'), { kind: 'missing' }, '인덱스에 없음');
+  assert.deepEqual(await indexFile(repo, 'nope/none.txt'), { kind: 'missing' });
+  assert.deepEqual(await indexFile(repo, 'bin.dat'), { kind: 'unshown' }, '바이너리');
+  assert.deepEqual(await indexFile(repo, '한글 폴더/파일 1.txt', 3), { kind: 'unshown' }, '상한 초과');
+  await assert.rejects(indexFile(repo, '.git/config'), DENIED);
+  await assert.rejects(indexFile(sub, '../gone.txt'), DENIED);
+});
+
 test('headText: 범위 문법(a..b)·폴더 경로는 파일이 아니므로 null', { skip }, async () => {
   assert.equal(await headText(fx.sub, 'a.js..HEAD'), null, '범위처럼 보이는 이름');
   assert.equal(await headText(fx.sub, '한글 파일.js..HEAD'), null);
@@ -285,7 +309,7 @@ test('createCodeService: 나중에 git init 한 폴더는 트리를 다시 받�
   assert.equal((await service.read(late, 'a.txt')).kind, 'text');
 });
 
-test('registerCodeIpc: 16개 채널, 잘못된 요청 거부, 폴더 등록·선택', { skip }, async () => {
+test('registerCodeIpc: 17개 채널, 잘못된 요청 거부, 폴더 등록·선택', { skip }, async () => {
   const handlers = new Map();
   const handleMain = (ch, fn) => handlers.set(ch, fn);
   const roots = createCodeRoots();
@@ -299,17 +323,20 @@ test('registerCodeIpc: 16개 채널, 잘못된 요청 거부, 폴더 등록·선
 
   assert.deepEqual([...handlers.keys()].sort(), [
     'code:allow', 'code:base', 'code:git:commit', 'code:git:fetch', 'code:git:log', 'code:git:pull', 'code:git:push', 'code:git:stage',
-    'code:git:state', 'code:git:sync', 'code:git:unstage', 'code:pick', 'code:poll', 'code:read', 'code:search', 'code:tree',
+    'code:git:state', 'code:git:sync', 'code:git:unstage', 'code:index', 'code:pick', 'code:poll', 'code:read', 'code:search', 'code:tree',
   ]);
 
   await assert.rejects(call('code:tree', { root: fx.sub }), { message: '허용되지 않는 폴더입니다' }, '등록 전');
+  await assert.rejects(call('code:index', { root: fx.sub, rel: 'inner/y.js' }), { message: '허용되지 않는 폴더입니다' }, '등록 전 code:index');
   assert.equal(await call('code:allow', { cwd: fx.sub }), true);
   const tree = await call('code:tree', { root: fx.sub });
   assert.equal(tree.git, true);
   assert.equal((await call('code:poll', { root: fx.sub, rel: '한글 파일.js' })).changes.length, 3);
   assert.equal((await call('code:read', { root: fx.sub, rel: '한글 파일.js' })).kind, 'text');
   assert.deepEqual(await call('code:base', { root: fx.sub, rel: '한글 파일.js' }), { text: 'export const a = 1;\n' });
+  assert.deepEqual(await call('code:index', { root: fx.sub, rel: 'inner/y.js' }), { kind: 'text', text: 'export const x = 1;\n' });
   await assert.rejects(call('code:read', { root: fx.sub, rel: '.git/config' }), DENIED);
+  await assert.rejects(call('code:index', { root: fx.sub, rel: '.git/config' }), DENIED);
   const found = await call('code:search', { root: fx.sub, term: 'const a' });
   assert.deepEqual(found, { matches: [{ path: '한글 파일.js', line: 1, text: 'export const a = 2;' }], truncated: false });
   await assert.rejects(call('code:search', { root: fx.sub, term: '' }), { message: '잘못된 검색어입니다' });
@@ -317,7 +344,7 @@ test('registerCodeIpc: 16개 채널, 잘못된 요청 거부, 폴더 등록·선
   await assert.rejects(call('code:allow', { cwd: path.join(base, 'nope') }), { message: /^폴더가 없습니다/ });
   assert.equal(roots.has(path.join(base, 'nope')), false, '검사에 실패하면 등록하지 않는다');
 
-  for (const ch of ['code:tree', 'code:poll', 'code:read', 'code:base', 'code:search',
+  for (const ch of ['code:tree', 'code:poll', 'code:read', 'code:base', 'code:index', 'code:search',
     'code:git:state', 'code:git:stage', 'code:git:unstage', 'code:git:commit', 'code:git:fetch', 'code:git:pull', 'code:git:push', 'code:git:sync', 'code:git:log']) {
     for (const bad of ['문자열', null, undefined, 5, {}, { root: 5 }, []]) {
       await assert.rejects(call(ch, bad), { message: '잘못된 요청입니다' }, `${ch} ${JSON.stringify(bad)}`);

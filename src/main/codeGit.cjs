@@ -88,7 +88,8 @@ function parseStatusV2(text) {
       const p = afterFields(tok, 10);
       if (p) out.entries.push({ kind: 'unmerged', x: xy[0], y: xy[1], sub: subOf(tok), path: noSlash(p) });
     } else if (tok[0] === '?' && tok[1] === ' ') {
-      out.entries.push({ kind: 'untracked', x: '?', y: '?', path: noSlash(tok.slice(2)) });
+      const raw = tok.slice(2);
+      out.entries.push({ kind: 'untracked', x: '?', y: '?', path: noSlash(raw), ...(raw.endsWith('/') ? { nested: true } : {}) });
     }
     // '! ' (무시된 파일)과 알 수 없는 토큰은 건너뛴다
   }
@@ -105,7 +106,8 @@ function statusLists(entries) {
   const item = (e, code) => (/[RC]/.test(code) && e.orig ? { path: e.path, orig: e.orig, code } : { path: e.path, code });
   for (const e of entries) {
     if (e.kind === 'unmerged') conflicts.push({ path: e.path });
-    else if (e.kind === 'untracked') changes.push({ path: e.path, code: 'U' });
+    // 중첩 저장소(끝 /)는 스테이징하면 내용 없이 gitlink 만 올라가거나, 커밋 없는 저장소면 git add 전체가 실패한다 (실측).
+    else if (e.kind === 'untracked') changes.push(e.nested ? { path: e.path, code: 'U', stageable: false, nested: true } : { path: e.path, code: 'U' });
     else {
       if (e.x !== '.') staged.push(item(e, e.x));
       if (e.y !== '.') {
@@ -154,7 +156,7 @@ function parseLog(text) {
 // 위에서부터 먼저 맞는 것. 판정 글은 stderr·stdout·message 를 모두 본다 (nothing to commit·[rejected] 는 stdout 에 나온다).
 // error 가 함수면 (stderr, 오류) 를 받아 문구를 만든다. no-src 는 같은 출력에 섞이는 failed to push some refs 보다 먼저 가른다.
 const RULES = [
-  [/index\.lock|Another git process seems to be running|\.lock': File exists/, 'lock', '다른 git 작업이 저장소를 잠그고 있습니다.\n잠시 뒤 다시 시도해 주세요.'],
+  [/index\.lock|Another git process seems to be running|\.lock': File exists/, 'lock', '다른 git 작업이 저장소를 잠그고 있습니다.\n잠시 뒤 다시 시도해 주세요.\n실행 중인 git 이 없는데 계속되면 .git 폴더의 index.lock 을 확인해 주세요.'],
   [/Please tell me who you are|Author identity unknown|unable to auto-detect email|no email was given/, 'no-identity', 'git 사용자 이름·이메일이 없습니다.\n터미널에서 git config 로 설정해 주세요.'],
   [/Aborting commit due to empty commit message/, 'empty', '커밋 메시지를 입력해 주세요.'],
   [/nothing to commit|nothing added to commit|no changes added to commit/, 'nothing', '커밋할 변경이 없습니다'],
@@ -171,11 +173,26 @@ const RULES = [
   [/CONFLICT/, 'conflict', '충돌이 있습니다'],
 ];
 
+const ruleError = (code) => RULES.find((r) => r[1] === code)[2];
+
 const REMOTE_MSG_MAX = 1000;
+const ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
+const HOOK_TAIL = 600;
+// 푸시의 git 자체 실패 줄 (패널은 항상 main:main 으로 푸시한다). hook 출력의 같은 글자에 속지 않게 줄 전체로 본다.
+const PUSH_REJECTED = /^!\t.*\t\[(remote )?rejected\]/m;
+const PUSH_NO_SRC = /^error: src refspec main does not match any\s*$/m;
+// hook 출력: 색 코드를 지우고 끝부분을 보인다 (원인은 끝에 온다). 넘치면 줄 경계에서 자른다.
+function hookOutput(stderr) {
+  const text = stderr.replace(ANSI, '').trim();
+  if (text.length <= HOOK_TAIL) return text;
+  const cut = text.slice(-HOOK_TAIL);
+  const nl = cut.indexOf('\n');
+  return `…\n${nl >= 0 ? cut.slice(nl + 1) : cut}`;
+}
 // 403 과 함께 원격이 보낸 remote: 줄 (재승인 주소 등). 앱 안내로 보이지 않게 접두어를 남기고 제어 문자는 지운다.
 // 넘치면 앞 줄부터 버린다 — 글자 단위로 자르면 주소 앞이 잘려 쓸 수 없다. 한 줄이 넘치면 앞쪽을 남긴다.
 function remoteMessage(stderr) {
-  const lines = stderr.split(/\r?\n/).map((l) => l.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '').replace(/[\u0000-\u001f\u007f]/g, '').trim())
+  const lines = stderr.split(/\r?\n/).map((l) => l.replace(ANSI, '').replace(/[\u0000-\u001f\u007f]/g, '').trim())
     .filter((l) => /^remote:\s*\S/.test(l));
   while (lines.length > 1 && lines.join('\n').length > REMOTE_MSG_MAX) lines.shift();
   return lines.join('\n').slice(0, REMOTE_MSG_MAX);
@@ -192,7 +209,7 @@ const LAST_LINE_RULES = [
   [/^fatal: Not possible to fast-forward, aborting\.$/, 'ff-only', '빨리 감기만 허용하는 설정 때문에 병합하지 않았습니다.\n터미널에서 아래 명령으로 병합해 주세요.\ngit pull --no-rebase --no-edit --ff origin main'],
 ];
 
-// git() 의 오류를 { code, error } 로. step 이 'commit' 이고 종료 코드가 1 이면 (위 문구에 안 걸린) hook 실패로 본다.
+// git() 의 오류를 { code, error } 로. 커밋·푸시의 종료 코드 1 은 아래에서 먼저 가른다 (hook 등 다른 프로그램의 실패).
 // 종료 코드 1 은 git 자신의 잠금 실패(128)가 아니라 hook 등 다른 프로그램의 실패이므로, 그 출력의 index.lock 글자는 잠금으로 보지 않는다.
 function errorOf(e, step) {
   const kind = e?.kind;
@@ -203,6 +220,18 @@ function errorOf(e, step) {
   if (kind === 'no-git' || kind === 'unsafe' || kind === 'nodir') return { code: kind, error: e.message };
   const stderr = String(e?.stderr || '');
   const last = lastLine(stderr);
+  // 커밋 실패의 종료 코드 1: git 자신의 실패는 「변경 없음」(stdout)·「빈 메시지」(stderr 끝 줄)이고(저장소 손상 같은 드문 경우는 hook 으로 보이되 원문이 함께 나온다) 나머지는 128 이다 (실측).
+  // hook 출력은 모두 stderr 로 오므로, 그 안의 글자로 다른 오류로 잘못 가르지 않는다.
+  if (step === 'commit' && e?.exitCode === 1) {
+    if (/nothing to commit|nothing added to commit|no changes added to commit/.test(e.stdout || '')) return { code: 'nothing', error: ruleError('nothing') };
+    if (last === 'Aborting commit due to empty commit message.') return { code: 'empty', error: ruleError('empty') };
+    const shown = hookOutput(stderr);
+    return { code: 'hook', error: shown ? `커밋 전 검사(hook)가 실패했습니다:\n${shown}` : '커밋 전 검사(hook)가 실패했습니다.' };
+  }
+  // 푸시 실패의 종료 코드 1: 네트워크·인증 실패는 128 이고(실측), 거절은 stdout 의 상태 줄, 로컬 main 없음은 src refspec 줄이 나온다. 그 밖에는 pre-push hook 이다 (hook 의 일반 출력은 stdout 으로 온다, 실측).
+  if (step === 'push' && e?.exitCode === 1 && !PUSH_REJECTED.test(e.stdout || '') && !PUSH_NO_SRC.test(stderr)) {
+    return { code: 'fail', error: `git 실행 실패:\n${hookOutput(`${e.stdout || ''}\n${stderr}`)}` };
+  }
   // 커밋 단계는 제외: 커밋 hook 이 같은 문장을 끝 줄로 내면 hook 원문이 사라지고 엉뚱한 병합 명령을 안내하게 된다.
   if (step !== 'commit') for (const [re, code, error] of LAST_LINE_RULES) if (re.test(last)) return { code, error: typeof error === 'function' ? error(stderr) : error };
   const text = `${stderr}\n${e?.stdout || ''}\n${e?.message || ''}`;
@@ -210,7 +239,6 @@ function errorOf(e, step) {
     if (code === 'lock' && e?.exitCode === 1) continue;
     if (re.test(text)) return { code, error: typeof error === 'function' ? error(stderr, e) : error };
   }
-  if (step === 'commit' && e?.exitCode === 1) return { code: 'hook', error: `커밋 전 검사(hook)가 실패했습니다:\n${stderr.slice(0, 300)}` };
   const shown = stderr || String(e?.message || '').replace(/^git 실행 실패:\s*/, '');
   return { code: 'fail', error: `git 실행 실패:\n${shown.slice(-200)}` }; // 원인은 출력 끝에 온다
 }
@@ -267,7 +295,8 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
     const reason = merging ? 'merging' : detached ? 'detached' : branch !== BRANCH ? 'not-main' : null;
     let ahead = null;
     let behind = null;
-    if (parsed.upstream === `${REMOTE}/${BRANCH}`) { ahead = parsed.ahead; behind = parsed.behind; }
+    // 다른 브랜치·분리된 HEAD 는 자기 upstream 기준(없으면 표시 없음). main 만 쓰기 대상인 origin/main 과 비교한다.
+    if (branch !== BRANCH || parsed.upstream === `${REMOTE}/${BRANCH}`) { ahead = parsed.ahead; behind = parsed.behind; }
     else if (hasRemote) {
       try {
         const [a, b] = (await git(root, ['rev-list', '--left-right', '--count', `${BRANCH}...${REMOTE}/${BRANCH}`])).trim().split(/\s+/).map(Number);
@@ -424,7 +453,10 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
   return {
     async state(root) {
       if (!roots.has(root)) return noRoot();
-      try { return await read(root); } catch (e) { return fromError(e); }
+      try { return await read(root); } catch (e) {
+        if (e?.kind === 'timeout') return fail('timeout', 'git 상태 조회 시간이 초과되었습니다.\n잠시 뒤 다시 확인합니다.');
+        return fromError(e);
+      }
     },
 
     async stage(root, paths) {
@@ -535,7 +567,7 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
         if (denied) return denied;
         if (!st.hasRemote) return fail('no-remote', ERR_NO_REMOTE);
         const r = await pullCore(root);
-        return r.ok ? { ok: true } : r;
+        return r.ok ? (r.st.oid === st.oid ? { ok: true, upToDate: true } : { ok: true }) : r;
       });
     },
 
