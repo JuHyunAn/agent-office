@@ -1,5 +1,6 @@
 import { ROWS, CELL } from '../../pet/model.js';
 import { drawDrinkImage } from './drink-images.js';
+import { t } from '../../../shared/i18n.js';
 
 const KINDS = new Set(['grok', 'muse', 'antigravity']);
 const images = new Map();
@@ -10,7 +11,7 @@ export function loadResidentSprites() {
     const load = name => new Promise((resolve, reject) => {
       const image = new Image();
       image.onload = () => resolve(image);
-      image.onerror = () => reject(new Error(`캐릭터 그림을 읽지 못했어요: ${kind}/${name}`));
+      image.onerror = () => reject(new Error(t('theme.err.spriteLoad', { path: `${kind}/${name}` })));
       image.src = new URL(`../../assets/pets/office-${kind}/${name}.png`, import.meta.url).href;
     });
     const [sheet, sleep, poses] = await Promise.all(['spritesheet', 'sleep', 'poses'].map(load));

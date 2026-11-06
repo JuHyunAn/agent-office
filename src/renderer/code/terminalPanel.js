@@ -1,3 +1,5 @@
+import { t } from '../../shared/i18n.js';
+
 // 코드 화면 하단 터미널: 작업 폴더마다 셸 하나 (PowerShell · Git Bash). 화면(xterm)만 다루고, 셸을 띄우는 일은 메인(pty:create 의 mode:'shell')이 한다.
 // 터미널 ID(code-term-N)는 앱 탭(state.tabs)·세션·사무실 캐릭터와 무관하다 — 바깥(app.js)은 onPtyData·onPtyExit 가 true 를 돌려준 ID 를 탭으로 취급하지 않는다.
 // xterm 은 보일 때만 열고 맞춘다 (숨겨진 채로 열면 크기가 0 이다). 폴더를 바꿔도 터미널은 버리지 않아 출력(scrollback)이 남는다.
@@ -45,8 +47,8 @@ export function createTerminalPanel({ api, newTerminal, onShellChange = () => {}
   let current = null;
   let active = false; // 코드 화면이 보이고 터미널 탭을 보고 있다
 
-  const noteEl = node('p', { class: 'ct-note' }, '작업 폴더를 고르면 터미널을 열 수 있습니다');
-  const el = node('div', { class: 'code-terminal', 'aria-label': '터미널' }, noteEl);
+  const noteEl = node('p', { class: 'ct-note' }, t('code.term.pickFolder'));
+  const el = node('div', { class: 'code-terminal', 'aria-label': t('code.view.terminal') }, noteEl);
 
   // 보이는 터미널만 크기를 맞추고 셸에 알린다 (종료한 셸·숨겨진 터미널은 건드리지 않는다).
   function fitNow(entry) {
@@ -76,12 +78,12 @@ export function createTerminalPanel({ api, newTerminal, onShellChange = () => {}
       if (wasLive) {
         entry.shell = entry.ranShell;
         saveShell(entry.shell);
-        entry.term.write(`${msg}${GRAY(`계속 ${SHELL_NAME[entry.shell]} 을 씁니다`)}\r\n`);
+        entry.term.write(`${msg}${GRAY(t('code.term.keepShell', { shell: SHELL_NAME[entry.shell] }))}\r\n`);
         onShellChange();
       } else {
         entry.exited = true;
         entry.live = false;
-        entry.term.write(`${msg}${GRAY('Enter 또는 「다시 시작」으로 다시 엽니다')}\r\n`);
+        entry.term.write(`${msg}${GRAY(t('code.term.reopenHint'))}\r\n`);
       }
     } finally {
       if (run === entry.run) entry.starting = false;
@@ -105,7 +107,7 @@ export function createTerminalPanel({ api, newTerminal, onShellChange = () => {}
 
   function restartEntry(entry) {
     if (entry.starting) return; // 띄우는 중이면 한 번 더 누른 것은 무시
-    entry.term.write(`\r\n${GRAY('[셸을 다시 시작합니다]')}\r\n`);
+    entry.term.write(`\r\n${GRAY(t('code.term.restarting'))}\r\n`);
     launch(entry);
     entry.term.focus();
   }
@@ -159,7 +161,7 @@ export function createTerminalPanel({ api, newTerminal, onShellChange = () => {}
       if (!entry) return false;
       entry.exited = true;
       entry.live = false;
-      entry.term.write(`\r\n${GRAY(`[셸 종료 · 코드 ${exitCode}] Enter 또는 「다시 시작」으로 다시 엽니다`)}\r\n`);
+      entry.term.write(`\r\n${GRAY(t('code.term.exited', { code: exitCode }))}\r\n`);
       return true;
     },
     // 지금 폴더의 셸을 새로 띄운다 (아직 열기 전이면 보이는 대로 처음 연다). 사용자의 명시적 동작이라 확인하지 않는다.
@@ -170,6 +172,11 @@ export function createTerminalPanel({ api, newTerminal, onShellChange = () => {}
     },
     // 지금 폴더의 셸 종류 (폴더마다 따로). 아직 정하지 않은 폴더는 마지막 저장값.
     getShell: () => (current && current.shell) || storedShell(),
+    // 언어가 바뀜: 이미 터미널에 쓴 줄은 그대로 두고, 폴더를 고르기 전 안내만 새 언어로 (터미널 자체가 보이면 안내는 없다).
+    relabel() {
+      noteEl.textContent = t('code.term.pickFolder');
+      el.setAttribute('aria-label', t('code.view.terminal'));
+    },
     // 지금 폴더의 셸 종류를 바꾼다. 마지막 선택은 새 폴더의 기본값으로 기억한다.
     // 셸이 살아 있으면 끊지 않고 값만 바꿔 안내한다 (실행 중인 명령을 잃지 않게) — 「다시 시작」이 새 값으로 띄운다. 끝났거나 아직 안 열렸으면 그대로 시작.
     setShell(kind) {
@@ -179,7 +186,7 @@ export function createTerminalPanel({ api, newTerminal, onShellChange = () => {}
       current.shell = kind;
       if (!current.opened) { this.restart(); return; }
       if (current.exited) { restartEntry(current); return; }
-      current.term.write(`\r\n${GRAY(`[다음 시작부터 ${SHELL_NAME[kind]} 을 씁니다 — 「다시 시작」을 누르세요]`)}\r\n`);
+      current.term.write(`\r\n${GRAY(t('code.term.nextShell', { shell: SHELL_NAME[kind] }))}\r\n`);
     },
   };
 }

@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { cleanEnv } = require('./env.cjs');
+const { t } = require('../shared/i18n.js');
 
 function run(file, args, timeoutMs = 20000) {
   return new Promise((resolve) => {
@@ -114,7 +115,7 @@ async function authStatus(loc) {
       subscriptionType: j.subscriptionType || null,
     };
   } catch {
-    return { loggedIn: false, error: (r.stderr || r.stdout).trim().slice(0, 300) || '로그인 상태를 읽지 못했습니다' };
+    return { loggedIn: false, error: (r.stderr || r.stdout).trim().slice(0, 300) || t('main.claude.authUnreadable') };
   }
 }
 

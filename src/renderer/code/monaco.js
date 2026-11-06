@@ -1,3 +1,5 @@
+import { t } from '../../shared/i18n.js';
+
 // 모나코 편집기(VS Code 편집기) 지연 로드.
 // 번들러가 없어서 ESM 빌드(CSS import 124개)는 쓰지 않고 AMD 빌드(min/vs)를 쓴다. 지원 중단 예고가 있으니 package.json 에서 버전을 고정해 둔다.
 // loader.js 는 index.html 에 넣지 않고 처음 필요할 때 주입한다 — xterm UMD 가 전역 define.amd 를 보고 AMD 로 등록되어 깨지는 것을 막기 위해
@@ -29,7 +31,7 @@ export function loadMonaco() {
   loading = new Promise((resolve, reject) => {
     const script = document.createElement('script');
     script.src = `${VS}/loader.js`;
-    script.onerror = () => reject(new Error('모나코 로더를 불러오지 못했습니다'));
+    script.onerror = () => reject(new Error(t('code.monaco.loaderFailed')));
     script.onload = () => {
       try {
         window.require.config({ paths: { vs: VS } });

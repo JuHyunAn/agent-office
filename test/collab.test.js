@@ -1057,3 +1057,27 @@ test('EFFORT_IN_MODEL: Gemini(antigravity) 는 단계를 따로 고르지 않는
   assert.ok(EFFORT_IN_MODEL.has('antigravity'));
   for (const id of ['claude', 'codex', 'grok', 'muse']) assert.ok(!EFFORT_IN_MODEL.has(id), id);
 });
+
+import { setLang } from '../src/shared/i18n.js';
+
+test('영어: 화면 문구(받는 사람·구현 담당·합의·안내 이름·오류)는 영어, AI 에게 보내는 프롬프트는 한국어 그대로', () => {
+  setLang('en');
+  try {
+    const two = ['claude', 'codex'];
+    assert.deepEqual(targetsOf(two), [{ value: 'all', label: 'Everyone' }, { value: 'claude', label: 'To Claude' }, { value: 'codex', label: 'To Codex' }]);
+    assert.equal(ownerOptions(two).at(-1).label, 'Ask before implementing');
+    assert.equal(agreedText(two), 'Both AIs agreed — see the "Final answer" badge');
+    assert.match(placeholderOf(two), /^Type a message .* Address with @claude \/ @codex .* \(Codex applies them once its current step finishes\)$/);
+    assert.deepEqual([nameOf('user'), nameOf('system')], ['You', 'Notice']);
+    assert.equal(MODEL_OPTIONS.claude[0].label, 'Auto');
+    assert.throws(() => new Moderator({ send() {}, stop() {}, roster: ['claude'] }), /Invalid collaboration participants/);
+    const { m, sent, reply } = room();
+    m.say('안녕', 'claude');
+    assert.match(sent[0].text, /^\[협업 대화\] 구현 담당: Claude \(당신\)/);
+    m.handle('claude', { type: 'done', ok: false, error: 'limit' });
+    assert.equal(m.messages.at(-1).text, 'Claude error: limit');
+    m.say('다시', 'codex');
+    assert.match(sent.at(-1).text, /\[사용자\] 다시/);
+    assert.ok(reply);
+  } finally { setLang('ko'); }
+});

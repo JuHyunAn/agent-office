@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setLang } from '../src/shared/i18n.js';
 
 const require = createRequire(import.meta.url);
 const collab = require('../src/main/collabAgents.cjs');
@@ -396,4 +397,18 @@ test('협업 Grok: end 줄을 받은 뒤 유예 중 중단돼도 첫 턴은 이�
   assert.ok(calls[1].args.includes('-r') && calls[1].args.includes(first) && !calls[1].args.includes('-s'));
   assert.equal(calls[1].prompt.toString('utf8'), '둘', '규칙은 이미 전달됐다');
   assert.equal(events.filter((e) => e.type === 'session').length, 1, 'session 을 다시 알리지 않는다');
+});
+
+test('협업 Grok: 영어에서는 실행 실패·무응답 문구가 영어로 나온다', (t) => {
+  setLang('en');
+  try {
+    const { chat, calls, events } = setup(t);
+    chat.send('하나', {});
+    calls[0].p.emit('error', new Error('ENOENT'));
+    assert.deepEqual(events.at(-1), { type: 'done', ok: false, error: 'Could not run Grok: ENOENT' });
+    const b = setup(t);
+    b.chat.send('둘', {});
+    b.calls[0].p.emit('close', 0);
+    assert.deepEqual(b.events.at(-1), { type: 'done', ok: false, error: 'Grok ended without replying' });
+  } finally { setLang('ko'); }
 });

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { AGENT_IDS, agentById } from '../src/shared/agents.js';
+import { setLang } from '../src/shared/i18n.js';
 
 const agentCli = createRequire(import.meta.url)('../src/main/agentCli.cjs');
 
@@ -98,6 +99,16 @@ test('authStatus: 그 밖의 실패(오류 코드·시간 초과)는 error 문�
   assert.match(t.error, /^로그인 상태를 확인하지 못했습니다: .+/);
   const long = await agentCli.authStatus('grok', {}, { runner: async () => out('x'.repeat(500), { code: 1 }) });
   assert.equal(long.error, '로그인 상태를 확인하지 못했습니다: ' + 'x'.repeat(120));
+});
+
+test('authStatus: 영어 설정이면 실패 안내도 영어 (메인이 만드는 문구)', async () => {
+  setLang('en');
+  try {
+    const a = await agentCli.authStatus('grok', {}, { runner: async () => out('', { code: 2, stderr: 'connect ECONNREFUSED' }) });
+    assert.deepEqual(a, { loggedIn: false, error: 'Could not check sign-in status: connect ECONNREFUSED' });
+    const b = await agentCli.authStatus('grok', {}, { runner: async () => out('', { code: 1 }) });
+    assert.equal(b.error, 'Could not check sign-in status: No response');
+  } finally { setLang('ko'); }
 });
 
 test('authStatus: timeoutMs 를 러너에 넘기고(기본 10초), 출력 없는 실패(시간 초과)만 timedOut 을 단다', async () => {

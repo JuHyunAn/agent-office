@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setLang } from '../src/shared/i18n.js';
 import { visiblePets, petState, bubbleOf, cardOf, cardPreview as cardPreviewUi, usageRowText, updatedText, refreshButton, sessionText, ROWS, SLEEP_AFTER_MS, SLEEP_SHEET, SHEET, SHEETS, gazeCell } from '../src/renderer/pet/model.js';
 
 const require = createRequire(import.meta.url);
@@ -1200,4 +1201,19 @@ test('visiblePets: 협업 중에도 협업 밖 AI 의 알림 펫(상시면 쓰�
   assert.deepEqual(visiblePets({ mode: 'always', inUse: ['claude', 'grok', 'muse'], kinds: {}, collab, all }), ['claude', 'grok', 'muse']);
   assert.deepEqual(visiblePets({ mode: 'alerts', inUse: ['claude', 'grok', 'muse'], kinds, collab, all }), ['claude', 'codex', 'grok']); // 알림만 모드는 쓰는 중이어도 알림 없으면 안 보임
   assert.deepEqual(visiblePets({ mode: 'off', inUse: all, kinds, collab, all }), []);
+});
+
+test('영어: 펫 사용량 문구·세션 줄·갱신 문구와 펫 메뉴가 영어로 나온다', () => {
+  setLang('en');
+  try {
+    const now = Date.UTC(2026, 9, 29, 0, 0, 0);
+    const row = { id: 'week', label: 'Weekly', percent: 58, resetsAt: now + (2 * 60 + 13) * 60000, resetsText: null, observedAt: now };
+    assert.deepEqual(usageRowText(row, now), { pct: '58% used', reset: 'Resets in 2h 13m' });
+    assert.equal(usageRowText({ ...row, resetsAt: now - 1 }, now).pct, 'Reset');
+    assert.equal(updatedText(null, now), 'Not updated yet');
+    assert.equal(updatedText(now - 5 * 60000, now), 'Updated 5 min ago');
+    assert.equal(sessionText({ label: 'proj', requests: 1, contextPercent: null }), 'proj · 1 request · context —');
+    assert.equal(refreshButton({ busy: true }, now).title, 'Reading usage…');
+  } finally { setLang('ko'); }
+  assert.equal(updatedText(null, 0), '갱신 전');
 });

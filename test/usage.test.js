@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { setLang } from '../src/shared/i18n.js';
 
 const require = createRequire(import.meta.url);
 const { flatten, parseUsage, resetToEpoch, projectDirName, deleteSessionFile } = require('../src/main/claudeUsage.cjs');
@@ -1294,4 +1295,17 @@ test('createUsageLocator: 설치되지 않은 결과는 5분 기억해 다시 �
   assert.equal(finds, 4, '지워진 뒤 못 찾은 결과도 5분 기억');
   locs.set('muse', { file: 'shim.cmd', cmdShim: true });
   assert.equal((await locate('muse')).cmdShim, true, 'cmd 경유 위치는 파일 확인 없이 그대로');
+});
+
+test('영어: 사용량 줄(Grok)·Codex 창 이름·로그인 방식이 영어로 나오고, 한국어로 돌아간다', () => {
+  setLang('en');
+  try {
+    const rows = parseGrokUsage(JSON.parse(grokJson()), 42);
+    assert.deepEqual(rows.map((r) => [r.label, r.valueText]), [['This session', 'Tokens 22.9k · $0.04'], ['Model calls', '3 calls · 2 turns']]);
+    assert.equal(codexCli.windowLabel(300), 'Session');
+    assert.equal(codexCli.windowLabel(10080), 'Weekly');
+    assert.equal(codexCli.windowLabel(120), '2h');
+    assert.equal(codexCli.methodLabel('an API key - sk-1'), 'API key');
+  } finally { setLang('ko'); }
+  assert.equal(parseGrokUsage(JSON.parse(grokJson()), 42)[0].label, '이번 세션');
 });

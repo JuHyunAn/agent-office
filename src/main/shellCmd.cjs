@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('node:path');
+const { t } = require('../shared/i18n.js');
 
 // 코드 화면 하단 터미널이 띄우는 셸. 종류는 'powershell'|'bash' 만 받고, 렌더러 문자열은 셸 인자에 넣지 않는다.
 const UTF8_PIPE = '[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncoding=[Text.Encoding]::UTF8';
@@ -8,10 +9,10 @@ const UTF8_PIPE = '[Console]::OutputEncoding=[Text.Encoding]::UTF8; $OutputEncod
 // PowerShell 은 System32 의 절대 경로로 띄운다 — 작업 폴더에 가짜 powershell.exe 가 있어도 잡히지 않게.
 // -Command 는 파이프 출력(git log | Out-String 등)의 한글이 깨지지 않게 인코딩만 맞춘다. -NoProfile 은 쓰지 않는다(사용자 셸 그대로).
 function shellCommand(kind, { platform = process.platform, systemRoot, bashPath } = {}) {
-  if (kind !== 'powershell' && kind !== 'bash') throw new Error('지원하지 않는 셸입니다');
-  if (platform !== 'win32') throw new Error('이 운영체제에서는 지원하지 않습니다');
+  if (kind !== 'powershell' && kind !== 'bash') throw new Error(t('main.shell.unsupportedShell'));
+  if (platform !== 'win32') throw new Error(t('main.shell.unsupportedOs'));
   if (kind === 'bash') {
-    if (!bashPath) throw new Error('Git Bash 를 찾지 못했습니다');
+    if (!bashPath) throw new Error(t('main.shell.noGitBash'));
     return { file: bashPath, args: ['--login', '-i'] };
   }
   return {
@@ -23,7 +24,7 @@ function shellCommand(kind, { platform = process.platform, systemRoot, bashPath 
 // pty:create 의 mode:'shell' 검사 + 실행 명령. 코드 화면에 등록된 폴더(roots)만, 그 폴더가 있어야 하고, 셸 종류는 고정 두 값만 받는다.
 // Git Bash 위치는 Windows 에서 bash 를 고른 때만 찾는다 (findBash).
 async function shellLaunch({ shell, cwd, roots, checkFolder, findBash, platform = process.platform, systemRoot = process.env.SystemRoot }) {
-  if (!roots.has(cwd)) throw new Error('코드 화면에 등록되지 않은 폴더입니다');
+  if (!roots.has(cwd)) throw new Error(t('main.shell.unregisteredFolder'));
   checkFolder(cwd);
   const bashPath = shell === 'bash' && platform === 'win32' ? await findBash() : null;
   return shellCommand(shell, { platform, systemRoot, bashPath });

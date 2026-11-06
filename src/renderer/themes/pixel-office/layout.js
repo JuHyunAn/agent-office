@@ -1,15 +1,17 @@
+import { t } from '../../../shared/i18n.js';
+
 const rooms = {};
 const cols = [32, 552, 1072, 1592];
 const definitions = [
-  ['analysis', '리서치 라이브러리', 0, true], ['planning', '아이디어 스튜디오', 1, true],
-  ['lead', '팀장실', 2, true], ['skills', '스킬 스튜디오', 3, true],
-  ['dev', '개발실', 0, false], ['review', '리뷰 랩', 1, false],
-  ['rest', '그린 라운지', 2, false], ['cafe', '카페 & 플레이', 3, false],
+  ['analysis', 'theme.room.analysis', 0, true], ['planning', 'theme.room.planning', 1, true],
+  ['lead', 'theme.room.lead', 2, true], ['skills', 'theme.room.skills', 3, true],
+  ['dev', 'theme.room.dev', 0, false], ['review', 'theme.room.review', 1, false],
+  ['rest', 'theme.room.rest', 2, false], ['cafe', 'theme.room.cafe', 3, false],
 ];
-for (const [key, label, col, top] of definitions) {
+for (const [key, labelKey, col, top] of definitions) {
   const x = cols[col], y = top ? 64 : 648, h = top ? 440 : 552;
   rooms[key] = {
-    key, label, x, y, w: 496, h,
+    key, get label() { return t(labelKey); }, x, y, w: 496, h,
     door: { x: x + 248, y: top ? y + h : y },
     seats: [],
     wander: { x: x + 40, y: y + 100, w: 410, h: h - 170 },
@@ -54,34 +56,34 @@ rooms.rest.seats = [
   ...[320, 370, 420].map(dx => ({ x: rooms.rest.x + dx, y: 1100, facing: 'down' })),
 ];
 // Two detached wings and short bridges make a U-shaped campus around an open court.
-rooms.ceo = { key: 'ceo', label: '대표실', x: 32, y: 1360, w: 672, h: 440,
+rooms.ceo = { key: 'ceo', get label() { return t('theme.room.ceo'); }, x: 32, y: 1360, w: 672, h: 440,
   door: { x: 280, y: 1360 }, seats: [], wander: { x: 80, y: 1420, w: 560, h: 320 } };
-rooms.restroom = { key: 'restroom', label: '화장실', x: 1592, y: 1360, w: 496, h: 400,
+rooms.restroom = { key: 'restroom', get label() { return t('theme.room.restroom'); }, x: 1592, y: 1360, w: 496, h: 400,
   door: { x: 1840, y: 1360 }, seats: [], wander: { x: 1640, y: 1410, w: 400, h: 300 } };
 rooms.dev.doors = [rooms.dev.door, { x: 280, y: 1200 }];
 rooms.cafe.doors = [rooms.cafe.door, { x: 1840, y: 1200 }];
 
 const interactions = [
-  { id: 'vending', label: '음료 자판기', room: 'cafe', x: 1950, y: 700, w: 90, d: 56, height: 68, stand: { x: 1994, y: 800 }, action: 'drink', description: '클릭하면 다가가 시원한 음료를 마셔요.' },
-  { id: 'laptop', label: '내 노트북', room: 'cafe', x: 1730, y: 940, w: 112, d: 72, height: 22, stand: { x: 1780, y: 918 }, action: 'laptop', description: '클릭하면 노트북을 펴고 잠시 작업해요.' },
-  { id: 'sofa', label: '라운지 소파', room: 'rest', x: 1112, y: 982, w: 190, d: 78, height: 26, stand: { x: 1202, y: 1084 }, seat: { x: 1202, y: 1018 }, action: 'sit', description: '클릭하면 소파에 앉아 편하게 쉬어요.' },
-  { id: 'coffee', label: '커피 바', room: 'cafe', x: 1632, y: 706, w: 150, d: 54, height: 48, stand: { x: 1700, y: 812 }, action: 'drink', description: '따뜻한 커피 한 잔으로 쉬어 가세요.' },
-  { id: 'elevator', label: '중앙 엘리베이터', x: 24, y: 504, w: 8, d: 144, height: 112, axis: 'y',
-    stand: { x: 96, y: 576 }, action: 'elevator', door: true, description: '가까이 다가가면 문이 열리고, 멀어지면 닫혀요.' },
-  { id: 'ceo-door', label: '대표실 출입문', room: 'ceo', x: 220, y: 1356, w: 120, d: 8, height: 70,
-    stand: { x: 280, y: 1420 }, action: 'visit', door: true, description: '클릭하면 문을 열고 별채 대표실로 들어가요.' },
-  { id: 'restroom-door', label: '화장실 출입문', room: 'restroom', x: 1780, y: 1356, w: 120, d: 8, height: 70,
-    stand: { x: 1840, y: 1420 }, action: 'visit', door: true, description: '클릭하면 문을 열고 화장실로 들어가요.' },
-  { id: 'lounge-coffee', label: '라운지 커피 머신', room: 'rest', x: 1320, y: 710, w: 140, d: 48, height: 48,
-    stand: { x: 1388, y: 800 }, action: 'brew', menu: 'coffee', description: '다가가 커피를 골라 보세요. 받은 컵은 45초 동안 들고 다녀요.' },
-  { id: 'arcade', label: '픽셀 아케이드', room: 'cafe', x: 1980, y: 1070, w: 58, d: 48, height: 59,
-    stand: { x: 1930, y: 1120 }, action: 'arcade', description: '잠깐 게임을 즐기고 오늘의 최고 점수에 도전해요.' },
-  { id: 'plant', label: '라운지 초록 친구', room: 'rest', x: 1470, y: 738, w: 40, d: 36, height: 48,
-    stand: { x: 1476, y: 816 }, action: 'water', description: '물을 주면 반짝반짝, 작은 정원을 가꿔요.' },
-  { id: 'reading', label: '라운지 책장', room: 'rest', x: 1132, y: 768, w: 100, d: 30, height: 39,
-    stand: { x: 1180, y: 846 }, action: 'read', description: '책 한 권을 꺼내 잠깐 읽어 봐요.' },
-  { id: 'stretch', label: '스트레칭 매트', room: 'rest', x: 1430, y: 870, w: 90, d: 70, height: 1, walkable: true,
-    stand: { x: 1475, y: 905 }, action: 'stretch', description: '기지개를 켜고 잠시 몸을 풀어요.' },
+  { id: 'vending', get label() { return t('theme.item.vending'); }, room: 'cafe', x: 1950, y: 700, w: 90, d: 56, height: 68, stand: { x: 1994, y: 800 }, action: 'drink', get description() { return t('theme.item.vendingDesc'); } },
+  { id: 'laptop', get label() { return t('theme.item.laptop'); }, room: 'cafe', x: 1730, y: 940, w: 112, d: 72, height: 22, stand: { x: 1780, y: 918 }, action: 'laptop', get description() { return t('theme.item.laptopDesc'); } },
+  { id: 'sofa', get label() { return t('theme.item.sofa'); }, room: 'rest', x: 1112, y: 982, w: 190, d: 78, height: 26, stand: { x: 1202, y: 1084 }, seat: { x: 1202, y: 1018 }, action: 'sit', get description() { return t('theme.item.sofaDesc'); } },
+  { id: 'coffee', get label() { return t('theme.item.coffee'); }, room: 'cafe', x: 1632, y: 706, w: 150, d: 54, height: 48, stand: { x: 1700, y: 812 }, action: 'drink', get description() { return t('theme.item.coffeeDesc'); } },
+  { id: 'elevator', get label() { return t('theme.item.elevator'); }, x: 24, y: 504, w: 8, d: 144, height: 112, axis: 'y',
+    stand: { x: 96, y: 576 }, action: 'elevator', door: true, get description() { return t('theme.item.elevatorDesc'); } },
+  { id: 'ceo-door', get label() { return t('theme.item.ceoDoor'); }, room: 'ceo', x: 220, y: 1356, w: 120, d: 8, height: 70,
+    stand: { x: 280, y: 1420 }, action: 'visit', door: true, get description() { return t('theme.item.ceoDoorDesc'); } },
+  { id: 'restroom-door', get label() { return t('theme.item.restroomDoor'); }, room: 'restroom', x: 1780, y: 1356, w: 120, d: 8, height: 70,
+    stand: { x: 1840, y: 1420 }, action: 'visit', door: true, get description() { return t('theme.item.restroomDoorDesc'); } },
+  { id: 'lounge-coffee', get label() { return t('theme.item.loungeCoffee'); }, room: 'rest', x: 1320, y: 710, w: 140, d: 48, height: 48,
+    stand: { x: 1388, y: 800 }, action: 'brew', menu: 'coffee', get description() { return t('theme.item.loungeCoffeeDesc'); } },
+  { id: 'arcade', get label() { return t('theme.item.arcade'); }, room: 'cafe', x: 1980, y: 1070, w: 58, d: 48, height: 59,
+    stand: { x: 1930, y: 1120 }, action: 'arcade', get description() { return t('theme.item.arcadeDesc'); } },
+  { id: 'plant', get label() { return t('theme.item.plant'); }, room: 'rest', x: 1470, y: 738, w: 40, d: 36, height: 48,
+    stand: { x: 1476, y: 816 }, action: 'water', get description() { return t('theme.item.plantDesc'); } },
+  { id: 'reading', get label() { return t('theme.item.reading'); }, room: 'rest', x: 1132, y: 768, w: 100, d: 30, height: 39,
+    stand: { x: 1180, y: 846 }, action: 'read', get description() { return t('theme.item.readingDesc'); } },
+  { id: 'stretch', get label() { return t('theme.item.stretch'); }, room: 'rest', x: 1430, y: 870, w: 90, d: 70, height: 1, walkable: true,
+    stand: { x: 1475, y: 905 }, action: 'stretch', get description() { return t('theme.item.stretchDesc'); } },
 ];
 const obstacles = [];
 for (const item of [...workTables, ...furnishings]) obstacles.push({ x: item.x, y: item.y, w: item.w, h: item.d });

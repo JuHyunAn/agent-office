@@ -12,9 +12,10 @@
   <!-- 진입 화면: AI 설치·로그인 확인 (왼쪽 AI 목록 · 오른쪽 상세) -->
   <section id="gate" class="gate">
     <div class="gate-card">
+      <button id="gate-lang" class="pill pill-btn lang-toggle gate-lang" type="button"><span data-l="ko" data-i18n="app.langKo">한</span><span class="lang-sep">|</span><span data-l="en" data-i18n="app.langEn">EN</span></button>
       <div class="gate-logo"><span class="brand-mark" aria-hidden="true"></span></div>
       <h1>Agent Office</h1>
-      <p class="gate-sub">작은 에이전트들이 모여, 큰 일을 만드는 곳.</p>
+      <p class="gate-sub" data-i18n="app.gate.sub">작은 에이전트들이 모여, 큰 일을 만드는 곳.</p>
       <div id="gate-body" class="gate-body">AI 연결 확인 중…</div>
       <p id="gate-term-title" class="hint gate-term-title" hidden></p>
       <div id="gate-term" class="gate-term" hidden></div>
@@ -23,15 +24,16 @@
 
   <header class="topbar">
     <span class="brand"><span class="brand-mark" aria-hidden="true"></span>AGENT OFFICE</span>
-    <button id="agents-pill" class="pill pill-btn" type="button">연결 확인 중</button>
-    <button id="global-hooks" class="pill pill-btn" title="VS Code·터미널 등 다른 곳의 Claude Code 세션도 사무실에 표시">다른 세션 보기: 확인 중</button>
-    <span id="headcount" class="pill">근무 중 0명</span>
+    <button id="agents-pill" class="pill pill-btn" type="button" data-i18n="app.top.agentsInit">연결 확인 중</button>
+    <button id="global-hooks" class="pill pill-btn" title="VS Code·터미널 등 다른 곳의 Claude Code 세션도 사무실에 표시" data-i18n-title="app.top.hooksTitle" data-i18n="app.top.hooksInit">다른 세션 보기: 확인 중</button>
+    <span id="headcount" class="pill" data-i18n="app.top.headcountInit">근무 중 0명</span>
     <span class="spacer"></span>
-    <label class="theme-pick" title="바탕화면 펫 표시 방식">펫
-      <select id="pet-mode"><option value="always">상시 표시</option><option value="alerts">알림만 표시</option><option value="off">끄기</option></select>
+    <button id="lang-toggle" class="pill pill-btn lang-toggle" type="button"><span data-l="ko" data-i18n="app.langKo">한</span><span class="lang-sep">|</span><span data-l="en" data-i18n="app.langEn">EN</span></button>
+    <label class="theme-pick" title="바탕화면 펫 표시 방식" data-i18n-title="app.top.petTitle"><span data-i18n="app.top.pet">펫</span>
+      <select id="pet-mode"><option value="always" data-i18n="app.top.petAlways">상시 표시</option><option value="alerts" data-i18n="app.top.petAlerts">알림만 표시</option><option value="off" data-i18n="app.top.petOff">끄기</option></select>
     </label>
-    <button id="pet-art" class="pill pill-btn" type="button" title="바탕화면 펫의 그림을 고르거나 가져옵니다">펫 그림</button>
-    <label class="theme-pick">테마
+    <button id="pet-art" class="pill pill-btn" type="button" title="바탕화면 펫의 그림을 고르거나 가져옵니다" data-i18n-title="app.top.petArtTitle" data-i18n="app.top.petArt">펫 그림</button>
+    <label class="theme-pick"><span data-i18n="app.top.theme">테마</span>
       <select id="theme-select"></select>
     </label>
   </header>
@@ -41,37 +43,37 @@
       <div class="office-toolbar">
         <div class="office-title">
           <!-- <h2>오늘도 기분 좋은 설렘으로!</h2> -->
-          <div class="environment-line"><span id="environment-state">서울 · 날씨 연결 중</span>
-            <a id="weather-credit" href="https://open-meteo.com/" title="서울 날씨 제공: Open-Meteo"></a></div></div>
-        <div class="mode-switch" role="group" aria-label="왼쪽 화면 전환">
-          <button id="mode-office" type="button" aria-pressed="true">사무실</button>
-          <button id="mode-code" type="button" aria-pressed="false">코드</button>
+          <div class="environment-line"><span id="environment-state" data-i18n="app.life.envInit">서울 · 날씨 연결 중</span>
+            <a id="weather-credit" href="https://open-meteo.com/" title="서울 날씨 제공: Open-Meteo" data-i18n-title="app.life.weatherCredit"></a></div></div>
+        <div class="mode-switch" role="group" aria-label="왼쪽 화면 전환" data-i18n-aria-label="app.mode.label">
+          <button id="mode-office" type="button" aria-pressed="true" data-i18n="app.mode.office">사무실</button>
+          <button id="mode-code" type="button" aria-pressed="false" data-i18n="app.mode.code">코드</button>
         </div>
-        <div class="office-controls"><button id="zoom-out" title="축소" aria-label="축소">−</button><span id="zoom-level">100%</span><button id="zoom-in" title="확대" aria-label="확대">＋</button><button id="zoom-fit">전체 보기</button><button id="focus-player">내 캐릭터</button></div>
+        <div class="office-controls"><button id="zoom-out" title="축소" aria-label="축소" data-i18n-title="app.zoom.out" data-i18n-aria-label="app.zoom.out">−</button><span id="zoom-level">100%</span><button id="zoom-in" title="확대" aria-label="확대" data-i18n-title="app.zoom.in" data-i18n-aria-label="app.zoom.in">＋</button><button id="zoom-fit" data-i18n="app.zoom.fit">전체 보기</button><button id="focus-player" data-i18n="app.zoom.player">내 캐릭터</button></div>
       </div>
-      <div class="office-stage"><canvas id="office" tabindex="0" aria-label="사무실. 바닥을 클릭해 이동하고 가구를 클릭해 이용하세요."></canvas><section id="interaction-menu" class="interaction-menu" role="dialog" aria-labelledby="interaction-title" hidden></section></div>
-      <div class="life-bar"><span class="player-chip">나</span><span id="player-state">바닥을 클릭해 이동하세요</span><span id="held-item" class="held-item" hidden></span><span class="camera-hint">확대 후 드래그 &nbsp; 휠 · 확대 &nbsp; 가구 클릭 · 이용</span></div>
-      <div class="feed-panel"><div id="feed-resizer" class="feed-resizer" role="separator" aria-orientation="horizontal" aria-label="활동 기록 높이 조절" title="끌어서 높이 조절 · 두 번 클릭하면 기본 높이"></div><div class="feed-heading"><span class="eyebrow">OFFICE LOG</span><span>활동 기록</span></div><ul id="feed" class="feed"></ul></div>
-      <section id="code-pane" class="code-pane" aria-label="코드 화면" hidden></section>
+      <div class="office-stage"><canvas id="office" tabindex="0" aria-label="사무실. 바닥을 클릭해 이동하고 가구를 클릭해 이용하세요." data-i18n-aria-label="app.life.canvasLabel"></canvas><section id="interaction-menu" class="interaction-menu" role="dialog" aria-labelledby="interaction-title" hidden></section></div>
+      <div class="life-bar"><span class="player-chip" data-i18n="app.life.me">나</span><span id="player-state" data-i18n="app.life.moveHint">바닥을 클릭해 이동하세요</span><span id="held-item" class="held-item" hidden></span><span class="camera-hint" data-i18n="app.life.cameraHint">확대 후 드래그 &nbsp; 휠 · 확대 &nbsp; 가구 클릭 · 이용</span></div>
+      <div class="feed-panel"><div id="feed-resizer" class="feed-resizer" role="separator" aria-orientation="horizontal" aria-label="활동 기록 높이 조절" title="끌어서 높이 조절 · 두 번 클릭하면 기본 높이" data-i18n-aria-label="app.feed.resizerLabel" data-i18n-title="app.feed.resizerTitle"></div><div class="feed-heading"><span class="eyebrow">OFFICE LOG</span><span data-i18n="app.feed.heading">활동 기록</span></div><ul id="feed" class="feed"></ul></div>
+      <section id="code-pane" class="code-pane" aria-label="코드 화면" data-i18n-aria-label="app.mode.codePane" hidden></section>
     </section>
 
     <section class="cli-pane">
-      <div id="cli-resizer" class="cli-resizer" role="separator" aria-orientation="vertical" aria-label="오른쪽 영역 너비 조절" title="끌어서 너비 조절 · 두 번 클릭하면 기본 너비"></div>
+      <div id="cli-resizer" class="cli-resizer" role="separator" aria-orientation="vertical" aria-label="오른쪽 영역 너비 조절" title="끌어서 너비 조절 · 두 번 클릭하면 기본 너비" data-i18n-aria-label="app.term.resizerLabel" data-i18n-title="app.term.resizerTitle"></div>
       <div class="terminal-heading"><span class="eyebrow">TERMINAL</span>
         <!-- <span>Claude Code · Codex</span> -->
-        <span class="terminal-local">로컬 세션</span>
-        <span class="terminal-remote">원격 세션</span>
+        <span class="terminal-local" data-i18n="app.term.local">로컬 세션</span>
+        <span class="terminal-remote" data-i18n="app.term.remote">원격 세션</span>
       </div>
       <nav class="tabbar">
         <div id="tabs" class="tabs"></div>
-        <button id="new-tab" class="tab-add" title="새 탭">＋</button>
+        <button id="new-tab" class="tab-add" title="새 탭" data-i18n-title="app.tab.newTitle">＋</button>
       </nav>
       <div id="panes" class="panes">
         <div id="empty" class="empty">
           <span class="empty-terminal" aria-hidden="true">&gt;_</span>
-          <h2>오늘은 어떤 일을 해볼까요?</h2>
-          <p>오른쪽 위 <b>＋</b> 를 눌러 작업 폴더를 열면<br>공식 Claude Code · Codex 등 Agent의 대화가 이 자리에서 실행됩니다.</p>
-          <button id="empty-new" class="btn primary">작업 폴더 열기</button>
+          <h2 data-i18n="app.empty.title">오늘은 어떤 일을 해볼까요?</h2>
+          <p><span data-i18n="app.empty.line1a">오른쪽 위 </span><b>＋</b><span data-i18n="app.empty.line1b"> 를 눌러 작업 폴더를 열면</span><br><span data-i18n="app.empty.line2">공식 Claude Code · Codex 등 Agent의 대화가 이 자리에서 실행됩니다.</span></p>
+          <button id="empty-new" class="btn primary" data-i18n="app.empty.open">작업 폴더 열기</button>
         </div>
       </div>
     </section>
@@ -81,54 +83,54 @@
 
   <dialog id="newtab" class="dialog dialog-wide">
     <form method="dialog" class="dialog-inner">
-      <h2>새 탭 열기</h2>
+      <h2 data-i18n="app.newtab.title">새 탭 열기</h2>
       <div class="newtab-split">
         <section class="newtab-ai" aria-labelledby="newtab-ai-title">
           <h3 id="newtab-ai-title">AI</h3>
-          <div class="kind-pick" role="radiogroup" aria-label="AI 선택"></div>
+          <div class="kind-pick" role="radiogroup" aria-label="AI 선택" data-i18n-aria-label="app.newtab.kindLabel"></div>
           <fieldset id="collab-agents" class="collab-agents" aria-describedby="collab-agents-hint" hidden>
-            <legend>협업에 참여할 AI (2개 이상)</legend>
+            <legend data-i18n="app.newtab.collabLegend">협업에 참여할 AI (2개 이상)</legend>
             <div id="collab-agents-list"></div>
             <p id="collab-agents-hint" class="hint"></p>
           </fieldset>
           <p id="kind-hint" class="hint"></p>
         </section>
         <section class="newtab-project" aria-labelledby="newtab-project-title">
-          <h3 id="newtab-project-title">프로젝트</h3>
-          <button type="button" id="pick-folder" class="btn primary">📁 폴더 선택…</button>
+          <h3 id="newtab-project-title" data-i18n="app.newtab.project">프로젝트</h3>
+          <button type="button" id="pick-folder" class="btn primary" data-i18n="app.newtab.pickFolder">📁 폴더 선택…</button>
           <ul id="recent" class="list"></ul>
           <details id="newtab-external" class="newtab-external">
-            <summary>다른 곳에서 실행 중인 세션</summary>
+            <summary data-i18n="app.newtab.external">다른 곳에서 실행 중인 세션</summary>
             <p id="external-hint" class="hint"></p>
             <ul id="external" class="list"></ul>
           </details>
         </section>
       </div>
-      <div class="dialog-actions"><button class="btn">닫기</button></div>
+      <div class="dialog-actions"><button class="btn" data-i18n="app.common.close">닫기</button></div>
     </form>
   </dialog>
 
   <dialog id="agentsdlg" class="dialog dialog-wide" aria-labelledby="agentsdlg-title">
     <div class="dialog-inner">
-      <h2 id="agentsdlg-title">AI 연결</h2>
+      <h2 id="agentsdlg-title" data-i18n="app.agents.title">AI 연결</h2>
       <div id="agentsdlg-body"></div>
-      <div class="dialog-actions"><button type="button" id="agentsdlg-close" class="btn">닫기</button></div>
+      <div class="dialog-actions"><button type="button" id="agentsdlg-close" class="btn" data-i18n="app.common.close">닫기</button></div>
     </div>
   </dialog>
 
   <dialog id="folderdlg" class="dialog" aria-labelledby="folderdlg-title">
     <form method="dialog" class="dialog-inner">
-      <h2 id="folderdlg-title">이 폴더를 열 수 없습니다</h2>
+      <h2 id="folderdlg-title" data-i18n="app.folder.title">이 폴더를 열 수 없습니다</h2>
       <p id="folderdlg-text"></p>
       <p id="folderdlg-path" class="hint"></p>
-      <div class="dialog-actions"><button type="button" id="folderdlg-remove" class="btn">최근 목록에서 제거</button><button class="btn primary">닫기</button></div>
+      <div class="dialog-actions"><button type="button" id="folderdlg-remove" class="btn" data-i18n="app.folder.remove">최근 목록에서 제거</button><button class="btn primary" data-i18n="app.common.close">닫기</button></div>
     </form>
   </dialog>
 
   <dialog id="petpick" class="dialog petpick">
     <form method="dialog" class="dialog-inner">
-      <h2>펫 그림</h2>
-      <p class="hint">바탕화면 펫에 쓸 그림을 종류마다 고릅니다. 가져온 zip·폴더는 이 앱의 데이터 폴더에 복사되며, 그림 크기가 1536x1872(9줄) 또는 1536x2288(11줄)인 펫만 쓸 수 있습니다.</p>
+      <h2 data-i18n="app.petpick.title">펫 그림</h2>
+      <p class="hint" data-i18n="app.petpick.hint">바탕화면 펫에 쓸 그림을 종류마다 고릅니다. 가져온 zip·폴더는 이 앱의 데이터 폴더에 복사되며, 그림 크기가 1536x1872(9줄) 또는 1536x2288(11줄)인 펫만 쓸 수 있습니다.</p>
       <section>
         <h3>Claude 펫</h3>
         <div id="petpick-claude" class="petpick-list" role="radiogroup" aria-label="Claude 펫 그림"></div>
@@ -139,10 +141,10 @@
       </section>
       <p id="petpick-msg" class="hint petpick-msg" role="status"></p>
       <div class="dialog-actions petpick-actions">
-        <button type="button" id="petpick-zip" class="btn">zip 가져오기</button>
-        <button type="button" id="petpick-folder" class="btn">폴더 가져오기</button>
+        <button type="button" id="petpick-zip" class="btn" data-i18n="app.petpick.zip">zip 가져오기</button>
+        <button type="button" id="petpick-folder" class="btn" data-i18n="app.petpick.folder">폴더 가져오기</button>
         <span class="spacer"></span>
-        <button class="btn">닫기</button>
+        <button class="btn" data-i18n="app.common.close">닫기</button>
       </div>
     </form>
   </dialog>

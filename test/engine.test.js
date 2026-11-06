@@ -864,3 +864,19 @@ test('settle: 팀장이 이미 떠났어도 앞쪽 하위 에이전트는 정리
   e.settle(SID, '❌ 오류로 끝남');
   assert.equal(agent(e, 'fg').status, 'resting');
 });
+
+test('영어 모드: 말풍선·활동 기록·외부 세션 이름이 영어로 나오고 한국어로 돌아온다', async () => {
+  const { setLang } = await import('../src/shared/i18n.js');
+  setLang('en');
+  try {
+    const { e, feed } = mk();
+    e.handleEvent(ev('UserPromptSubmit', { prompt: 'fix it' }));
+    const lead = agent(e, 'lead');
+    assert.equal(lead.label, 'External · proj');
+    assert.equal(lead.bubble.text, '📥 Request received: fix it');
+    assert.match(feed.at(-1), /^External · proj: New request — fix it$/);
+    setLang('ko'); // 이름표는 바로 따라가고 이미 쌓인 기록은 그대로다
+    assert.equal(lead.label, '외부 · proj');
+    assert.match(feed.at(-1), /^External · proj: New request/);
+  } finally { setLang('ko'); }
+});

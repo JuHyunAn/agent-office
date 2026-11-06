@@ -3,6 +3,7 @@
 const nodeFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { t } = require('../shared/i18n.js');
 
 // Grok 은 세션 단위로 hook 을 주입하는 공식 경로가 없다(1.0.70 실측: GROK_CONFIG 의 hooks 는 무시).
 // 그래서 공식 위치 ~/.grok/hooks/ 에 이 앱 전용 파일 하나만 두고, 켜고 끌 수 있게 한다. 다른 파일은 건드리지 않는다.
@@ -61,7 +62,7 @@ function status(port, token, { fs = nodeFs, ...opts } = {}) {
 function enable(port, token, { fs = nodeFs, ...opts } = {}) {
   const file = filePath(opts);
   const cur = status(port, token, { fs, ...opts });
-  if (cur.installed && !cur.ours) throw new Error(`같은 이름의 다른 파일이 있습니다: ${file}`);
+  if (cur.installed && !cur.ours) throw new Error(t('main.grok.fileConflict', { file }));
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(build(port, token), null, 2) + '\n');
   return file;

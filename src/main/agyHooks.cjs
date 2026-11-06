@@ -4,6 +4,7 @@ const nodeFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { curlPath, SAFE } = require('./museCli.cjs');
+const { t } = require('../shared/i18n.js');
 
 // Antigravity(agy 1.4.12 실측)는 세션 단위 hook 주입 경로가 없다 (--settings 는 hooks 를 「unknown setting」으로 거부).
 // 그래서 공용 ~/.gemini/config/hooks.json 에 이 앱 이름(NAME)의 항목 하나만 넣는다 — 다른 키는 그대로 둔다.
@@ -89,8 +90,8 @@ function load(fs, file) {
   if (!fs.existsSync(file)) return null;
   const text = fs.readFileSync(file, 'utf8');
   const obj = parse(text);
-  if (!obj) throw new Error(`hooks.json 을 읽을 수 없어 건드리지 않습니다: ${file}`);
-  if (Object.hasOwn(obj, NAME) && !isObj(obj[NAME])) throw new Error(`hooks.json 의 "${NAME}" 키가 다른 용도로 쓰여 건드리지 않습니다: ${file}`);
+  if (!obj) throw new Error(t('main.agy.hooksUnreadable', { file }));
+  if (Object.hasOwn(obj, NAME) && !isObj(obj[NAME])) throw new Error(t('main.agy.hooksKeyConflict', { name: NAME, file }));
   return { text, obj };
 }
 
@@ -112,7 +113,7 @@ function writeAtomic(fs, file, obj) {
 function enable(port, token, { fs = nodeFs, now = new Date(), ...opts } = {}) {
   const file = filePath(opts);
   const mine = entry(port, token, opts);
-  if (!mine) throw new Error('curl.exe 경로나 hook 값이 안전하지 않아 Gemini(Antigravity CLI) hook 을 만들지 않습니다');
+  if (!mine) throw new Error(t('main.agy.hooksUnsafe'));
   const first = load(fs, file);
   if (!first) fs.mkdirSync(path.dirname(file), { recursive: true });
   else if (!Object.hasOwn(first.obj, NAME)) fs.writeFileSync(backupName(file, now), first.text);

@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setLang } from '../src/shared/i18n.js';
 
 // 사용자·시스템 git 설정이 결과를 흔들지 않게 격리한다 (codeRepo.test.js 와 같은 방식)
 const base = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'ao-analysis-')));
@@ -1582,4 +1583,27 @@ test('조회 실패는 안전한 쪽(지워진 것으로 본다): 새 파일 내
   } finally {
     codeRepoModule.git = realGit;
   }
+});
+
+test('언어: 영어 모드면 결과를 영어로 쓰게 하고, 캐시 지문에 언어가 들어가 언어를 바꾸면 다시 실행한다', { skip }, async () => {
+  const repo = makeRepo();
+  const { analyzer, cli } = makeAnalyzer(repo);
+  try {
+    setLang('en');
+    assert.equal((await analyzer.analyze(REQ(repo))).cached, false);
+    assert.ok(cli.calls[0].p.stdin.written.includes('출력 규칙(모두 영어 — write every field in English.'), '영어 모드의 출력 언어 규칙');
+    assert.ok(!cli.calls[0].p.stdin.written.includes('출력 규칙(모두 한국어):'));
+    assert.equal((await analyzer.analyze(REQ(repo))).cached, true, '같은 언어면 재사용');
+    setLang('ko');
+    assert.equal((await analyzer.analyze(REQ(repo))).cached, false, '언어를 바꾸면 이전 언어 결과를 재사용하지 않는다');
+    assert.ok(cli.calls[1].p.stdin.written.includes('출력 규칙(모두 한국어):'));
+    assert.equal(cli.calls.length, 2);
+    // 오류 문구도 언어를 따른다 (판별은 원문 그대로)
+    setLang('en');
+    assert.equal((await analyzer.analyze({ root: repo, scope: 'changes', model: 'gpt' })).error, 'Model not allowed');
+    assert.equal(errorText({ is_error: true, result: 'Not logged in' }), 'Claude login required');
+  } finally {
+    setLang('ko');
+  }
+  assert.equal((await analyzer.analyze({ root: repo, scope: 'changes', model: 'gpt' })).error, '허용되지 않는 모델입니다');
 });

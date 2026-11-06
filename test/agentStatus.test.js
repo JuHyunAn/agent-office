@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   agentsOf, connectedIds, canEnter, accountText, pickDefault, collabChoices, collabReady, collabSupported,
 } from '../src/renderer/agentStatus.js';
+import { setLang } from '../src/shared/i18n.js';
 
 const ok = { loggedIn: true, email: 'a@example.com', plan: 'plus' };
 const NEW_IDS = ['grok', 'muse', 'antigravity']; // 상태가 없으면 미설치로 보이는 새 AI (레지스트리 순서)
@@ -113,4 +114,16 @@ test('collabChoices·collabReady·collabSupported', () => {
 test('connectedIds: 확인 오류는 연결로 보지 않는다', () => {
   const st = { agents: { claude: { found: true, auth: { error: 'timeout' } }, codex: { found: true, auth: ok } } };
   assert.deepEqual(connectedIds(agentsOf(st)), ['codex']);
+});
+
+test('accountText: 영어로 바꾸면 영어 문구 (끝나면 한국어로 되돌린다)', () => {
+  setLang('en');
+  try {
+    assert.equal(accountText({ state: 'login' }), 'Login required');
+    assert.equal(accountText({ state: 'error' }), 'Status check failed');
+    assert.equal(accountText({ state: 'missing' }), 'Not installed');
+    assert.equal(accountText({ state: 'connected', auth: { loggedIn: true } }), 'Logged in');
+    assert.equal(accountText({ state: 'connected', auth: { email: 'a@example.com', plan: 'plus' } }), 'a@example.com · plus');
+  } finally { setLang('ko'); }
+  assert.equal(accountText({ state: 'login' }), '로그인 필요');
 });

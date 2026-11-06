@@ -2,7 +2,8 @@
 // 상태 조회는 하지 않는다 — panel.js 의 10초 갱신(pollCore)이 setState 로 넘겨 준다. 쓰기가 끝나면 onChanged 로 바로 다시 조회하게 한다.
 // 예외는 그래프(읽기 전용 커밋 목록)뿐이다: 펼쳐져 있고 커밋 위치·원격이 바뀌었을 때만 code:git:log 를 직접 부른다.
 // 고정 노드는 만들 때 한 번만 만들고 textarea 는 다시 만들지 않는다. 결과·경로·메시지는 모두 textContent 로만 표시한다.
-import { toLocal, expectedPaths, stageablePaths, capList, recentEditSet, secretPaths, secretWarning, gitFingerprint, aheadBehindText, reasonText, refChips, logTime, logKey, loginHint, canSyncOnly } from './gitModel.js';
+import { toLocal, expectedPaths, stageablePaths, capList, recentEditSet, secretPaths, secretWarning, gitFingerprint, aheadBehindText, reasonText, refChips, logTime, logKey, loginHint, canSyncOnly, letterTitle } from './gitModel.js';
+import { t } from '../../shared/i18n.js';
 
 function node(tag, props = {}, ...children) {
   const n = document.createElement(tag);
@@ -33,28 +34,20 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const SPARKLE_D = 'M8.5 3 10 8l5 1.5L10 11l-1.5 5L7 11 2 9.5 7 8ZM15.5 2l.7 2.3 2.3.7-2.3.7-.7 2.3-.7-2.3-2.3-.7 2.3-.7Z';
 const STOP_D = 'M5.25 3A2.25 2.25 0 0 0 3 5.25v9.5A2.25 2.25 0 0 0 5.25 17h9.5A2.25 2.25 0 0 0 17 14.75v-9.5A2.25 2.25 0 0 0 14.75 3h-9.5Z';
 const OK_NOTE_MS = 4000; // 성공 안내를 보여 두는 시간
-const OP_TEXT = { commit: '커밋 중', push: '푸시 중', sync: '동기화 중', stage: '스테이징 중', fetch: '가져오는 중', pull: '받아 병합 중', pushOnly: '푸시 중', syncOnly: '동기화 중' };
+// 문구는 사전 키로 두고 쓸 때 t() 로 읽는다 (언어를 바꿔도 새 문구가 나오게). pushOnly·syncOnly 는 커밋 없는 Push·Sync 로 문구가 같다.
+const OP_KEYS = { commit: 'code.gp.op.commit', push: 'code.gp.op.push', sync: 'code.gp.op.sync', stage: 'code.gp.op.stage', fetch: 'code.gp.op.fetch', pull: 'code.gp.op.pull', pushOnly: 'code.gp.op.push', syncOnly: 'code.gp.op.sync' };
 const GRAPH_OPS = new Set(['commit', 'push', 'sync', 'fetch', 'pull', 'pushOnly', 'syncOnly']); // 성공하면 그래프를 다시 받는 쓰기
-const OK_TEXT = { fetch: '가져왔습니다', pull: '가져와 병합했습니다', pushOnly: '푸시했습니다', syncOnly: '가져와 푸시했습니다' }; // Fetch·Pull·Push 와 커밋 없는 Sync 의 성공 안내
-const LETTER_TITLE = { M: '수정됨', A: '추가됨', D: '삭제됨', R: '이름이 바뀜', C: '복사됨', U: '추적하지 않는 새 파일', '!': '병합 충돌' };
+const OK_KEYS = { fetch: 'code.gp.ok.fetch', pull: 'code.gp.ok.pull', pushOnly: 'code.gp.ok.pushOnly', syncOnly: 'code.gp.ok.syncOnly' }; // Fetch·Pull·Push 와 커밋 없는 Sync 의 성공 안내
 const letterOf = (code) => (code === 'T' ? 'M' : code); // 파일 종류만 바뀐 것도 수정으로 보인다
-const AGENT_TITLE = '에이전트가 방금 수정 (앱에서 연 AI 기준)';
-const OUTSIDE_TITLE = '열린 폴더 밖 파일 — 스테이징만 할 수 있습니다';
-const SUBMODULE_TITLE = '서브모듈 안에서 커밋해 주세요.';
-const NESTED_TITLE = '안에 별도 git 저장소가 있는 폴더입니다.\n서브모듈로 추가하거나 .gitignore 에 넣어 주세요.';
-const NO_REMOTE_TITLE = 'origin 원격이 없습니다';
-const NOTHING_TO_PUSH_TITLE = '올릴 커밋이 없습니다';
-const SYNC_ONLY_TITLE = '커밋할 것이 없어 Pull 후 Push 합니다';
 const GRAPH_KEY = 'ao.gitGraphOpen'; // 그래프 펼침 저장 (기본 접힘)
-const REF_TITLE = { local: '브랜치', remote: '원격 브랜치', tag: '태그', head: '분리된 HEAD' };
-const STALE_TEXT = '목록이 바뀌었습니다.\n다시 눌러 주세요.';
-const COMMIT_TEXT = { commit: '커밋', push: '커밋·푸시', sync: '커밋·동기화' };
+const REF_KEYS = { local: 'code.gp.ref.local', remote: 'code.gp.ref.remote', tag: 'code.gp.ref.tag', head: 'code.gp.detached' };
+const COMMIT_KEYS = { commit: 'code.gp.act.commit', push: 'code.gp.act.push', sync: 'code.gp.act.sync' };
 
 // 요청은 던지지 않는 값으로 바꾼다 (IPC 거부가 콘솔 오류로 새지 않게)
 async function call(fn) {
   try {
     const r = await fn();
-    return r && typeof r === 'object' ? r : { ok: false, code: 'ipc', error: '응답이 올바르지 않습니다' };
+    return r && typeof r === 'object' ? r : { ok: false, code: 'ipc', error: t('code.gp.badResponse') };
   } catch (e) {
     return { ok: false, code: 'ipc', error: errText(e) };
   }
@@ -93,7 +86,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   const curOp = () => (current ? ops.get(keyOf(current)) : undefined);
 
   // ───────── DOM ─────────
-  const resizer = node('div', { class: 'gp-resizer', role: 'separator', 'aria-orientation': 'horizontal', 'aria-label': 'Git 패널 높이 조절', title: '끌어서 높이 조절 · 두 번 클릭하면 기본 높이' });
+  const resizer = node('div', { class: 'gp-resizer', role: 'separator', 'aria-orientation': 'horizontal' });
   const branchEl = node('span', { class: 'gp-branch' });
   const abEl = node('span', { class: 'gp-ab' });
   const busyEl = node('span', { class: 'gp-busy', hidden: true });
@@ -103,12 +96,13 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   const headEl = node('div', { class: 'gp-head' }, node('span', { class: 'gp-title' }, 'Git'), branchEl, abEl, busyEl, node('span', { class: 'gp-remote' }, fetchBtn, pullBtn, pushOnlyBtn));
   const loginEl = node('div', { class: 'gp-login', role: 'status', hidden: true });
   const noteTextEl = node('span', { class: 'gp-note-text' });
-  const noteClose = node('button', { class: 'gp-note-close', type: 'button', 'aria-label': '안내 닫기', title: '안내 닫기', onclick: dismissNote }, '×');
+  const noteClose = node('button', { class: 'gp-note-close', type: 'button', onclick: dismissNote }, '×');
   const noteEl = node('div', { class: 'gp-note', role: 'status', hidden: true }, noteTextEl, noteClose);
-  const applyBtn = node('button', { class: 'gp-apply', type: 'button', onclick: applyPending }, '적용');
-  const discardBtn = node('button', { class: 'gp-discard', type: 'button', onclick: discardPending }, '버림');
-  const pendingEl = node('div', { class: 'gp-pending', hidden: true }, node('span', { class: 'gp-pending-text' }, '생성한 메시지가 있습니다'), applyBtn, discardBtn);
-  const msgEl = node('textarea', { class: 'gp-msg', 'aria-label': '커밋 메시지', placeholder: '커밋 메시지', rows: 2, maxlength: MESSAGE_MAX });
+  const applyBtn = node('button', { class: 'gp-apply', type: 'button', onclick: applyPending });
+  const discardBtn = node('button', { class: 'gp-discard', type: 'button', onclick: discardPending });
+  const pendingTextEl = node('span', { class: 'gp-pending-text' });
+  const pendingEl = node('div', { class: 'gp-pending', hidden: true }, pendingTextEl, applyBtn, discardBtn);
+  const msgEl = node('textarea', { class: 'gp-msg', rows: 2, maxlength: MESSAGE_MAX });
   const genIcon = document.createElementNS(SVG_NS, 'svg');
   genIcon.setAttribute('viewBox', '0 0 20 20'); genIcon.setAttribute('aria-hidden', 'true');
   const genPath = document.createElementNS(SVG_NS, 'path');
@@ -119,14 +113,14 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   const pushBtn = node('button', { class: 'gp-commit-push', type: 'button', onclick: () => startCommit('push') }, 'Commit & Push');
   const syncBtn = node('button', { class: 'gp-commit-sync', type: 'button', onclick: () => startCommit('sync') }, 'Commit & Sync');
   const confirmTextEl = node('span', { class: 'gp-confirm-text' });
-  const confirmOk = node('button', { class: 'gp-confirm-ok', type: 'button', onclick: confirmCommit }, '확인');
-  const confirmNo = node('button', { class: 'gp-confirm-no', type: 'button', onclick: closeConfirm }, '취소');
+  const confirmOk = node('button', { class: 'gp-confirm-ok', type: 'button', onclick: confirmCommit });
+  const confirmNo = node('button', { class: 'gp-confirm-no', type: 'button', onclick: closeConfirm });
   const confirmEl = node('div', { class: 'gp-confirm', hidden: true }, confirmTextEl, confirmOk, confirmNo);
 
   const stagedText = node('span', { class: 'gp-h-text' });
-  const stagedAll = node('button', { class: 'gp-all', type: 'button', 'data-act': 'unstage', 'aria-label': '모두 스테이징 해제', title: '모두 스테이징 해제', onclick: () => unstageAll() }, '−');
+  const stagedAll = node('button', { class: 'gp-all', type: 'button', 'data-act': 'unstage', onclick: () => unstageAll() }, '−');
   const changesText = node('span', { class: 'gp-h-text' });
-  const changesAll = node('button', { class: 'gp-all', type: 'button', 'data-act': 'stage', 'aria-label': '모두 스테이징', title: '모두 스테이징', onclick: () => stageAllChanges() }, '+');
+  const changesAll = node('button', { class: 'gp-all', type: 'button', 'data-act': 'stage', onclick: () => stageAllChanges() }, '+');
   const conflictsText = node('span', { class: 'gp-h-text' });
   const stagedUl = node('ul', { class: 'gp-staged' });
   const changesUl = node('ul', { class: 'gp-changes' });
@@ -148,6 +142,27 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     node('div', { class: 'gp-actions' }, commitBtn, pushBtn, syncBtn),
     confirmEl, pendingEl);
   const el = node('section', { class: 'git-panel', 'aria-label': 'Git' }, resizer, headEl, loginEl, fixedEl, listsEl);
+
+  // 한 번만 만드는 요소의 글자·툴팁·접근성 이름·placeholder. 만들 때 한 번, 언어가 바뀔 때 다시 쓴다.
+  // (Fetch·Pull·Push·Commit 단추 이름은 Git 용어라 번역하지 않는다. 생성 단추 이름은 updateControls 가 상태에 맞게 쓴다.)
+  function paintLabels() {
+    resizer.setAttribute('aria-label', t('code.gp.resizeAria'));
+    resizer.title = t('code.view.dragHeight');
+    noteClose.setAttribute('aria-label', t('code.gp.noteClose'));
+    noteClose.title = t('code.gp.noteClose');
+    applyBtn.textContent = t('code.gp.apply');
+    discardBtn.textContent = t('code.gp.discard');
+    pendingTextEl.textContent = t('code.gp.pendingMsg');
+    msgEl.setAttribute('aria-label', t('code.gp.msg'));
+    msgEl.setAttribute('placeholder', t('code.gp.msg'));
+    confirmOk.textContent = t('code.gp.confirmOk');
+    confirmNo.textContent = t('code.gp.cancel');
+    stagedAll.setAttribute('aria-label', t('code.gp.unstageAll'));
+    stagedAll.title = t('code.gp.unstageAll');
+    changesAll.setAttribute('aria-label', t('code.gp.stageAll'));
+    changesAll.title = t('code.gp.stageAll');
+  }
+  paintLabels();
 
   msgEl.addEventListener('input', () => {
     if (current) draftOf(keyOf(current)).text = msgEl.value;
@@ -245,9 +260,9 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   // 머리줄 단추의 title: 꺼진 이유를 알린다 (켜져 있으면 이름)
   function remoteTitle(name, needWrite, isPush) {
     if (!gs || unavailable) return name;
-    if (!gs.hasRemote) return NO_REMOTE_TITLE;
+    if (!gs.hasRemote) return t('code.git.noOrigin');
     if (needWrite && !gs.canWrite) return reasonText(gs) || name;
-    if (isPush && gs.upstream && gs.ahead === 0) return NOTHING_TO_PUSH_TITLE;
+    if (isPush && gs.upstream && gs.ahead === 0) return t('code.gp.nothingToPush');
     return name;
   }
 
@@ -258,8 +273,8 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     pushBtn.disabled = !canCommit('push');
     syncBtn.disabled = !canCommit('sync') && !syncOnlyNow();
     const noRemote = !!gs && !gs.hasRemote;
-    pushBtn.title = noRemote ? NO_REMOTE_TITLE : 'Commit & Push';
-    syncBtn.title = noRemote ? NO_REMOTE_TITLE : syncOnlyNow() ? SYNC_ONLY_TITLE : 'Commit & Sync';
+    pushBtn.title = noRemote ? t('code.git.noOrigin') : 'Commit & Push';
+    syncBtn.title = noRemote ? t('code.git.noOrigin') : syncOnlyNow() ? t('code.gp.syncOnlyTitle') : 'Commit & Sync';
     commitBtn.title = 'Commit';
     const remote = !!gs && !unavailable && !!gs.hasRemote && !curOp();
     const write = remote && gs.canWrite;
@@ -271,7 +286,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     pushOnlyBtn.title = remoteTitle('Push', true, true);
     const d = current ? draftOf(keyOf(current)) : null;
     const generating = !!d?.gen;
-    const genLabel = generating ? '생성 중지' : '커밋 메시지 생성';
+    const genLabel = t(generating ? 'code.gp.genStop' : 'code.gp.gen');
     genPath.setAttribute('d', generating ? STOP_D : SPARKLE_D);
     genBtn.title = genLabel;
     genBtn.setAttribute('aria-label', genLabel);
@@ -283,7 +298,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   function drawBusy() {
     const op = curOp();
     busyEl.hidden = !op;
-    busyEl.textContent = op ? `${OP_TEXT[op.kind] || '작업 중'}… ${mmss(Date.now() - op.startedAt)}` : '';
+    busyEl.textContent = op ? `${t(OP_KEYS[op.kind] || 'code.gp.op.default')}… ${mmss(Date.now() - op.startedAt)}` : '';
     const hint = op ? loginHint(op.kind, Date.now() - op.startedAt) : '';
     loginEl.hidden = !hint;
     if (loginEl.textContent !== hint) loginEl.textContent = hint;
@@ -303,28 +318,28 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     const title = item.orig ? `${item.orig} → ${item.path}` : item.path;
     const fileBtn = node('button', {
       class: 'gp-file', type: 'button', 'data-path': item.path, 'data-key': `${section}|${item.path}|file`,
-      title: local == null ? `${title}\n${OUTSIDE_TITLE}` : title, disabled: local == null,
+      title: local == null ? `${title}\n${t('code.gp.outside')}` : title, disabled: local == null,
       onclick: () => { if (local != null) onOpenFile(local, { staged: section === 'staged', orig: item.orig ? toLocal(item.orig, gs.prefix) : null }); },
     },
-    node('span', { class: 'code-badge', 'data-code': letter, title: LETTER_TITLE[letter] || '', 'aria-label': LETTER_TITLE[letter] || letter }, letter),
+    node('span', { class: 'code-badge', 'data-code': letter, title: letterTitle(letter), 'aria-label': letterTitle(letter) || letter }, letter),
     node('span', { class: 'gp-name' }, baseOf(item.path)),
-    agent ? node('span', { class: 'gp-agent', title: AGENT_TITLE, role: 'img', 'aria-label': AGENT_TITLE }, '●') : null,
+    agent ? node('span', { class: 'gp-agent', title: t('code.gp.agentEdit'), role: 'img', 'aria-label': t('code.gp.agentEdit') }, '●') : null,
     dirOf(item.path) ? node('span', { class: 'gp-dir' }, dirOf(item.path)) : null);
     const li = node('li', {}, fileBtn);
     if (act === 'stage' && item.stageable === false) {
-      fileBtn.title = `${fileBtn.title}\n${item.nested ? NESTED_TITLE : SUBMODULE_TITLE}`;
+      fileBtn.title = `${fileBtn.title}\n${t(item.nested ? 'code.gp.nested' : 'code.gp.submodule')}`;
     } else if (act) {
       const stage = act === 'stage';
       li.append(node('button', {
         class: 'gp-act', type: 'button', 'data-path': item.path, 'data-act': act, 'data-key': `${section}|${item.path}|act`,
-        'aria-label': `${stage ? '스테이징' : '스테이징 해제'}: ${item.path}`, title: stage ? '스테이징' : '스테이징 해제',
+        'aria-label': `${t(stage ? 'code.gp.stage' : 'code.gp.unstage')}: ${item.path}`, title: t(stage ? 'code.gp.stage' : 'code.gp.unstage'),
         onclick: (e) => (stage ? stageOnly(item, e.currentTarget) : unstageOnly(item, e.currentTarget)),
       }, stage ? '+' : '−'));
     }
     return li;
   }
 
-  const none = () => node('li', { class: 'gp-none' }, '없습니다');
+  const none = () => node('li', { class: 'gp-none' }, t('code.gp.none'));
 
   // 초점이 눌렀던 단추 자신이거나 아무 데도 없을 때(body)만 초점을 옮겨도 된다
   const focusFree = (btn) => { const a = document.activeElement; return !a || a === document.body || a === btn; };
@@ -333,7 +348,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   function fillList(ul, section, list, act) {
     const { shown, more } = capList(list, GIT_LIST_MAX);
     const items = shown.map((it) => fileItem(section, it, { act }));
-    if (more) items.push(node('li', { class: 'gp-more' }, `외 ${more}개`));
+    if (more) items.push(node('li', { class: 'gp-more' }, t('code.gp.more', { n: more })));
     ul.replaceChildren(...(items.length ? items : section === 'conflicts' ? [] : [none()]));
   }
 
@@ -344,9 +359,9 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     const staged = gs ? gs.staged : [];
     const changes = gs ? gs.changes : [];
     const conflicts = gs ? gs.conflicts : [];
-    stagedText.textContent = `스테이징된 변경 (${staged.length})`;
-    changesText.textContent = `변경 (${changes.length})`;
-    conflictsText.textContent = `충돌 (${conflicts.length})`;
+    stagedText.textContent = t('code.gp.staged', { n: staged.length });
+    changesText.textContent = t('code.gp.changes', { n: changes.length });
+    conflictsText.textContent = t('code.gp.conflicts', { n: conflicts.length });
     conflictsHead.hidden = !conflicts.length;
     conflictsUl.hidden = !conflicts.length;
     fillList(stagedUl, 'staged', staged, 'unstage');
@@ -369,11 +384,11 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   }
 
   function renderHead() {
-    branchEl.textContent = gs ? gs.branch || (gs.detached ? '분리된 HEAD' : '') : '';
+    branchEl.textContent = gs ? gs.branch || (gs.detached ? t('code.gp.detached') : '') : '';
     branchEl.title = branchEl.textContent;
     const ab = gs ? aheadBehindText(gs) : '';
     abEl.textContent = ab;
-    abEl.title = ab ? `원격보다 앞섬 ${gs.ahead || 0} · 뒤처짐 ${gs.behind || 0}` : '';
+    abEl.title = ab ? t('code.gp.abTitle', { ahead: gs.ahead || 0, behind: gs.behind || 0 }) : '';
   }
 
   // ───────── 쓰기 ─────────
@@ -400,12 +415,12 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
       if (d.gen) { d.gen.discard = true; call(() => api.codeGitMessageStop(root)); } // 만들던 메시지는 방금 커밋한 변경 것이라 버린다
       if (here) { if (same(msgEl.value)) { msgEl.value = ''; d.text = ''; autosize(); } } else if (same(d.text)) d.text = '';
     }
-    if (r.ok === false) { text = r.committed ? `커밋됨 ${oid}\n⚠ ${r.error}` : `⚠ ${r.error}`; err = true; } else if (kind === 'commit' || kind === 'push' || kind === 'sync') text = `${r.pushed ? '커밋·푸시했습니다.' : '커밋했습니다.'} ${oid}`;
+    if (r.ok === false) { text = r.committed ? t('code.gp.committedErr', { oid, error: r.error }) : `⚠ ${r.error}`; err = true; } else if (kind === 'commit' || kind === 'push' || kind === 'sync') text = t(r.pushed ? 'code.gp.pushedDone' : 'code.gp.committedDone', { oid });
     else if (kind === 'syncOnly') {
-      text = r.pushed === false ? OK_TEXT.pull : OK_TEXT.syncOnly; // 받을 것만 있었으면 푸시하지 않았다
-      if (r.left > 0) text += `\n변경 ${r.left}개는 커밋하지 않고 그대로 뒀습니다.`;
-    } else if (kind === 'pull' && r.upToDate) text = '이미 최신 상태입니다';
-    else if (OK_TEXT[kind]) text = OK_TEXT[kind];
+      text = t(r.pushed === false ? OK_KEYS.pull : OK_KEYS.syncOnly); // 받을 것만 있었으면 푸시하지 않았다
+      if (r.left > 0) text += `\n${t('code.gp.left', { n: r.left })}`;
+    } else if (kind === 'pull' && r.upToDate) text = t('code.gp.upToDate');
+    else if (OK_KEYS[kind]) text = t(OK_KEYS[kind]);
     if (here) setFlash(text, err, err ? 0 : OK_NOTE_MS);
     else d.last = text ? { text, err } : null;
     // 커밋·Fetch·Pull·Push 로 커밋 그래프가 바뀌었을 수 있다 (다른 브랜치만 가져와 logKey 가 그대로여도 다시 받는다)
@@ -481,11 +496,11 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     const agent = targets.some((t) => marks.has(t.path.toLowerCase()) || (!!t.orig && marks.has(t.orig.toLowerCase())));
     const secret = secretPaths(targets);
     if (!stageAll && !agent && !secret.length) { runCommit(then); return; }
-    const act = COMMIT_TEXT[then || 'commit'];
+    const act = t(COMMIT_KEYS[then || 'commit']);
     const parts = [];
     if (secret.length) parts.push(secretWarning(secret));
-    if (agent) parts.push('에이전트가 방금 파일을 수정했습니다');
-    parts.push(stageAll ? `변경 ${targets.length}개를 모두 스테이징하고 ${act}할까요?` : `${act}할까요?`);
+    if (agent) parts.push(t('code.gp.agentJustEdited'));
+    parts.push(t(stageAll ? 'code.gp.confirmStageAll' : 'code.gp.confirmPlain', { n: targets.length, act }));
     confirmThen = { then, stageAll };
     confirmTextEl.textContent = parts.join('\n');
     confirmEl.hidden = false;
@@ -502,8 +517,8 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     const c = confirmThen;
     closeConfirm();
     if (!c) return;
-    if (!msgEl.value.trim()) { setFlash('커밋 메시지를 입력해 주세요.', true); return; }
-    if (!gs || !gs.staged.length !== c.stageAll) { setFlash(STALE_TEXT); return; }
+    if (!msgEl.value.trim()) { setFlash(t('code.git.emptyMessage'), true); return; }
+    if (!gs || !gs.staged.length !== c.stageAll) { setFlash(t('code.gp.stale')); return; }
     runCommit(c.then);
   }
 
@@ -543,8 +558,8 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
       if (here && !ops.has(k) && msgEl.value === mine.before) { msgEl.value = r.message; d.text = r.message; d.pending = null; autosize(); }
       else if (!here && !ops.has(k) && d.text === mine.before) { d.text = r.message; d.pending = null; }
       else d.pending = r.message; // 그 사이 입력이 달라졌거나 커밋이 도는 중이면 덮어쓰지 않고 적용 여부를 묻는다
-    } else if (r.stopped) text = '중단했습니다';
-    else { text = `⚠ ${r.error || '메시지를 만들지 못했습니다'}`; err = true; }
+    } else if (r.stopped) text = t('code.analysis.stopped');
+    else { text = `⚠ ${r.error || t('code.analysis.msgEmpty')}`; err = true; }
     if (text) { if (here) setFlash(text, err); else d.last = { text, err }; }
     if (here) { renderNote(); updateControls(); }
     else renderPending();
@@ -554,10 +569,10 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   function graphRow(c, now) {
     const hash7 = String(c.hash || '').slice(0, 7);
     const merge = Array.isArray(c.parents) && c.parents.length > 1;
-    const chips = refChips(c.refs).map((ch) => node('span', { class: `gp-ref gp-ref-${ch.kind}${ch.current ? ' gp-ref-cur' : ''}`, title: `${ch.current ? 'HEAD (현재 위치) · ' : ''}${ch.label} · ${REF_TITLE[ch.kind]}` }, ch.label));
+    const chips = refChips(c.refs).map((ch) => node('span', { class: `gp-ref gp-ref-${ch.kind}${ch.current ? ' gp-ref-cur' : ''}`, title: `${ch.current ? `${t('code.gp.headHere')} · ` : ''}${ch.label} · ${t(REF_KEYS[ch.kind])}` }, ch.label));
     return node('li', { class: 'gp-node', title: `${hash7} · ${c.subject}` },
       node('div', { class: 'gp-node-top' },
-        node('span', { class: 'gp-mark', title: merge ? '병합 커밋' : '커밋' }, merge ? '◆' : '●'),
+        node('span', { class: 'gp-mark', title: t(merge ? 'code.gp.mergeCommit' : 'code.gp.commit') }, merge ? '◆' : '●'),
         node('span', { class: 'gp-subject' }, c.subject),
         chips),
       node('div', { class: 'gp-meta' }, [c.author, logTime(c.at, now)].filter(Boolean).join(' · ')));
@@ -567,7 +582,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
 
   let drawn = null; // 마지막으로 그린 { shown, has }
   function renderGraph() {
-    graphToggle.textContent = `${graphOpen ? '▾' : '▸'} 그래프`;
+    graphToggle.textContent = `${graphOpen ? '▾' : '▸'} ${t('code.gp.graph')}`;
     graphToggle.setAttribute('aria-expanded', String(graphOpen));
     graphUl.hidden = !graphOpen;
     if (!graphOpen) return; // 접혀 있는 동안은 그대로 둔다 (다시 펼칠 때 바뀌었으면 refreshGraph 가 받는다)
@@ -576,9 +591,9 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     drawn = { shown, has: !!gs };
     const top = listsEl.scrollTop;
     if (!gs) graphUl.replaceChildren();
-    else if (!graph) graphUl.replaceChildren(graphMsg('불러오는 중…'));
+    else if (!graph) graphUl.replaceChildren(graphMsg(t('code.view.loading')));
     else if (graph.error) graphUl.replaceChildren(graphMsg(`⚠ ${graph.error}`, true));
-    else if (!graph.commits.length) graphUl.replaceChildren(graphMsg('커밋이 없습니다'));
+    else if (!graph.commits.length) graphUl.replaceChildren(graphMsg(t('code.gp.noCommits')));
     else { const now = Date.now(); graphUl.replaceChildren(...graph.commits.map((c) => graphRow(c, now))); }
     listsEl.scrollTop = top;
   }
@@ -608,7 +623,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     graphPending = '';
     const okLog = r.ok && Array.isArray(r.commits);
     if (okLog) graphKey = key;
-    graph = okLog ? { commits: r.commits } : { error: r.error || '그래프를 불러오지 못했습니다' };
+    graph = okLog ? { commits: r.commits } : { error: r.error || t('code.gp.graphFailed') };
     renderGraph();
   }
 
@@ -632,7 +647,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
   }
 
   function setUnavailable(text) {
-    unavailable = String(text || '지원하지 않는 폴더입니다');
+    unavailable = String(text || t('code.view.unsupported'));
     closeConfirm();
     clearTimeout(flashTimer);
     flash = null;
@@ -671,7 +686,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
       // 잠깐 느린 것: 마지막 목록·확인 줄을 그대로 두고 안내만 한다 (쓰기는 메인이 다시 검사한다). 그 밖의 실패는 쓸 수 없는 상태로.
       if (next && next.ok === false && next.code === 'timeout' && gs) { staleNote = next.error; renderNote(); return; }
       staleNote = '';
-      if (!next || next.ok === false) { setUnavailable((next && next.error) || '깃 상태를 읽지 못했습니다'); return; }
+      if (!next || next.ok === false) { setUnavailable((next && next.error) || t('code.gp.stateFailed')); return; }
       const prev = gs;
       unavailable = '';
       gs = next;
@@ -687,7 +702,7 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
         renderLists();
         renderHead();
         // 확인 줄이 열려 있는 동안 목록이 바뀌었으면 닫는다: 확인 줄이 가리킨 변경과 실제 커밋 대상이 어긋나지 않게
-        if (confirmThen && contentChanged) { closeConfirm(); setFlash(STALE_TEXT); }
+        if (confirmThen && contentChanged) { closeConfirm(); setFlash(t('code.gp.stale')); }
       }
       listFp = list;
       renderNote();
@@ -707,6 +722,18 @@ export function createGitPanel({ api, onOpenFile, onChanged, agentEdits }) {
     hide() {
       visible = false;
       syncBusy();
+    },
+    // 언어가 바뀜: 한 번 만든 글자를 다시 쓰고, 목록·머리줄·안내·단추 툴팁·그래프를 새 언어로 다시 그린다.
+    // 지문(fp·listFp)은 데이터의 지문이라 그대로 두고 여기서 직접 다시 그린다 (비우면 다음 조회가 「목록이 바뀜」으로 보고 확인 줄을 닫는다).
+    // 이미 띄운 안내(flash)·확인 줄의 글은 다음 갱신 때 바뀐다.
+    relabel() {
+      paintLabels();
+      renderLists();
+      renderHead();
+      drawn = null; // 그래프는 같은 데이터여도 줄의 글이 달라지므로 다시 그린다
+      renderGraph();
+      renderNote();
+      updateControls();
     },
   };
 }

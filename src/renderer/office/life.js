@@ -1,21 +1,22 @@
 import { Navigation } from './navigation.js';
 import { createAppearance } from './appearance.js';
 import { DRINKS } from './drinks.js';
+import { t } from '../../shared/i18n.js';
 
 export const COFFEE_MENU = DRINKS;
 
 const ACTIONS = {
-  drink: { pose: 'drink', ms: 6500, text: '🥤 한 모금, 충전 완료!' },
-  laptop: { pose: 'type', ms: 12000, text: '⌨ 내 노트북에서 작업 중' },
-  sit: { pose: 'sit', ms: 10000, text: '☕ 여기서 잠깐 쉬어요' },
-  collaborate: { pose: 'talk', ms: 8000, text: '💡 함께 아이디어 정리 중' },
-  visit: { pose: 'stand', ms: 4000, text: '🚪 문을 열고 방에 들어왔어요' },
-  elevator: { pose: 'stand', ms: 3000, text: '엘리베이터 문이 열렸어요' },
-  brew: { pose: 'brew', ms: 2400, text: '☕ 커피가 내려오는 중…' },
-  arcade: { pose: 'play', ms: 8000, text: '🎮 잠깐의 픽셀 게임!' },
-  water: { pose: 'water', ms: 5500, text: '🌱 초록 친구에게 물 주는 중' },
-  read: { pose: 'read', ms: 7500, text: '📖 책장을 넘기며 쉬어요' },
-  stretch: { pose: 'stretch', ms: 6000, text: '🙌 쭉쭉, 어깨를 풀어요' },
+  drink: { pose: 'drink', ms: 6500, get text() { return t('office.action.drink'); } },
+  laptop: { pose: 'type', ms: 12000, get text() { return t('office.action.laptop'); } },
+  sit: { pose: 'sit', ms: 10000, get text() { return t('office.action.sit'); } },
+  collaborate: { pose: 'talk', ms: 8000, get text() { return t('office.action.collaborate'); } },
+  visit: { pose: 'stand', ms: 4000, get text() { return t('office.action.visit'); } },
+  elevator: { pose: 'stand', ms: 3000, get text() { return t('office.action.elevator'); } },
+  brew: { pose: 'brew', ms: 2400, get text() { return t('office.action.brew'); } },
+  arcade: { pose: 'play', ms: 8000, get text() { return t('office.action.arcade'); } },
+  water: { pose: 'water', ms: 5500, get text() { return t('office.action.water'); } },
+  read: { pose: 'read', ms: 7500, get text() { return t('office.action.read'); } },
+  stretch: { pose: 'stretch', ms: 6000, get text() { return t('office.action.stretch'); } },
 };
 // 상주 캐릭터의 산책 범위: 라운지·카페·화장실 별채와 복도 전체. 업무 방은 실제 에이전트 자리라 넣지 않는다.
 const WANDER_ROOMS = ['rest', 'cafe', 'restroom'];
@@ -26,6 +27,16 @@ const DOOR_CLEAR = 90;
 const COLLAB_MAX = 2; // 스킬 협업에 함께 가는 상주 캐릭터 최대 수
 const COLLAB_EPISODE_MS = 30000; // 스킬을 시작한 뒤 이만큼만 협업 연출 (스킬 표시는 턴 끝까지 남는다)
 
+// 표시 이름은 getter 라 언어가 바뀌면 바로 따라간다.
+const named = (actor, key) => Object.defineProperty(actor, 'label', { get: () => t(key), enumerable: true, configurable: true });
+// 쉬는 동안 오래 남는 작업 문구(「바닥을 클릭해…」 등)는 taskKey 에 키를 두고 읽을 때 번역한다 — 언어를 바꾸면 바로 바뀐다.
+// task 에 다른 문구를 넣으면 taskKey 는 지워진다. 구독을 쓰지 않는다(테마를 바꿀 때마다 OfficeLife 를 새로 만든다).
+const tasked = actor => {
+  let text = '';
+  return Object.defineProperty(actor, 'task', { enumerable: true, configurable: true,
+    get() { return this.taskKey ? t(this.taskKey) : text; }, set(v) { this.taskKey = null; text = v; } });
+};
+
 // Local life is separate from Claude sessions and is never counted as executing agents.
 export class OfficeLife {
   constructor(layout, engine, random = Math.random) {
@@ -34,13 +45,13 @@ export class OfficeLife {
     this.menu = null; this.effects = []; this.bestScore = 0;
     this.skillEpisodes = new Map(); // 스킬 쓰는 에이전트 key → { skill, since }
     this.doors = layout.interactions.filter(i => i.door).map(i => ({ id: i.id, amount: 0, heldUntil: 0 }));
-    this.player = this.makeActor('player', '나', layout.playerStart, true, 5);
+    this.player = this.makeActor('player', 'office.resident.player', layout.playerStart, true, 5);
     this.residents = [
-      this.makeActor('resident-mocha', '모카', { x: 1850, y: 842 }, false, 4),
-      this.makeActor('resident-dex', '덱스', { x: 1500, y: 1000 }, false, 3, 'codex'),
-      this.makeActor('resident-grok', '유니', { x: 1150, y: 930 }, false, 1, 'grok'),
-      this.makeActor('resident-muse', '루프', { x: 1870, y: 1070 }, false, 2, 'muse'),
-      this.makeActor('resident-gemini', '코코', { x: 1680, y: 1080 }, false, 6, 'antigravity'),
+      this.makeActor('resident-mocha', 'office.resident.mocha', { x: 1850, y: 842 }, false, 4),
+      this.makeActor('resident-dex', 'office.resident.dex', { x: 1500, y: 1000 }, false, 3, 'codex'),
+      this.makeActor('resident-grok', 'office.resident.uni', { x: 1150, y: 930 }, false, 1, 'grok'),
+      this.makeActor('resident-muse', 'office.resident.loop', { x: 1870, y: 1070 }, false, 2, 'muse'),
+      this.makeActor('resident-gemini', 'office.resident.coco', { x: 1680, y: 1080 }, false, 6, 'antigravity'),
     ];
     // 걷는 속도를 조금씩 달리해 같은 길에서 나란히 붙어 다니지 않게 한다.
     this.residents.forEach((a, i) => { a.nextAt = 1800 + i * 2600; a.speed = [165, 150, 185, 200][i % 4]; });
@@ -52,11 +63,11 @@ export class OfficeLife {
       ...layout.interactions.filter(i => i.door).map(i => i.stand)];
   }
 
-  makeActor(id, label, p, isPlayer, colorIndex, cli = 'claude') {
-    return { id, label, cli, x: p.x, y: p.y, isPlayer, isAmbient: !isPlayer, isLead: false, colorIndex,
+  makeActor(id, labelKey, p, isPlayer, colorIndex, cli = 'claude') {
+    return tasked(named({ id, cli, x: p.x, y: p.y, isPlayer, isAmbient: !isPlayer, isLead: false, colorIndex,
       appearance: createAppearance(this.random), heldItem: null,
       role: 'visitor', status: 'idle', pose: 'stand', facing: 'down', path: [], action: null, recent: [],
-      task: isPlayer ? '바닥을 클릭해 이동하세요' : '사무실 상주 캐릭터', until: 0, nextAt: 0, bubble: null };
+      taskKey: isPlayer ? 'office.task.clickFloor' : 'office.task.resident', until: 0, nextAt: 0, bubble: null }, labelKey));
   }
 
   moveTo(point, interaction = null, actor = this.player) {
@@ -67,7 +78,7 @@ export class OfficeLife {
     actor.path = path; actor.action = null; actor.currentItem = null; actor.interaction = interaction; actor.until = 0;
     actor.selection = null;
     if (actor.isPlayer) this.menu = null;
-    actor.status = 'walking'; actor.task = interaction ? `${interaction.label}로 이동 중` : '산책 중';
+    actor.status = 'walking'; actor.task = interaction ? t('office.task.goingTo', { label: interaction.label }) : t('office.task.walking');
     actor.bubble = null;
     if (actor.isPlayer) this.destination = { ...point };
     return true;
@@ -89,7 +100,7 @@ export class OfficeLife {
 
   closeMenu() {
     if (!this.menu) return;
-    this.menu = null; this.player.currentItem = null; this.player.task = '사무실을 둘러보세요';
+    this.menu = null; this.player.currentItem = null; this.player.taskKey = 'office.task.lookAround';
   }
 
   chooseDrink(id) {
@@ -109,7 +120,7 @@ export class OfficeLife {
       if (a.bubble && a.bubble.until <= this.time) a.bubble = null;
       if (a.heldItem && a.heldItem.until <= this.time) {
         a.heldItem = null;
-        if (a.isPlayer && !a.path.length && !a.action) a.task = '사무실을 둘러보세요';
+        if (a.isPlayer && !a.path.length && !a.action) a.taskKey = 'office.task.lookAround';
       }
       if (a.path.length) this.step(a, dt);
       else if (a.interaction) this.startAction(a);
@@ -162,8 +173,8 @@ export class OfficeLife {
     const item = a.interaction;
     if (item.menu === 'coffee' && !item.selection && a.isPlayer) {
       a.interaction = null; a.currentItem = item.id;
-      a.task = '마실 커피나 음료를 골라 주세요';
-      this.menu = { itemId: item.id, title: item.label, choices: COFFEE_MENU };
+      a.taskKey = 'office.task.pickDrink';
+      this.menu = { itemId: item.id, get title() { return item.label; }, choices: COFFEE_MENU };
       return;
     }
     const action = ACTIONS[item.menu === 'coffee' && !a.isPlayer ? 'brew' : item.action];
@@ -177,31 +188,32 @@ export class OfficeLife {
     a.bubble = { text: action.text, kind: 'chat', until: this.time + 3500 };
     a.nextAt = a.until + 2000;
     if (a.action === 'drink') this.giveDrink(a, item.id === 'vending' ? DRINKS.find(d => d.id === 'soda') : COFFEE_MENU[0]);
-    if (a.isPlayer) this.engine.pushFeed(`나: ${item.label} 이용 중`);
+    if (a.isPlayer) this.engine.pushFeed(t('office.feed.useItem', { label: item.label }));
   }
 
-  giveDrink(a, drink) { a.heldItem = { ...drink, until: this.time + 45000 }; }
+  giveDrink(a, drink) { a.heldItem = { ...drink, get label() { return drink.label; }, until: this.time + 45000 }; }
 
   finishAction(a) {
     if (a.action === 'brew') {
       this.giveDrink(a, a.selection || COFFEE_MENU[0]);
       a.action = 'drink'; a.pose = 'drink'; a.until = this.time + 3500; a.currentItem = null;
-      a.task = `☕ ${a.heldItem.label} · 들고 산책할 수 있어요`;
-      a.bubble = { text: `${a.heldItem.label}, 한 모금!`, kind: 'chat', until: this.time + 3500 };
+      a.task = t('office.task.carryDrink', { label: a.heldItem.label });
+      a.bubble = { text: t('office.bubble.sip', { label: a.heldItem.label }), kind: 'chat', until: this.time + 3500 };
       return;
     }
     if (a.action === 'arcade') {
       const score = 100 + Math.floor(this.random() * 900);
       this.bestScore = Math.max(this.bestScore, score);
-      a.bubble = { text: `🎮 ${score}점! 최고 ${this.bestScore}점`, kind: 'done', until: this.time + 4500 };
+      a.bubble = { text: t('office.bubble.score', { score, best: this.bestScore }), kind: 'done', until: this.time + 4500 };
       this.effects.push({ x: a.x, y: a.y, kind: 'confetti', until: this.time + 2500 });
-      if (a.isPlayer) this.engine.pushFeed(`나: 게임 ${score}점 · 최고 ${this.bestScore}점`);
+      if (a.isPlayer) this.engine.pushFeed(t('office.feed.score', { score, best: this.bestScore }));
     } else if (a.action === 'water') {
-      a.bubble = { text: '🌱 잎이 더 반짝이는 것 같아요', kind: 'done', until: this.time + 3500 };
+      a.bubble = { text: t('office.bubble.leaves'), kind: 'done', until: this.time + 3500 };
       this.effects.push({ x: a.x, y: a.y - 35, kind: 'sparkle', until: this.time + 3500 });
-    } else if (a.action === 'stretch') a.bubble = { text: '✨ 몸도 마음도 가벼워요', kind: 'done', until: this.time + 3500 };
+    } else if (a.action === 'stretch') a.bubble = { text: t('office.bubble.light'), kind: 'done', until: this.time + 3500 };
     a.action = null; a.currentItem = null; a.pose = 'stand'; a.status = 'idle'; a.selection = null;
-    a.task = a.isPlayer ? (a.heldItem ? `☕ ${a.heldItem.label} 들고 산책 중` : '다음 산책을 기다리는 중') : '잠깐 쉬는 중';
+    if (a.isPlayer && a.heldItem) a.task = t('office.task.walkWithDrink', { label: a.heldItem.label });
+    else a.taskKey = a.isPlayer ? 'office.task.nextWalk' : 'office.task.shortRest';
   }
 
   autonomous(a, activeSkills) {
@@ -211,8 +223,8 @@ export class OfficeLife {
       const room = this.layout.rooms.skills;
       const index = this.residents.filter(r => r.id !== 'resident-mocha').indexOf(a);
       const target = { x: room.x + 40 + index * 130, y: room.y + room.h - 20 };
-      if (Math.hypot(a.x - target.x, a.y - target.y) > 15) this.moveTo(target, { label: '스킬 협업', action: 'collaborate' }, a);
-      else { a.action = 'collaborate'; a.pose = 'talk'; a.status = 'working'; a.task = '스킬 스튜디오 · 협업 연출'; a.until = this.time + 7000; }
+      if (Math.hypot(a.x - target.x, a.y - target.y) > 15) this.moveTo(target, { label: t('office.interaction.skillCollab'), action: 'collaborate' }, a);
+      else { a.action = 'collaborate'; a.pose = 'talk'; a.status = 'working'; a.task = t('office.task.skillStudio'); a.until = this.time + 7000; }
       return;
     }
     const others = [...this.residents.filter(r => r !== a).map(r => r.path.length ? r.path[r.path.length - 1] : r),
@@ -236,12 +248,12 @@ export class OfficeLife {
       if (this.navigation.isWalkable(p) && gap(p) > bestGap) { best = p; bestGap = gap(p); }
     }
     if (best && this.moveTo(best, null, a) && this.random() < 0.3)
-      a.bubble = { text: this.random() < 0.5 ? '🌿 잠깐 산책할까요?' : '💬 아이디어가 떠올랐어요', kind: 'chat', until: this.time + 3500 };
+      a.bubble = { text: t(this.random() < 0.5 ? 'office.bubble.stroll' : 'office.bubble.idea'), kind: 'chat', until: this.time + 3500 };
   }
 
   snapshot() {
     return [this.player, ...this.residents].map(a => ({ ...a, pose: a.path.length ? 'walk' : a.pose,
-      moving: a.path.length > 0, sessionLabel: a.isPlayer ? '내 캐릭터' : '상주 캐릭터 · 생활 연출',
+      moving: a.path.length > 0, sessionLabel: t(a.isPlayer ? 'office.session.player' : 'office.session.resident'),
       bubble: a.bubble ? { text: a.bubble.text, kind: a.bubble.kind } : null }));
   }
 }

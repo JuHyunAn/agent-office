@@ -1,5 +1,6 @@
 import baseLayout from '../pixel-office/layout.js';
 import { MATERIALS, TILE, GRID, ROLES, isFloor, isWall } from './catalog.js';
+import { t } from '../../../shared/i18n.js';
 import { environmentSettings } from './environment.js';
 
 // 기본 사무실의 본관·별채·연결 통로가 차지하는 바닥의 합집합 면적.
@@ -68,17 +69,17 @@ export function snap(doc, item) {
 }
 export function placementError(doc, item) {
   const f = footprint(item), m = MATERIALS[item.kind];
-  if (f.x < 0 || f.y < 0 || f.x + f.w > LIMIT || f.y + f.h > LIMIT) return '제작 범위를 벗어났어요.';
+  if (f.x < 0 || f.y < 0 || f.x + f.w > LIMIT || f.y + f.h > LIMIT) return t('theme.model.outOfRange');
   const others = doc.items.filter(i => i.id !== item.id);
   if (isFloor(item)) {
     if (others.some(i => isFloor(i) && i.x === item.x && i.y === item.y)) return '';
-    if (area({ items: others }) + TILE * TILE > MAX_AREA) return '최대 면적은 기본 사무실의 두 배예요.';
+    if (area({ items: others }) + TILE * TILE > MAX_AREA) return t('theme.model.maxArea');
     return '';
   }
   for (const p of [{ x: f.x + 6, y: f.y + 6 }, { x: f.x + f.w - 6, y: f.y + 6 }, { x: f.x + 6, y: f.y + f.h - 6 }, { x: f.x + f.w - 6, y: f.y + f.h - 6 }]) {
-    if (!onFloor(doc, p)) return '먼저 이 위치에 바닥을 놓아 주세요.';
+    if (!onFloor(doc, p)) return t('theme.model.needFloor');
   }
-  if (item.kind === 'entry' && others.some(i => i.kind === 'entry')) return '출입 위치는 하나예요. 기존 표시를 이동해 주세요.';
+  if (item.kind === 'entry' && others.some(i => i.kind === 'entry')) return t('theme.model.oneEntry');
   if (m.walkable) return '';
   for (const other of others) {
     if (isFloor(other) || MATERIALS[other.kind].walkable) continue;
@@ -88,7 +89,7 @@ export function placementError(doc, item) {
       // 모서리에서 직교하는 벽의 기둥 겹침은 허용한다.
       if (item.rotation !== other.rotation && Math.min(f.x + f.w, g.x + g.w) - Math.max(f.x, g.x) <= 12 && Math.min(f.y + f.h, g.y + g.h) - Math.max(f.y, g.y) <= 12) continue;
     }
-    if (overlaps(f, g)) return '다른 재료와 겹쳐요.';
+    if (overlaps(f, g)) return t('theme.model.overlap');
   }
   return '';
 }
@@ -131,18 +132,18 @@ export function reachable(doc) {
 }
 export function validate(doc) {
   const errors = [], floors = doc.items.filter(isFloor), entry = doc.items.find(i => i.kind === 'entry');
-  if (!floors.length) errors.push({ text: '바닥이 필요해요.' });
-  if (area(doc) > MAX_AREA) errors.push({ text: '바닥 면적이 최대치를 넘었어요.' });
-  if (!entry) errors.push({ text: '출입 위치를 하나 놓아 주세요.' });
-  if (!doc.items.some(i => i.kind === 'desk')) errors.push({ text: '업무 책상을 하나 이상 놓아 주세요.' });
+  if (!floors.length) errors.push({ text: t('theme.model.noFloor') });
+  if (area(doc) > MAX_AREA) errors.push({ text: t('theme.model.areaOver') });
+  if (!entry) errors.push({ text: t('theme.model.noEntry') });
+  if (!doc.items.some(i => i.kind === 'desk')) errors.push({ text: t('theme.model.noDesk') });
   for (const item of doc.items) { const text = placementError(doc, item); if (text) errors.push({ id: item.id, text: `${MATERIALS[item.kind].label}: ${text}` }); }
   const cells = reachable(doc);
-  if (entry && !cells.size) errors.push({ id: entry.id, text: '출입 위치가 막혀 있어요.' });
+  if (entry && !cells.size) errors.push({ id: entry.id, text: t('theme.model.entryBlocked') });
   const canReach = p => [...[0, -12, 12]].some(dx => [0, -12, 12].some(dy => cells.has(`${Math.round((p.x + dx) / GRID) * GRID},${Math.round((p.y + dy) / GRID) * GRID}`)));
-  for (const floor of floors) if (![24, 96, 168].some(x => [24, 96, 168].some(y => cells.has(`${floor.x + x},${floor.y + y}`)))) errors.push({ id: floor.id, text: '출입구에서 갈 수 없는 바닥이 있어요. 통로나 문을 연결해 주세요.' });
+  for (const floor of floors) if (![24, 96, 168].some(x => [24, 96, 168].some(y => cells.has(`${floor.x + x},${floor.y + y}`)))) errors.push({ id: floor.id, text: t('theme.model.floorUnreachable') });
   for (const item of doc.items.filter(i => MATERIALS[i.kind].action || i.kind === 'door')) {
     const p = item.kind === 'mat' ? localPoint(item, 48, 36) : approach(item);
-    if (!walkable(doc, p) || !canReach(p)) errors.push({ id: item.id, text: `${MATERIALS[item.kind].label} 앞에 접근할 공간이 필요해요.` });
+    if (!walkable(doc, p) || !canReach(p)) errors.push({ id: item.id, text: t('theme.model.needAccess', { label: MATERIALS[item.kind].label }) });
   }
   return errors;
 }
@@ -151,33 +152,33 @@ export function makeLayout(doc) {
   const floors = doc.items.filter(isFloor), xs = floors.map(i => i.x), ys = floors.map(i => i.y);
   const minX = Math.min(...xs, start.x), minY = Math.min(...ys, start.y), maxX = Math.max(...xs.map(x => x + TILE), start.x + GRID), maxY = Math.max(...ys.map(y => y + TILE), start.y + GRID);
   const rooms = {};
-  for (const [role, label] of Object.entries(ROLES)) {
+  for (const role of Object.keys(ROLES)) {
     const seats = doc.items.filter(i => i.kind === 'desk' && (i.role || 'dev') === role).map(i => ({ ...approach(i), facing: ['up', 'right', 'down', 'left'][i.rotation] }));
     const p = seats[0] || start;
     const name = doc.items.find(i => i.kind === 'desk' && (i.role || 'dev') === role && i.name)?.name;
-    rooms[role] = { key: role, label: name || label, x: p.x - 24, y: p.y - 24, w: 48, h: 48, door: p, seats, wander: { x: start.x, y: start.y, w: 0, h: 0 } };
+    rooms[role] = { key: role, get label() { return name || ROLES[role]; }, x: p.x - 24, y: p.y - 24, w: 48, h: 48, door: p, seats, wander: { x: start.x, y: start.y, w: 0, h: 0 } };
   }
   rooms.rest.seats = doc.items.filter(i => i.kind === 'sofa').map(approach);
   const interactions = doc.items.filter(i => MATERIALS[i.kind].action || i.kind === 'door').map(i => {
     const m = MATERIALS[i.kind], f = footprint(i), p = i.kind === 'mat' ? localPoint(i, 48, 36) : approach(i);
-    return { id: i.id, label: i.name || m.label, room: i.role || 'rest', x: i.x, y: i.y, w: f.w, d: f.h, height: m.h,
-      stand: p, action: i.kind === 'door' ? 'visit' : m.action, menu: m.menu, door: i.kind === 'door', axis: i.rotation % 2 ? 'y' : 'x', description: '가까이 다가가 이용해요.' };
+    return { id: i.id, get label() { return i.name || m.label; }, room: i.role || 'rest', x: i.x, y: i.y, w: f.w, d: f.h, height: m.h,
+      stand: p, action: i.kind === 'door' ? 'visit' : m.action, menu: m.menu, door: i.kind === 'door', axis: i.rotation % 2 ? 'y' : 'x', get description() { return t('theme.model.useHint'); } };
   });
   return { width: maxX + 24, height: maxY + 24, rooms, entrance: start, playerStart: start, interactions, obstacles: [],
     hallway: { y: start.y, y0: start.y, y1: start.y }, walkBounds: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
     isWalkable: p => walkable(doc, p), customDocument: doc };
 }
 export function parseDocument(value) {
-  if (!value || value.version !== 1 || !Array.isArray(value.items) || value.items.length > 800) throw new Error('저장된 사무실 형식이 올바르지 않아요.');
+  if (!value || value.version !== 1 || !Array.isArray(value.items) || value.items.length > 800) throw new Error(t('theme.model.badFormat'));
   const ids = new Set();
   const items = value.items.map(i => {
-    if (!MATERIALS[i.kind] || typeof i.id !== 'string' || i.id.length > 80 || ids.has(i.id) || !Number.isFinite(i.x) || !Number.isFinite(i.y) || !Number.isInteger(i.rotation) || i.rotation < 0 || i.rotation > 3) throw new Error('저장된 재료 정보를 읽을 수 없어요.');
+    if (!MATERIALS[i.kind] || typeof i.id !== 'string' || i.id.length > 80 || ids.has(i.id) || !Number.isFinite(i.x) || !Number.isFinite(i.y) || !Number.isInteger(i.rotation) || i.rotation < 0 || i.rotation > 3) throw new Error(t('theme.model.badItem'));
     const name = normalizeName(i.name);
     ids.add(i.id); return { id: i.id, kind: i.kind, x: i.x, y: i.y, rotation: i.rotation, ...(ROLES[i.role] ? { role: i.role } : {}), ...(name ? { name } : {}) };
   });
   const background = typeof value.background === 'string' && /^data:image\/(png|jpeg|webp);base64,/.test(value.background) && value.background.length < 2000000 ? value.background : null;
   const doc = { version: 1, items, background, ...(value.environment ? { environment: environmentSettings(value.environment) } : {}) };
-  if (validate(doc).length) throw new Error('저장된 사무실의 배치나 동선을 확인해야 해요.');
+  if (validate(doc).length) throw new Error(t('theme.model.badLayout'));
   return doc;
 }
 export function exampleDocument() {

@@ -85,7 +85,7 @@ let bg, sprites;
 
 export default {
   id: 'pixel-office',
-  name: '픽셀 오피스',
+  get name() { return t('theme.name.pixel-office'); }, // 테마 이름은 사전 키 theme.name.<id> (한영 전환 — 결정대장 D-088)
   layout,
   async load() { bg = await img('./assets/office.png'); sprites = await img('./assets/agent.png'); },
   drawBackground(ctx, L) { ctx.drawImage(bg, 0, 0, L.width, L.height); },
@@ -152,7 +152,9 @@ export default {
 
 ## 4. 말풍선 (`drawBubble`)
 
-`bubble.text` 는 이모지 1개 + 짧은 한국어 (예: `📨 결과 공유 중...`, `⌨ 수정 중: Foo.kt`). 길면 테마가 말줄임한다.
+`bubble.text` 는 이모지 1개 + 짧은 문구 (예: `📨 결과 공유 중...`, `⌨ 수정 중: Foo.kt` — 영어 모드면 영어, 영어가 더 길 수 있다). 길면 테마가 말줄임한다.
+
+**한영 전환 (D-088)**: 테마가 직접 그리는 글자(방 표지판·간판·편집기 문구)는 `src/shared/i18n.js` 의 `t('theme.…')` 로 쓰고 사전 `src/shared/i18n/{ko,en}/theme.js` 에 둔다. 캐시에 구워 두는 글자는 `onLangChange` 에서 **새 캐시를 먼저 만들고 성공하면 교체**하거나 캐시 키에 `getLang()` 을 넣는다. 레이아웃의 `label`·`description`·`name` 은 getter 라 값을 복사해 두면 그 시점 언어로 굳는다 — 그릴 때 읽는다. 그리기 함수의 시간 매개변수 `t` 와 겹치면 `import { t as tr }` 로 가져온다.
 
 | kind | 의미 | 예시 색 |
 |---|---|---|

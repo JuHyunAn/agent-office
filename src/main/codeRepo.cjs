@@ -10,6 +10,7 @@ const path = require('node:path');
 const claudeCli = require('./claudeCli.cjs');
 const { cleanEnv } = require('./env.cjs');
 const { createGitOps } = require('./codeGit.cjs');
+const { t } = require('../shared/i18n.js');
 
 const MAX_TREE = 20000; // 트리에 올리는 파일 수 상한
 const MAX_READ = 2 * 1024 * 1024; // 읽는 파일 크기 상한
@@ -17,9 +18,6 @@ const SNIFF_BYTES = 8000; // 앞부분에 NUL 이 있으면 바이너리로 본�
 const GIT_TIMEOUT_MS = 10000;
 const GIT_MAX_BUFFER = 64 * 1024 * 1024;
 const WIN = process.platform === 'win32';
-const ERR_PATH = '허용되지 않는 경로입니다';
-const ERR_ROOT = '허용되지 않는 폴더입니다';
-const ERR_BAD = '잘못된 요청입니다';
 
 // ---------- 경로 ----------
 
@@ -54,7 +52,7 @@ function hasForbiddenPiece(rel) {
 
 // root 안쪽의 절대 경로를 돌려준다. 바깥·위험 경로는 던진다. (대상이 없어도 통과 — 읽을 때 missing 으로 처리)
 function resolveInside(root, rel) {
-  const deny = () => new Error(ERR_PATH);
+  const deny = () => new Error(t('code.err.path'));
   // ':' 는 드라이브 상대(C:x)·대체 데이터 스트림(a.js:stream) 을 함께 막는다
   if (typeof rel !== 'string' || !rel || rel.includes(':') || rel.includes('\0') || path.isAbsolute(rel)) throw deny();
   if (hasForbiddenPiece(rel)) throw deny();
@@ -105,9 +103,11 @@ function findGit() {
   return gitPathPromise;
 }
 
-function gitError(kind, message, exitCode) {
+// extra: 문구와 별개로 붙이는 표시 (tooBig: 출력 상한 초과, raw: 번역 전 원인 글). 호출 쪽은 문구 대신 이 값으로 가른다.
+function gitError(kind, message, exitCode, extra) {
   const e = new Error(message);
   e.kind = kind;
+  if (extra) Object.assign(e, extra);
   if (typeof exitCode === 'number') e.exitCode = exitCode; // git 이 돌려준 종료 코드 (grep 의 「없음」=1 등을 가르는 데 쓴다)
   return e;
 }
@@ -146,12 +146,12 @@ const trackedGitCount = () => trackedGit.size; // 시험용: 추적 중인 자�
 // 실패 오류에는 e.stderr·e.stdout (원문 뒤쪽 4000자 — 원인은 끝에 온다) 이 붙는다 — 호출 쪽이 문구로 원인을 가른다.
 async function git(root, args, { buffer = false, maxBuffer = GIT_MAX_BUFFER, timeoutMs = GIT_TIMEOUT_MS, input, env: extraEnv, track = false, refuseClosing = false } = {}) {
   const file = await findGit();
-  if (!file) throw gitError('no-git', 'git 을 찾지 못했습니다');
+  if (!file) throw gitError('no-git', t('code.repo.noGit'));
   const env = cleanEnv({ LC_ALL: 'C' });
   for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE']) delete env[k];
   Object.assign(env, extraEnv);
   const argv = ['--no-optional-locks', '-c', 'core.quotepath=false', '-c', 'core.fsmonitor=false', ...args];
-  if ((track || refuseClosing) && closing) throw gitError('fail', '앱을 종료하는 중입니다'); // findGit 을 기다리는 사이 종료됐을 수 있어 띄우기 직전에 본다
+  if ((track || refuseClosing) && closing) throw gitError('fail', t('code.repo.closing')); // findGit 을 기다리는 사이 종료됐을 수 있어 띄우기 직전에 본다
   return new Promise((resolve, reject) => {
     let timer = null;
     let timedOut = false;
@@ -168,16 +168,17 @@ async function git(root, args, { buffer = false, maxBuffer = GIT_MAX_BUFFER, tim
         };
         // cwd 가 없어도 spawn 은 ENOENT 를 내므로 폴더부터 확인한다
         if (err.code === 'ENOENT') {
-          if (!fs.existsSync(root)) return reject(gitError('nodir', `폴더가 없습니다: ${root}`));
+          if (!fs.existsSync(root)) return reject(gitError('nodir', t('code.repo.noDir', { dir: root })));
           gitPathPromise = null;
-          return reject(gitError('no-git', 'git 을 찾지 못했습니다'));
+          return reject(gitError('no-git', t('code.repo.noGit')));
         }
-        if (/dubious ownership/i.test(text)) return reject(gitError('unsafe', 'git 이 이 폴더를 안전하지 않은 저장소로 봅니다'));
+        if (/dubious ownership/i.test(text)) return reject(gitError('unsafe', t('code.repo.unsafe')));
         if (err.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
           if (isAlive(child)) killTree(child);
-          return reject(gitError('fail', 'git 출력이 너무 큽니다'));
+          return reject(gitError('fail', t('code.repo.tooBig'), undefined, { tooBig: true }));
         }
-        return failed(gitError('fail', `git 실행 실패:\n${text.slice(0, 200) || err.message}`, typeof err.code === 'number' ? err.code : undefined));
+        const detail = text.slice(0, 200) || err.message;
+        return failed(gitError('fail', t('code.git.runFailed', { detail }), typeof err.code === 'number' ? err.code : undefined, { raw: detail }));
       });
     // git 이 입력을 읽기 전에 끝나면 쓰기가 EPIPE·EOF 오류를 내는데, 처리하지 않으면 메인 프로세스가 죽는다 (실측).
     // 실패는 위 콜백의 종료 코드로 알려진다.
@@ -187,7 +188,7 @@ async function git(root, args, { buffer = false, maxBuffer = GIT_MAX_BUFFER, tim
     timer = setTimeout(() => {
       timedOut = true;
       if (isAlive(child)) killTree(child);
-      reject(gitError('timeout', 'git 조회 시간이 초과되었습니다'));
+      reject(gitError('timeout', t('code.repo.timeout')));
     }, timeoutMs);
   });
 }
@@ -206,9 +207,9 @@ async function folderProblem(dir) {
     await d.close();
     return null;
   } catch (e) {
-    if (e?.code === 'ENOENT') return '폴더가 없습니다.\n삭제되었거나 이름이 바뀌었거나, 드라이브가 연결되지 않았을 수 있습니다.';
-    if (e?.code === 'ENOTDIR') return '폴더가 아닙니다.';
-    return '폴더를 열 수 없습니다.\n접근 권한이나 드라이브 연결을 확인해 주세요.';
+    if (e?.code === 'ENOENT') return t('code.repo.folderGone');
+    if (e?.code === 'ENOTDIR') return t('code.repo.folderNotDir');
+    return t('code.repo.folderNoAccess');
   }
 }
 
@@ -271,7 +272,7 @@ async function readText(root, rel, maxBytes = MAX_READ) {
     throw e;
   }
   if (st.isDirectory()) return { kind: 'dir' }; // 서브모듈은 작업 폴더에서 폴더로 보인다
-  if (!st.isFile()) throw new Error('일반 파일이 아닙니다');
+  if (!st.isFile()) throw new Error(t('code.repo.notFile'));
   if (st.size > maxBytes) return { kind: 'large', size: st.size };
   let buf;
   try { buf = await fs.promises.readFile(abs); } catch (e) {
@@ -312,7 +313,7 @@ async function indexFile(root, rel, maxBytes = MAX_READ) {
     buf = await git(root, ['cat-file', 'blob', ':./' + gitRel], { buffer: true, maxBuffer: maxBytes + 1 });
   } catch (e) {
     if (e.kind === 'fail' && e.exitCode === 128) return { kind: 'missing' };
-    if (e.kind === 'fail' && /너무 큽니다/.test(e.message)) return { kind: 'unshown' };
+    if (e.kind === 'fail' && e.tooBig) return { kind: 'unshown' };
     throw e;
   }
   if (buf.length > maxBytes || isBinary(buf)) return { kind: 'unshown' };
@@ -362,7 +363,7 @@ const GREP_ROW = /^([^\0]+)\0(\d+)\0([^\0]*)$/;
 // 코드 검색: 추적 파일 + 미추적(무시 제외) 텍스트 파일에서 고정 문자열을 찾는다.
 // 검색어는 -e 뒤에 두어 옵션으로 해석되지 않고, -F 라 정규식도 아니다. 종료 코드 1 은 일치 없음.
 async function searchText(root, term, limit = 200) {
-  if (typeof term !== 'string' || term.length < 1 || term.length > SEARCH_TERM_MAX || BAD_TERM.test(term)) throw new Error('잘못된 검색어입니다');
+  if (typeof term !== 'string' || term.length < 1 || term.length > SEARCH_TERM_MAX || BAD_TERM.test(term)) throw new Error(t('code.repo.badTerm'));
   let out;
   try {
     out = await git(root, ['--literal-pathspecs', 'grep', '-n', '-z', '-I', '-F', '--untracked', '--no-color', '--no-column', '--no-full-name', '-e', term, '--', '.'],
@@ -389,7 +390,7 @@ async function searchText(root, term, limit = 200) {
 // (나중에 git init 한 폴더를 ⟳ 로 열 수 있게). 경로 검사는 readText·statMtime·headText 가 resolveInside 로 한다.
 function createCodeService({ roots }) {
   const infos = new Map();
-  const need = (root) => { if (!roots.has(root)) throw new Error(ERR_ROOT); };
+  const need = (root) => { if (!roots.has(root)) throw new Error(t('code.err.root')); };
   const infoOf = async (root, fresh = false) => {
     const k = rootKey(root);
     if (fresh || !infos.has(k)) infos.set(k, await repoInfo(root));
@@ -398,7 +399,7 @@ function createCodeService({ roots }) {
   const repo = async (root) => {
     need(root);
     const info = await infoOf(root);
-    if (!info.git) throw new Error('깃 저장소가 아닙니다');
+    if (!info.git) throw new Error(t('code.err.notGit'));
     return info;
   };
   return {
@@ -439,7 +440,7 @@ function createCodeService({ roots }) {
 // 폴더 등록(code:allow)은 렌더러가 탭을 열 때 알린다 — 허용 폴더는 실수 방지 장치이고, 신뢰 경계는 pty:create 와 같다.
 function registerCodeIpc(handleMain, { roots, service, pickFolder, checkFolder, gitOps = createGitOps({ git, rootKey, roots }) }) {
   const req = (v, key = 'root') => {
-    if (!v || typeof v !== 'object' || typeof v[key] !== 'string') throw new Error(ERR_BAD);
+    if (!v || typeof v !== 'object' || typeof v[key] !== 'string') throw new Error(t('code.err.bad'));
     return v;
   };
   handleMain('code:allow', async (v) => {

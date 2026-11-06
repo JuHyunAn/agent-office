@@ -10,6 +10,7 @@ const on = (channel) => (cb) => {
 
 contextBridge.exposeInMainWorld('office', {
   status: () => ipcRenderer.invoke('app:status'),
+  setLang: (lang) => ipcRenderer.invoke('lang:set', { lang }),
   getWeather: () => ipcRenderer.invoke('weather:current'),
   pickFolder: () => ipcRenderer.invoke('dialog:pickFolder'),
   codeFolderCheck: (cwd) => ipcRenderer.invoke('code:folder:check', { cwd }),

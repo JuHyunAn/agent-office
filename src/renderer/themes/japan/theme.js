@@ -1,10 +1,11 @@
 import pixelOffice from '../pixel-office/theme.js';
 import { VIEW, scenery, releaseScenery } from './scenery.js';
+import { t as tr } from '../../../shared/i18n.js'; // drawScene 의 t(시간) 와 겹치지 않게
 
 export default {
   ...pixelOffice,
   id: 'pixel-office-japan',
-  name: '일본',
+  get name() { return tr('theme.name.pixel-office-japan'); },
   viewport: { width: VIEW.width, height: VIEW.height },
   agentHead: pixelOffice.agentHead * VIEW.scale,
   agentHitRadius: pixelOffice.agentHitRadius * VIEW.scale,

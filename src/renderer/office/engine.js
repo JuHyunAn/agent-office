@@ -6,6 +6,7 @@ import { toolPhrase, toolPose, clip, baseName, activitySummary, workBrief } from
 import { Navigation } from './navigation.js';
 import { createAppearance } from './appearance.js';
 import { AGENT_IDS, normAgent } from '../../shared/agents.js';
+import { t } from '../../shared/i18n.js';
 
 export const TIMING = {
   speed: 150, // 논리 좌표 px/초
@@ -25,10 +26,11 @@ export const TIMING = {
   promptKeepMs: 10000, // 새 요청 때 이 안에 신호를 보낸 앞쪽 하위 에이전트는 아직 일하는 것으로 본다 (답하는 중 보낸 메시지)
 };
 
-const ENDED_TASK = '세션 종료 · 퇴근 대기';
+// 언어가 바뀐 뒤에도 알아보도록 두 언어 값을 모두 비교한다.
+const isEndedTask = v => v === t('office.task.ended', null, 'ko') || v === t('office.task.ended', null, 'en');
 // 사용자가 답해야 진행되는 알림만 퇴근을 막는다 (답변 후 「입력 대기」 알림 등은 제외).
 export const NON_BLOCKING_NOTIFICATIONS = new Set(['idle_prompt', 'auth_success']);
-const CHAT = ['☕ 커피 맛있네요', '💬 아까 그 버그 말이죠…', '😴 잠깐만 쉴게요', '🍪 간식 드실래요?', '📈 오늘 순조롭네요', '🎧 음악 듣는 중', '🌿 화분 물 줬어요'];
+const CHAT = ['office.chat.coffee', 'office.chat.bug', 'office.chat.rest', 'office.chat.snack', 'office.chat.smooth', 'office.chat.music', 'office.chat.plant'];
 const SITTING_ROOMS = new Set(['lead', 'analysis', 'planning', 'dev', 'review', 'skills']);
 // 오래 켜 둬도 세션 기록이 끝없이 늘지 않게, 가장 오래된 것부터 지운다.
 const SESSION_MEMORY = 500;
@@ -75,7 +77,7 @@ export class OfficeEngine {
       const prev = this.sessions.get(sid);
       if (prev && prev.endedAt != null) {
         prev.endedAt = null;
-        for (const a of this.agents.values()) if (a.sessionId === sid && a.task === ENDED_TASK) a.task = '';
+        for (const a of this.agents.values()) if (a.sessionId === sid && isEndedTask(a.task)) a.task = '';
       }
     } else if (this.closed.has(sid) || this.sessions.get(sid)?.endedAt != null) {
       return;
@@ -102,8 +104,8 @@ export class OfficeEngine {
       case 'PreToolUse': this.onTool(s, ev); break;
       case 'SubagentStart': this.onSubStart(s, ev); break;
       case 'SubagentStop': this.onSubStop(s, ev); break;
-      case 'Notification': this.onAlert(s, ev, `❓ ${clip(ev.message || '확인이 필요합니다', 22)}`); break;
-      case 'PermissionRequest': this.onAlert(s, ev, `❓ 권한 확인: ${clip(ev.tool_name || '', 14)}`); break;
+      case 'Notification': this.onAlert(s, ev, `❓ ${clip(ev.message || t('office.bubble.needsCheck'), 22)}`); break;
+      case 'PermissionRequest': this.onAlert(s, ev, t('office.bubble.permission', { tool: clip(ev.tool_name || '', 14) })); break;
       case 'Stop': this.onStop(s, ev); break;
       case 'SessionEnd': this.endSession(sid); break;
       default: break;
@@ -124,7 +126,7 @@ export class OfficeEngine {
       a.skill = null;
       a.finishedAt = null;
       if (a.bubble && a.bubble.kind === 'alert') a.bubble = null; // 답할 세션이 없다
-      a.task = ENDED_TASK;
+      a.task = t('office.task.ended');
       this.rest(a);
     }
   }
@@ -176,16 +178,16 @@ export class OfficeEngine {
 
   // 퇴근 규칙과, 끝 이벤트가 오지 않은 세션·에이전트 정리.
   expire() {
-    const t = this.timing;
+    const tm = this.timing;
     for (const s of [...this.sessions.values()]) {
       // 끝 이벤트 없이 조용해진 외부 세션: 확인 요청도 더는 답할 곳이 없다고 보고,
       // 사람은 아래 퇴근 규칙이 내보내며, 모두 떠난 뒤 기록만 지운다.
-      if (s.endedAt == null && s.external && this.time - s.lastEventAt > t.externalSessionIdleMs) {
+      if (s.endedAt == null && s.external && this.time - s.lastEventAt > tm.externalSessionIdleMs) {
         const crew = [...this.agents.values()].filter((a) => a.sessionId === s.id);
         for (const a of crew) if (a.bubble && a.bubble.kind === 'alert') a.bubble = null;
         if (!crew.length) this.sessions.delete(s.id);
       }
-      if (s.endedAt != null && this.time - s.endedAt >= t.sessionEndGraceMs) {
+      if (s.endedAt != null && this.time - s.endedAt >= tm.sessionEndGraceMs) {
         for (const a of this.agents.values()) if (a.sessionId === s.id && a.status !== 'leaving') this.goHome(a);
         this.sessions.delete(s.id);
         remember(this.closed, s.id);
@@ -199,12 +201,12 @@ export class OfficeEngine {
       // 하위 에이전트가 아직 일하는(보고·공유 포함) 동안 팀장은 퇴근하지 않는다 — 긴 도구 하나를 실행하는 동안은 신호가 없다 (도구 종료 hook 없음).
       if (a.isLead && a.status !== 'working' && [...this.agents.values()].some((b) => b.sessionId === a.sessionId && !b.isLead && ['working', 'reporting', 'sharing'].includes(b.status))) continue;
       if (a.status === 'working') {
-        if (a.path.length || a.queue.length || this.time - a.lastEventAt <= (a.isLead ? t.silentWorkMs : t.subSilentWorkMs)) continue;
-        a.task = '응답 없음 · 휴식';
+        if (a.path.length || a.queue.length || this.time - a.lastEventAt <= (a.isLead ? tm.silentWorkMs : tm.subSilentWorkMs)) continue;
+        a.task = t('office.task.noResponse');
         a.skill = null;
         this.rest(a); // rest() 가 휴게실에 간 때(idleSince)부터 다시 퇴근 시간(하위 subIdleLeaveMs · 팀장 idleLeaveMs)을 잰다
       } else if (a.status === 'idle' || a.status === 'resting' || a.status === 'away') {
-        const leave = a.isLead ? t.idleLeaveMs : t.subIdleLeaveMs;
+        const leave = a.isLead ? tm.idleLeaveMs : tm.subIdleLeaveMs;
         if (this.time - Math.max(a.lastEventAt, a.idleSince ?? 0) >= leave) this.goHome(a);
       }
     }
@@ -229,7 +231,7 @@ export class OfficeEngine {
     a.skill = null;
     if (a.bubble && a.bubble.kind === 'alert') a.bubble = null; // 「퇴근합니다」가 가려지지 않게
     a.status = 'leaving';
-    a.queue.push({ op: 'say', text: '👋 퇴근합니다', kind: 'info', ms: 3000 }, { op: 'leave' });
+    a.queue.push({ op: 'say', text: t('office.bubble.goHome'), kind: 'info', ms: 3000 }, { op: 'leave' });
   }
 
   snapshot() {
@@ -265,7 +267,7 @@ export class OfficeEngine {
     if (a.status === 'working') {
       const lines = [];
       if (a.assignment) lines.push(clip(a.assignment, 28));
-      const activity = a.activity || (a.skill ? `${a.skill} 스킬 작업 중` : '맡은 작업 준비 중');
+      const activity = a.activity || (a.skill ? t('office.activity.skillWork', { skill: a.skill }) : t('office.activity.preparing'));
       if (!lines.length || lines[0] !== activity) lines.push(clip(activity, 36));
       // 내용이 바뀐 직후에만 두 줄, 조금 지나면 한 줄 요약으로 줄여 말풍선이 계속 커지지 않게 한다.
       const fresh = a.briefSince == null || !a.brief || this.time - a.briefSince < this.timing.briefBubbleMs;
@@ -293,15 +295,15 @@ export class OfficeEngine {
 
   ensureSession(sid, meta, ev) {
     let s = this.sessions.get(sid);
-    const label = meta.label || (ev.cwd ? `외부 · ${baseName(ev.cwd)}` : '외부 세션');
     if (!s) {
-      s = { id: sid, label, cli: normAgent(ev._cli), external: !meta.label, pending: [], typeCounts: {}, subLooks: new Map(), lastEventAt: this.time };
+      s = { id: sid, name: meta.label || '', dir: ev.cwd ? baseName(ev.cwd) : '',
+        // 탭 이름은 사용자 데이터라 그대로, 외부 세션 이름은 보는 시점 언어로 만든다.
+        get label() { return this.name || (this.dir ? t('office.session.external', { dir: this.dir }) : t('office.session.externalNone')); },
+        cli: normAgent(ev._cli), external: !meta.label, pending: [], typeCounts: {}, subLooks: new Map(), lastEventAt: this.time };
       this.sessions.set(sid, s);
-    } else if (meta.label && s.label !== meta.label) {
-      s.label = meta.label;
+    } else if (meta.label && s.name !== meta.label) {
+      s.name = meta.label;
       s.external = false;
-      const lead = this.agents.get(`${sid}:lead`);
-      if (lead) lead.label = meta.label;
     }
     if (AGENT_IDS.includes(ev._cli) && s.cli !== ev._cli) {
       s.cli = ev._cli;
@@ -316,6 +318,7 @@ export class OfficeEngine {
     if (a && a.status !== 'leaving') return a;
     if (a) { this.agents.delete(key); this.releaseSeat(a); }
     a = this.newAgent({ key, sessionId: s.id, cli: s.cli, isLead: true, type: 'lead', label: s.label, role: 'lead' });
+    Object.defineProperty(a, 'label', { get: () => s.label, enumerable: true, configurable: true }); // 세션 이름을 따라간다
     a.status = 'idle';
     a.colorIndex = -1;
     // 퇴근했다 다시 출근해도 같은 사람으로 보이게 세션별로 외형을 기억한다.
@@ -323,7 +326,7 @@ export class OfficeEngine {
     if (this.leadLooks.has(s.id)) { a.appearance = this.leadLooks.get(s.id); this.leadLooks.delete(s.id); }
     remember(this.leadLooks, s.id, a.appearance);
     this.allocSeat(a, 'lead');
-    this.say(a, '👋 출근했습니다', 'info', 2500);
+    this.say(a, t('office.bubble.arrived'), 'info', 2500);
     a.queue.push({ op: 'goSeat', room: 'lead' });
     return a;
   }
@@ -395,10 +398,10 @@ export class OfficeEngine {
     lead.workPose = 'type';
     lead.task = clip(ev.prompt, 60);
     lead.assignment = clip(ev.prompt, 28);
-    lead.activity = '요청 내용을 확인 중';
-    this.setBrief(lead, '📥 요청 검토 중', true);
-    this.say(lead, `📥 업무 접수: ${clip(ev.prompt, 18)}`, 'info', 5000);
-    this.pushFeed(`${s.label}: 새 요청 — ${clip(ev.prompt, 40)}`);
+    lead.activity = t('office.activity.reviewing');
+    this.setBrief(lead, t('office.brief.reviewRequest'), true);
+    this.say(lead, t('office.bubble.received', { text: clip(ev.prompt, 18) }), 'info', 5000);
+    this.pushFeed(t('office.feed.newRequest', { label: s.label, text: clip(ev.prompt, 40) }));
   }
 
   onTool(s, ev) {
@@ -416,11 +419,11 @@ export class OfficeEngine {
       actor.skill = clip(input.skill, 140);
       actor.finishedAt = null;
       actor.status = 'working'; actor.workPose = 'type';
-      actor.task = `스킬 작업: ${actor.skill}`;
+      actor.task = t('office.task.skill', { skill: actor.skill });
       this.allocSeat(actor, 'skills');
       actor.queue.push({ op: 'goSeat', room: 'skills' });
       this.say(actor, `🧩 ${clip(actor.skill, 22)}`, 'work', 6000);
-      this.pushFeed(`${s.label}: ${actor.label} · 스킬 ${actor.skill}`);
+      this.pushFeed(t('office.feed.skill', { label: s.label, agent: actor.label, skill: actor.skill }));
       return;
     }
 
@@ -429,8 +432,8 @@ export class OfficeEngine {
       if (s.pending.length > 20) s.pending.shift();
       actor.status = 'working';
       actor.workPose = 'talk';
-      const who = displayType(input.subagent_type) || '에이전트';
-      this.say(actor, `📣 업무 지시 → ${clip(who, 14)}`, 'info', 3500);
+      const who = displayType(input.subagent_type) || t('office.agent.generic');
+      this.say(actor, t('office.bubble.assign', { who: clip(who, 14) }), 'info', 3500);
       return;
     }
 
@@ -450,14 +453,14 @@ export class OfficeEngine {
     const dt = displayType(ev.agent_type);
     const pi = s.pending.findIndex((p) => displayType(p.type) === dt);
     const p = pi >= 0 ? s.pending.splice(pi, 1)[0] : null;
-    a.task = p && p.desc ? clip(p.desc, 60) : `${dt || '에이전트'} 작업`;
+    a.task = p && p.desc ? clip(p.desc, 60) : t('office.task.agentWork', { name: dt || t('office.agent.generic') });
     a.assignment = p && p.desc ? clip(p.desc, 28) : '';
-    a.activity = '맡은 작업 준비 중';
-    this.setBrief(a, '🚶 작업 준비 중', true);
+    a.activity = t('office.activity.preparing');
+    this.setBrief(a, t('office.brief.preparing'), true);
     a.background = p ? !!p.background : !this.turnActive(s);
     a.status = 'working';
-    this.say(a, `🚶 출근 · ${clip(a.task, 16)}`, 'info', 4000);
-    this.pushFeed(`${s.label}: ${a.label} 시작 — ${a.task}`);
+    this.say(a, t('office.bubble.clockIn', { task: clip(a.task, 16) }), 'info', 4000);
+    this.pushFeed(t('office.feed.start', { label: s.label, agent: a.label, task: a.task }));
 
     // 메인 Claude 를 거쳐 넘어가는 결과를 「직접 전달」로 연출한다 (사용자 선택 — 가끔 틀릴 수 있음).
     const donor = [...this.agents.values()]
@@ -471,23 +474,23 @@ export class OfficeEngine {
   onSubStop(s, ev) {
     const a = this.agents.get(`${s.id}:${ev.agent_id}`);
     const summary = clip(ev.last_assistant_message, 50);
-    if (!a) { this.pushFeed(`${s.label}: ${displayType(ev.agent_type)} 완료${summary ? ' — ' + summary : ''}`); return; }
+    if (!a) { this.pushFeed(t('office.feed.done', { label: s.label, agent: displayType(ev.agent_type), summary: summary ? ' — ' + summary : '' })); return; }
     a.skill = null;
     a.finishedAt = this.time;
     a.status = 'reporting';
-    a.task = '작업 완료 · 보고';
+    a.task = t('office.task.reportDone');
     const lead = this.ensureLead(s);
     this.interrupt(a);
-    this.say(a, '📋 보고 중...', 'report', Infinity);
+    this.say(a, t('office.bubble.reporting'), 'report', Infinity);
     a.queue.push(
       { op: 'goNear', key: lead.key, dx: 30, dy: 12 },
-      { op: 'say', text: '✅ 보고 완료', kind: 'done', ms: 2000 },
-      { op: 'sayOther', key: lead.key, text: '👍 수고했어요', kind: 'info', ms: 2200 },
+      { op: 'say', text: t('office.bubble.reportDone'), kind: 'done', ms: 2000 },
+      { op: 'sayOther', key: lead.key, text: t('office.bubble.goodJob'), kind: 'info', ms: 2200 },
       { op: 'wait', ms: 1400 },
       { op: 'goSeat', room: 'rest' },
       { op: 'status', status: 'resting' },
     );
-    this.pushFeed(`${s.label}: ${a.label} 완료${summary ? ' — ' + summary : ''}`);
+    this.pushFeed(t('office.feed.done', { label: s.label, agent: a.label, summary: summary ? ' — ' + summary : '' }));
   }
 
   onAlert(s, ev, text) {
@@ -505,7 +508,7 @@ export class OfficeEngine {
       if (actor) this.finishSkill(actor);
       return;
     }
-    this.finishTurn(s, '✅ 답변 완료');
+    this.finishTurn(s, t('office.bubble.answerDone'));
   }
 
   // 협업 중 AI 가 오류·중단으로 끝나면 Stop hook 이 오지 않는다 — app.js 가 알려 주면 Stop 과 똑같이 작업을 끝낸다 (말풍선만 text).
@@ -528,7 +531,7 @@ export class OfficeEngine {
     this.finishSkill(lead);
     // 결과 공유 연출 중이면 끝난 뒤 「대기」로 돌아가게 예약한다.
     if (lead.status === 'sharing') lead.returnStatus = 'idle'; else lead.status = 'idle';
-    lead.task = '다음 요청 대기 중';
+    lead.task = t('office.task.waitNext');
     this.say(lead, text, 'done', 6000);
   }
 
@@ -563,7 +566,7 @@ export class OfficeEngine {
         // 결과 공유 연출은 끝까지 보여 주고, 돌아올 때 자리 대신 휴게실로 보낸다.
         a.returnStatus = 'resting';
         a.skill = null;
-        a.task = '작업 종료 · 휴식';
+        a.task = t('office.task.workEnded');
         for (const op of a.queue) if (op.op === 'goSeat') op.room = 'rest';
       } else if (a.status === 'working') {
         const alerting = !!(a.bubble && a.bubble.kind === 'alert');
@@ -574,7 +577,7 @@ export class OfficeEngine {
         this.interrupt(a);
         a.skill = null;
         a.finishedAt = null; // 「결과 공유」 연출의 donor 가 되지 않게
-        a.task = '작업 종료 · 휴식';
+        a.task = t('office.task.workEnded');
         a.activity = '';
         a.brief = null;
         this.rest(a);
@@ -595,11 +598,11 @@ export class OfficeEngine {
     this.interrupt(from);
     from.status = 'sharing';
     from.shareCount += 1;
-    this.say(from, '📨 결과 공유 중...', 'share', Infinity);
+    this.say(from, t('office.bubble.sharing'), 'share', Infinity);
     from.queue.push(
       { op: 'goNear', key: to.key, dx: -28, dy: 8 },
-      { op: 'say', text: '✅ 전달 완료', kind: 'done', ms: 2200 },
-      { op: 'sayOther', key: to.key, text: '👀 결과 확인 중', kind: 'info', ms: 2500 },
+      { op: 'say', text: t('office.bubble.delivered'), kind: 'done', ms: 2200 },
+      { op: 'sayOther', key: to.key, text: t('office.bubble.checking'), kind: 'info', ms: 2500 },
       { op: 'wait', ms: 1600 },
     );
     if (finished) {
@@ -609,7 +612,7 @@ export class OfficeEngine {
       from.queue.push({ op: 'goSeat', room: from.skill ? 'skills' : (from.isLead ? 'lead' : from.role) }, { op: 'status', status: '@return' });
     }
     const s = this.sessions.get(from.sessionId);
-    this.pushFeed(`${s ? s.label + ': ' : ''}${from.label} → ${to.label} 결과 전달${exact ? '' : ' (추정)'}`);
+    this.pushFeed(t(exact ? 'office.feed.share' : 'office.feed.shareGuess', { prefix: s ? s.label + ': ' : '', from: from.label, to: to.label }));
   }
 
   // 쉬던 사람이 일을 받으면 자기 자리로 돌아간다.
@@ -803,7 +806,7 @@ export class OfficeEngine {
         a.status = 'away';
         a.restSince = this.time;
         a.nextIdleAt = this.time + this.idleDelay();
-        a.queue.push({ op: 'say', text: '☕ 잠깐 휴식', kind: 'chat', ms: 3000 }, { op: 'goSeat', room: 'rest' });
+        a.queue.push({ op: 'say', text: t('office.bubble.shortBreak'), kind: 'chat', ms: 3000 }, { op: 'goSeat', room: 'rest' });
       }
       return;
     }
@@ -819,8 +822,8 @@ export class OfficeEngine {
       const mate = [...this.agents.values()].find((b) => b !== a && (b.status === 'resting' || b.status === 'away')
         && !b.path.length && b.talkUntil <= this.time && this.roomAt(b.x, b.y) === 'rest');
       if (mate) {
-        const line = CHAT[Math.floor(this.random() * CHAT.length)];
-        const reply = CHAT[Math.floor(this.random() * CHAT.length)];
+        const line = t(CHAT[Math.floor(this.random() * CHAT.length)]);
+        const reply = t(CHAT[Math.floor(this.random() * CHAT.length)]);
         a.talkUntil = mate.talkUntil = this.time + 2600;
         a.facing = mate.x < a.x ? 'left' : 'right';
         mate.facing = a.x < mate.x ? 'left' : 'right';

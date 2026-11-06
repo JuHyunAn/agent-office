@@ -2,6 +2,7 @@
 // 화면(DOM)·IPC 와 무관해서 화면 없이 테스트할 수 있다. 경로는 모두 저장소 루트 기준(「/」 구분)이다.
 
 import { isSecretPath } from '../../shared/secretPath.js';
+import { t } from '../../shared/i18n.js';
 
 // 저장소 기준 경로 → 열린 폴더 기준 경로. 열린 폴더(prefix, 예: 'sub/') 밖이거나 폴더 자신이면 null.
 // prefix 비교만 대소문자를 무시하고 결과는 원래 표기를 그대로 둔다.
@@ -30,7 +31,7 @@ export function secretPaths(targets) {
 export function secretWarning(paths, max = 3) {
   if (!paths.length) return '';
   const more = paths.length - max;
-  return `비밀 파일일 수 있습니다: ${paths.slice(0, max).join(', ')}${more > 0 ? ` 외 ${more}개` : ''}`;
+  return t(more > 0 ? 'code.gp.secretMore' : 'code.gp.secret', { list: paths.slice(0, max).join(', '), n: more });
 }
 
 // 목록이 길 때 max 줄까지만 보이고 나머지 개수를 알려 준다 (원본 배열은 건드리지 않는다).
@@ -56,6 +57,10 @@ export function gitFingerprint(gs, marks) {
     g.staged, g.changes, g.conflicts, [...(marks || [])].sort()]);
 }
 
+// 상태 글자(M·A·D·R·C·U, 충돌은 !)의 풀이 글. 모르는 글자는 빈 글자. panel.js 의 트리 배지와 Git 패널이 함께 쓴다.
+const LETTER_KEYS = { M: 'code.letter.M', A: 'code.letter.A', D: 'code.letter.D', R: 'code.letter.R', C: 'code.letter.C', U: 'code.letter.U', '!': 'code.letter.conflict' };
+export const letterTitle = (letter) => (LETTER_KEYS[letter] ? t(LETTER_KEYS[letter]) : '');
+
 // 「↑2 ↓1」: 0·null 은 표시하지 않는다.
 export function aheadBehindText(gs) {
   const parts = [];
@@ -67,9 +72,9 @@ export function aheadBehindText(gs) {
 // 쓰기를 막은 이유의 안내 글 (막지 않았으면 null).
 export function reasonText(gs) {
   switch (gs && gs.reason) {
-    case 'not-main': return `main 브랜치에서만 커밋·푸시합니다. (현재: ${gs.branch})\n다른 작업은 아래 터미널에서`;
-    case 'detached': return '분리된 HEAD 입니다.\n터미널에서 main 으로 전환해 주세요.';
-    case 'merging': return '병합 등 다른 git 작업이 진행 중입니다.\n터미널에서 마무리해 주세요.';
+    case 'not-main': return t('code.reason.notMain', { branch: gs.branch });
+    case 'detached': return t('code.reason.detached');
+    case 'merging': return t('code.reason.merging');
     default: return null;
   }
 }
@@ -117,5 +122,5 @@ const LOGIN_HINT_KINDS = new Set(['push', 'sync', 'fetch', 'pull', 'pushOnly', '
 const LOGIN_HINT_MS = 4000;
 // 네트워크 작업이 잠시 이어지면 로그인 창을 기다리는 중일 수 있다 (창이 앱 뒤에 뜰 수 있음). 메인은 창이 떴는지 모르므로 경과로만 판단한다.
 export function loginHint(kind, elapsedMs) {
-  return LOGIN_HINT_KINDS.has(kind) && elapsedMs >= LOGIN_HINT_MS ? '로그인 창에서 로그인을 진행하세요.\n로그인 창이 안 보이면 작업 표시줄을 확인하세요.' : '';
+  return LOGIN_HINT_KINDS.has(kind) && elapsedMs >= LOGIN_HINT_MS ? t('code.gp.loginHint') : '';
 }

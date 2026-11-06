@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setLang } from '../src/shared/i18n.js';
 
 // 사용자·시스템 git 설정(autocrlf·safe.directory 등)이 결과를 흔들지 않게 격리한다.
 // codeRepo 가 띄우는 git 도 cleanEnv() 로 이 값을 물려받는다.
@@ -672,4 +673,19 @@ test('killTrackedGit({ closing: true }): 그 뒤의 track 실행은 띄우지 �
   assert.equal(aliveWithMarker(mark), false, 'git 이 떴다');
   assert.match((await gitRun(fx.sub, ['rev-parse', 'HEAD'])).trim(), /^[0-9a-f]{40}$/, 'track 없는 조회는 종료 중에도 동작');
   await assert.rejects(gitRun(fx.sub, ['rev-parse', 'HEAD'], { refuseClosing: true }), /종료하는 중/, 'refuseClosing: 추적하지 않아도 종료 뒤에는 새로 시작하지 않는다 (pull 병합 단계)');
+});
+
+test('언어: 영어 모드의 오류 문구, 출력 상한 초과는 문구가 아니라 표시(tooBig)로 가른다', { skip }, async () => {
+  setLang('en');
+  try {
+    assert.throws(() => resolveInside(base, '../x'), { message: 'Path not allowed' });
+    await assert.rejects(createCodeService({ roots: createCodeRoots() }).tree(base), { message: 'Folder not allowed' });
+    assert.equal(await folderProblem(path.join(base, 'no-such-dir')), 'The folder does not exist.\nIt may have been deleted, renamed, or its drive may be disconnected.');
+    // 출력이 상한을 넘으면 tooBig 표시가 붙고, 스테이징 보기(indexFile)는 문구가 아니라 이 표시로 「표시 안 함」을 가른다
+    const err = await gitRun(base, ['--version'], { maxBuffer: 1 }).then(() => null, (e) => e);
+    assert.ok(err && err.tooBig === true && err.message === 'Git output is too large', String(err && err.message));
+  } finally {
+    setLang('ko');
+  }
+  assert.throws(() => resolveInside(base, '../x'), DENIED);
 });

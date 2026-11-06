@@ -6,6 +6,8 @@ import { jumpLine, splitLines, notesForFile } from './analysis.js';
 import { createNotesLayer } from './notes.js';
 import { createAnalysisPanel } from './analysisPanel.js';
 import { createGitPanel } from './gitPanel.js';
+import { letterTitle } from './gitModel.js';
+import { t, onLangChange } from '../../shared/i18n.js';
 import { createTerminalPanel } from './terminalPanel.js';
 import { setupAnalysisResizer, setupSideResizer } from '../layout.js';
 
@@ -33,22 +35,20 @@ const dirOf = (rel) => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) :
 const CONFLICTS = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
 const isStagedCode = (code) => !!code && code[0] !== ' ' && code[0] !== '?' && !CONFLICTS.has(code); // v1 상태 XY 의 X 가 스테이징 쪽
 const letterOf = (code) => (CONFLICTS.has(code) ? '!' : code === '??' ? 'U' : code.trim()[0] || '');
-const LETTER_TITLE = { M: '수정됨', A: '추가됨', D: '삭제됨', R: '이름이 바뀜', C: '복사됨', U: '추적하지 않는 새 파일', '!': '병합 충돌' };
 
-const GIT_TEXT = {
-  'not-repo': '깃 저장소에서만 코드 화면을 지원합니다',
-  'no-git': 'git 을 찾지 못했습니다',
-  unsafe: 'git 이 이 폴더를 안전하지 않은 저장소로 봅니다 (safe.directory 설정 필요)',
-};
+// 문구는 사전 키로 두고 쓸 때 t() 로 읽는다 (언어를 바꾸면 새 문구가 나오게).
+const GIT_KEYS = { 'not-repo': 'code.view.notRepo', 'no-git': 'code.repo.noGit', unsafe: 'code.view.gitUnsafe' };
+const gitText = (reason) => t(GIT_KEYS[reason] || 'code.view.unsupported');
 const FILE_NOTE = {
-  binary: () => '바이너리 파일은 표시하지 않습니다',
-  large: (r) => `파일이 커서(${(r.size / 1048576).toFixed(1)} MB) 표시하지 않습니다`,
-  dir: () => '폴더(서브모듈)는 표시하지 않습니다',
-  missing: () => '파일이 없습니다 (삭제되었거나 이름이 바뀜)',
-  unshown: () => '스테이징된 내용이 바이너리이거나 커서 표시하지 않습니다',
+  binary: () => t('code.view.fileBinary'),
+  large: (r) => t('code.view.fileLarge', { mb: (r.size / 1048576).toFixed(1) }),
+  dir: () => t('code.view.fileDir'),
+  missing: () => t('code.view.fileMissing'),
+  unshown: () => t('code.view.fileUnshown'),
 };
 const EDITOR_FONT = '"Cascadia Mono", Consolas, "D2Coding", "Malgun Gothic", monospace';
-const MODEL_TITLE = { opus: 'Opus 는 Sonnet 보다 사용량이 더 듭니다', fable: 'Fable 은 Sonnet 보다 사용량이 훨씬 더 듭니다' };
+const MODEL_TITLE_KEYS = { opus: 'code.view.modelOpus', fable: 'code.view.modelFable' };
+const modelTitle = (value) => (MODEL_TITLE_KEYS[value] ? t(MODEL_TITLE_KEYS[value]) : '');
 const RESULTS_MAX = 30; // 폴더당 보관하는 분석 결과 수 (넘으면 가장 오래된 것부터 지운다)
 const mmss = (ms) => {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -93,7 +93,7 @@ export function createCodePanel({ api, host, newTerminal }) {
   let notesHidden = 0; // 코드가 바뀌어 숨긴 주석 수 (패널에 알린다)
 
   // 코드 분석: 폴더별 상태 (메모리에만). 실행·결과는 시작한 폴더 항목에 넣고, 화면은 지금 폴더일 때만 갱신한다.
-  const analysisByRoot = new Map(); // keyOf(폴더) → { active, results: Map(scopeKey → {...}), run, error, stopped, confirm, closed, notesOn, collapsed, jumpNote }
+  const analysisByRoot = new Map(); // keyOf(폴더) → { active, results: Map(scopeKey → {...}), run, error, stopped, confirm, closed, notesOn, collapsed, jumpAt }
   let pendingJump = null; // { g, item } — 파일이 열린 뒤 옮길 자리 (g 가 지금 gen 과 같을 때만 적용)
   let diffReveal = null; // 비교 보기에서 삭제 줄 영역이 끼어든 뒤 다시 맞출 줄 (한 번 쓰고 비운다)
   // 하단 영역(.code-bottom): 분석 패널과 터미널이 탭으로 나눠 쓴다. bottomOpen 은 영역 자체(× 로 닫아도 셸은 유지), termOpened 는 터미널을 한 번이라도 열었는지.
@@ -103,16 +103,16 @@ export function createCodePanel({ api, host, newTerminal }) {
   let reopenTimer = null; // 닫힌 패널의 「분석 중 m:ss」 단추 글자를 1초마다 갱신
 
   // ───────── DOM ─────────
-  const folderSel = node('select', { class: 'code-folder', 'aria-label': '작업 폴더', onchange: () => selectFolder(folderSel.value) });
-  const pickBtn = node('button', { class: 'code-pick', type: 'button', onclick: pick }, '폴더 열기…');
-  const refreshBtn = node('button', { class: 'code-refresh', type: 'button', title: '지금 새로 고침', 'aria-label': '새로 고침', onclick: () => { loadTree(); gitPanel.refreshGraph(); } }, '⟳');
-  const termToggle = node('button', { class: 'code-term-toggle', type: 'button', 'aria-pressed': 'false', title: '하단 터미널을 열거나 닫습니다 (셸은 닫아도 유지)', onclick: toggleTerminal }, '터미널');
+  const folderSel = node('select', { class: 'code-folder', onchange: () => selectFolder(folderSel.value) });
+  const pickBtn = node('button', { class: 'code-pick', type: 'button', onclick: pick });
+  const refreshBtn = node('button', { class: 'code-refresh', type: 'button', onclick: () => { loadTree(); gitPanel.refreshGraph(); } }, '⟳');
+  const termToggle = node('button', { class: 'code-term-toggle', type: 'button', 'aria-pressed': 'false', onclick: toggleTerminal });
   const statusEl = node('span', { class: 'code-status' });
   const touchedEl = node('ul', { class: 'code-touched' });
   const noteEl = node('p', { class: 'code-note', hidden: true });
   const treeEl = node('ul', { class: 'code-tree' });
   const pathEl = node('span', { class: 'code-path' });
-  const toggleBtn = node('button', { class: 'code-diff-toggle', type: 'button', 'aria-pressed': 'false', disabled: true, onclick: toggleDiff }, '변경 비교');
+  const toggleBtn = node('button', { class: 'code-diff-toggle', type: 'button', 'aria-pressed': 'false', disabled: true, onclick: toggleDiff });
   const editorEl = node('div', { class: 'code-editor', hidden: true });
   const diffEl = node('div', { class: 'code-diff', hidden: true });
   const messageEl = node('p', { class: 'code-message' });
@@ -120,14 +120,12 @@ export function createCodePanel({ api, host, newTerminal }) {
   const idleEl = node('div', { class: 'code-idle', hidden: true }, node('span', { class: 'brand-mark', 'aria-hidden': 'true' }));
 
   // 분석 시작 단추 (깃 폴더일 때만 보인다)
-  const analyzeChangesBtn = node('button', { class: 'code-act code-analyze-changes', type: 'button', onclick: () => startFromButton('changes') }, '이번 변경 분석');
-  const analyzeFileBtn = node('button', { class: 'code-act code-analyze-file', type: 'button', onclick: () => startFromButton('file') }, '이 파일 분석');
-  const modelSel = node('select', { class: 'code-analyze-model', 'aria-label': '분석 모델', onchange: updateModelTitle },
-    node('option', { value: 'sonnet' }, 'Sonnet (기본)'),
-    node('option', { value: 'opus', title: MODEL_TITLE.opus }, 'Opus (사용량 많음)'),
-    node('option', { value: 'fable', title: MODEL_TITLE.fable }, 'Fable (사용량 가장 많음)'));
+  const analyzeChangesBtn = node('button', { class: 'code-act code-analyze-changes', type: 'button', onclick: () => startFromButton('changes') });
+  const analyzeFileBtn = node('button', { class: 'code-act code-analyze-file', type: 'button', onclick: () => startFromButton('file') });
+  const modelSel = node('select', { class: 'code-analyze-model', onchange: updateModelTitle },
+    node('option', { value: 'sonnet' }), node('option', { value: 'opus' }), node('option', { value: 'fable' }));
   // 패널을 닫은 뒤 돌아오는 단추: 그 폴더에 분석 상태가 있을 때만 보인다 (실행 중이면 경과 시간)
-  const reopenBtn = node('button', { class: 'code-act code-analysis-reopen', type: 'button', hidden: true, title: '닫은 분석 패널을 다시 엽니다', onclick: reopenAnalysis }, '분석 결과');
+  const reopenBtn = node('button', { class: 'code-act code-analysis-reopen', type: 'button', hidden: true, onclick: reopenAnalysis });
   const analyzeBox = node('div', { class: 'code-analyze', hidden: true }, analyzeChangesBtn, analyzeFileBtn, modelSel, reopenBtn);
   const analysis = createAnalysisPanel({
     onJump: (item) => { openFile(item.file, item); },
@@ -149,22 +147,24 @@ export function createCodePanel({ api, host, newTerminal }) {
     agentEdits: () => (current ? touchedBy.get(keyOf(current))?.items() ?? [] : []),
   });
   const terminal = createTerminalPanel({ api, newTerminal, onShellChange: () => { shellSel.value = terminal.getShell(); } });
-  const analysisTabBtn = node('button', { class: 'cb-tab', type: 'button', role: 'tab', 'data-tab': 'analysis', onclick: () => { bottomTab = 'analysis'; syncBottom(); } }, node('span', {}, '분석'), node('span', { class: 'cb-dot', 'aria-label': '새 분석 결과', hidden: true }, '●'));
-  const termTabBtn = node('button', { class: 'cb-tab', type: 'button', role: 'tab', 'data-tab': 'terminal', onclick: openTerminal }, '터미널');
-  const shellSel = node('select', { class: 'cb-shell', 'aria-label': '셸 종류', title: '이 폴더의 셸 종류 — 실행 중이면 바로 바꾸지 않고, 「다시 시작」을 누르면 새 셸로 띄웁니다', hidden: true, onchange: () => terminal.setShell(shellSel.value) },
+  const analysisTabText = node('span', {});
+  const analysisDot = node('span', { class: 'cb-dot', hidden: true }, '●');
+  const analysisTabBtn = node('button', { class: 'cb-tab', type: 'button', role: 'tab', 'data-tab': 'analysis', onclick: () => { bottomTab = 'analysis'; syncBottom(); } }, analysisTabText, analysisDot);
+  const termTabBtn = node('button', { class: 'cb-tab', type: 'button', role: 'tab', 'data-tab': 'terminal', onclick: openTerminal });
+  const shellSel = node('select', { class: 'cb-shell', hidden: true, onchange: () => terminal.setShell(shellSel.value) },
     node('option', { value: 'powershell' }, 'PowerShell'), node('option', { value: 'bash' }, 'Git Bash'));
-  const restartBtn = node('button', { class: 'cb-restart', type: 'button', hidden: true, title: '이 폴더의 셸을 새로 띄웁니다 — 실행 중인 명령이 있으면 끝납니다', onclick: () => terminal.restart() }, '다시 시작');
-  const bottomCloseBtn = node('button', { class: 'cb-close', type: 'button', 'aria-label': '하단 닫기', title: '하단 영역 닫기 (터미널의 셸은 유지)', onclick: () => { bottomOpen = false; syncBottom(); } }, '×');
-  const tabsEl = node('div', { class: 'cb-tabs', role: 'tablist', 'aria-label': '하단 영역' }, analysisTabBtn, termTabBtn, shellSel, restartBtn, bottomCloseBtn);
+  const restartBtn = node('button', { class: 'cb-restart', type: 'button', hidden: true, onclick: () => terminal.restart() });
+  const bottomCloseBtn = node('button', { class: 'cb-close', type: 'button', onclick: () => { bottomOpen = false; syncBottom(); } }, '×');
+  const tabsEl = node('div', { class: 'cb-tabs', role: 'tablist' }, analysisTabBtn, termTabBtn, shellSel, restartBtn, bottomCloseBtn);
   // 위쪽 경계(분석 패널의 resizer)는 하단 영역의 첫 자식으로 옮긴다 — 어느 탭이든 같은 높이를 끈다.
   const bottomEl = node('div', { class: 'code-bottom', hidden: true }, analysis.resizer, tabsEl, analysis.el, terminal.el);
-  const sideTopEl = node('div', { class: 'code-side-top' },
-    node('h3', { class: 'code-section' }, '이번 작업에서 건드린 파일'), touchedEl,
-    node('h3', { class: 'code-section' }, '전체 파일'), noteEl, treeEl);
+  const touchedHead = node('h3', { class: 'code-section' });
+  const treeHead = node('h3', { class: 'code-section' });
+  const sideTopEl = node('div', { class: 'code-side-top' }, touchedHead, touchedEl, treeHead, noteEl, treeEl);
 
   const viewEl = node('div', { class: 'code-view' }, editorEl, diffEl, messageEl, idleEl);
   const sideEl = node('div', { class: 'code-side' }, sideTopEl, gitPanel.el);
-  const sideResizer = node('div', { class: 'code-side-resizer', role: 'separator', 'aria-orientation': 'vertical', 'aria-label': '왼쪽 목록 너비 조절', title: '끌어서 너비 조절 · 두 번 클릭하면 기본 너비' });
+  const sideResizer = node('div', { class: 'code-side-resizer', role: 'separator', 'aria-orientation': 'vertical' });
   const bodyEl = node('div', { class: 'code-body' },
     sideEl, sideResizer,
     node('div', { class: 'code-main' },
@@ -174,6 +174,43 @@ export function createCodePanel({ api, host, newTerminal }) {
   host.replaceChildren(
     node('div', { class: 'code-head' }, folderSel, pickBtn, refreshBtn, termToggle, statusEl),
     bodyEl);
+
+  // 한 번만 만드는 요소의 글자·툴팁·접근성 이름. 만들 때 한 번, 언어가 바뀔 때 다시 쓴다 (reopenBtn 의 「분석 중 m:ss」는 updateReopen 이 쓴다).
+  function paintLabels() {
+    folderSel.setAttribute('aria-label', t('code.view.folderLabel'));
+    pickBtn.textContent = t('code.view.pick');
+    refreshBtn.title = t('code.view.refreshTitle');
+    refreshBtn.setAttribute('aria-label', t('code.view.refresh'));
+    termToggle.textContent = t('code.view.terminal');
+    termToggle.title = t('code.view.termToggleTitle');
+    toggleBtn.textContent = t('code.view.diffToggle');
+    analyzeChangesBtn.textContent = t('code.view.analyzeChanges');
+    analyzeFileBtn.textContent = t('code.view.analyzeFile');
+    modelSel.setAttribute('aria-label', t('code.view.modelLabel'));
+    ['optSonnet', 'optOpus', 'optFable'].forEach((key, i) => {
+      const opt = modelSel.options[i];
+      opt.textContent = t(`code.view.${key}`);
+      if (modelTitle(opt.value)) opt.title = modelTitle(opt.value); else opt.removeAttribute('title'); // 기본 모델은 툴팁이 없다
+    });
+    reopenBtn.title = t('code.view.reopenTitle');
+    reopenBtn.textContent = t('code.view.analysisResult');
+    analysisTabText.textContent = t('code.view.analysisTab');
+    analysisDot.setAttribute('aria-label', t('code.view.newResult'));
+    termTabBtn.textContent = t('code.view.terminal');
+    shellSel.setAttribute('aria-label', t('code.view.shellLabel'));
+    shellSel.title = t('code.view.shellTitle');
+    restartBtn.textContent = t('code.view.restart');
+    restartBtn.title = t('code.view.restartTitle');
+    bottomCloseBtn.setAttribute('aria-label', t('code.view.closeBottom'));
+    bottomCloseBtn.title = t('code.view.closeBottomTitle');
+    tabsEl.setAttribute('aria-label', t('code.view.bottomArea'));
+    touchedHead.textContent = t('code.view.touchedHead');
+    treeHead.textContent = t('code.view.treeHead');
+    sideResizer.setAttribute('aria-label', t('code.view.sideResizeAria'));
+    sideResizer.title = t('code.view.sideResizeTitle');
+  }
+  paintLabels();
+
   // 최소 높이는 탭줄 + (분석 탭이면) 분석 머리줄 + 본문 48px
   const resizeAnalysis = setupAnalysisResizer(bottomEl, () => tabsEl.offsetHeight + (shownTab() === 'analysis' ? analysis.head.offsetHeight : 0), viewEl, analysis.resizer);
   const resizeGit = setupAnalysisResizer(gitPanel.el, gitPanel.head, sideTopEl, gitPanel.resizer, { key: 'ao.gitPanelHeight', cssVar: '--gp-height', bodyMin: 170 });
@@ -192,10 +229,20 @@ export function createCodePanel({ api, host, newTerminal }) {
     if (path != null) [...container.querySelectorAll(itemClass)].find((b) => b.dataset.path === path)?.focus({ preventScroll: true });
   }
 
+  // text 는 글이거나 글을 돌려주는 함수 (함수면 언어가 바뀔 때 다시 불러 새 문구로 바꾼다)
+  let statusSrc = null;
   function setStatus(text, error = false) {
-    statusEl.textContent = text;
+    statusSrc = typeof text === 'function' ? text : null;
+    const shown = statusSrc ? statusSrc() : text;
+    statusEl.textContent = shown;
     statusEl.classList.toggle('err', error);
-    statusEl.title = error ? text : '';
+    statusEl.title = error ? shown : '';
+  }
+
+  // 「HH:MM:SS 갱신」 — 시각은 지금 것을 잡아 두고 문구만 언어를 따른다
+  function setUpdated() {
+    const time = clock();
+    setStatus(() => t('code.view.updated', { time }));
   }
 
   function setMessage(text) {
@@ -225,7 +272,7 @@ export function createCodePanel({ api, host, newTerminal }) {
 
   // ───────── 코드 분석 ─────────
   function updateModelTitle() {
-    modelSel.title = MODEL_TITLE[modelSel.value] || '';
+    modelSel.title = modelTitle(modelSel.value);
   }
 
   const curAnalysis = () => (current ? analysisByRoot.get(keyOf(current)) : undefined);
@@ -233,12 +280,12 @@ export function createCodePanel({ api, host, newTerminal }) {
     const k = keyOf(root);
     let s = analysisByRoot.get(k);
     if (!s) {
-      s = { active: 'changes', results: new Map(), run: null, error: '', stopped: false, confirm: null, closed: false, notesOn: true, collapsed: new Set(), jumpNote: '' };
+      s = { active: 'changes', results: new Map(), run: null, error: '', stopped: false, confirm: null, closed: false, notesOn: true, collapsed: new Set(), jumpAt: '' };
       analysisByRoot.set(k, s);
     }
     return s;
   }
-  const scopeLabelOf = (scopeKey) => (scopeKey.startsWith('file:') ? baseOf(scopeKey.slice(5)) : '이번 변경');
+  const scopeLabelOf = (scopeKey) => (scopeKey.startsWith('file:') ? baseOf(scopeKey.slice(5)) : t('code.view.scopeChanges'));
 
   // 분석을 시작할 수 있는 폴더 상태: 깃 폴더이고 트리를 받는 중이 아니며 이 폴더에서 분석 중이 아님.
   // 단추뿐 아니라 「다시 분석」·「그래도 분석」도 같은 조건이다.
@@ -260,7 +307,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     const has = !!s && (s.run || s.results.size || s.confirm || s.error || s.stopped);
     const show = can && !!s && (s.closed || !bottomOpen) && !!has; // 분석 패널을 닫았거나 하단 영역을 닫아 둔 경우
     reopenBtn.hidden = !show;
-    if (show) reopenBtn.textContent = s.run ? `분석 중 ${mmss(Date.now() - s.run.startedAt)}` : '분석 결과';
+    if (show) reopenBtn.textContent = s.run ? t('code.view.analyzing', { time: mmss(Date.now() - s.run.startedAt) }) : t('code.view.analysisResult');
     const need = show && !!s.run && visible;
     if (!need) { if (reopenTimer) { clearInterval(reopenTimer); reopenTimer = null; } }
     else if (!reopenTimer) reopenTimer = setInterval(() => updateReopen(), 1000);
@@ -291,7 +338,7 @@ export function createCodePanel({ api, host, newTerminal }) {
   function scopeChoices(s) {
     const keys = [...s.results.keys()];
     if (!keys.includes(s.active)) keys.push(s.active);
-    return keys.map((key) => ({ key, label: scopeLabelOf(key), title: key.startsWith('file:') ? key.slice(5) : '이번 변경' }));
+    return keys.map((key) => ({ key, label: scopeLabelOf(key), title: key.startsWith('file:') ? key.slice(5) : t('code.view.scopeChanges') }));
   }
 
   function analysisView() {
@@ -303,7 +350,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     return {
       status: st, scopeLabel: scopeLabelOf(s.active), scopes: scopeChoices(s), active: s.active, canStart: canStart(), result: res ? res.result : null, cached: !!res?.cached, model: res?.model ?? '', ms: res?.ms ?? 0,
       costUsd: res?.costUsd ?? null, error: s.error, confirm: s.confirm ? { files: s.confirm.files, chars: s.confirm.chars } : null,
-      startedAt: s.run ? s.run.startedAt : 0, notesOn: s.notesOn, hiddenNotes: notesHidden, stale: st === 'done' && !!res && isStale(s.active, res), jumpNote: s.jumpNote,
+      startedAt: s.run ? s.run.startedAt : 0, notesOn: s.notesOn, hiddenNotes: notesHidden, stale: st === 'done' && !!res && isStale(s.active, res), jumpNote: s.jumpAt ? t('code.view.jumpEstimated', { where: s.jumpAt }) : '',
     };
   }
 
@@ -325,7 +372,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     terminal.el.classList.toggle('cb-off', shown !== 'terminal');
     tabsEl.hidden = !termOpened; // 터미널을 한 번 열기 전에는 탭줄 없이 분석 패널만 (예전 모습 그대로)
     analysisTabBtn.hidden = !hasA;
-    analysisTabBtn.querySelector('.cb-dot').hidden = !(hasA && !!s?.unseen && shown !== 'analysis'); // 터미널을 보는 동안 끝난 분석
+    analysisDot.hidden = !(hasA && !!s?.unseen && shown !== 'analysis'); // 터미널을 보는 동안 끝난 분석
     for (const [b, id] of [[analysisTabBtn, 'analysis'], [termTabBtn, 'terminal']]) { b.classList.toggle('on', shown === id); b.setAttribute('aria-selected', String(shown === id)); }
     shellSel.hidden = restartBtn.hidden = shown !== 'terminal';
     shellSel.value = terminal.getShell();
@@ -363,7 +410,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     const s = analysisOf(root);
     if (s.run) return;
     s.run = { scopeKey, startedAt: Date.now(), statusAtStart: statusSig(scopeKey) };
-    s.active = scopeKey; s.error = ''; s.stopped = false; s.confirm = null; s.closed = false; s.jumpNote = '';
+    s.active = scopeKey; s.error = ''; s.stopped = false; s.confirm = null; s.closed = false; s.jumpAt = '';
     bottomOpen = true; bottomTab = 'analysis'; // 사용자가 분석을 시작하면 분석 탭으로
     renderAnalysis();
     let r;
@@ -390,9 +437,9 @@ export function createCodePanel({ api, host, newTerminal }) {
     } else if (r && r.needConfirm) {
       s.confirm = { scopeKey, rel, model, force, files: r.needConfirm.files, chars: r.needConfirm.chars };
     } else if (r && r.stopped) {
-      s.stopped = true; s.error = r.error || '중단했습니다';
+      s.stopped = true; s.error = r.error || t('code.analysis.stopped');
     } else {
-      s.error = (r && r.error) || '분석에 실패했습니다';
+      s.error = (r && r.error) || t('code.view.analyzeFailed');
     }
     if (here) {
       if (r && r.ok) applyNotes();
@@ -459,11 +506,13 @@ export function createCodePanel({ api, host, newTerminal }) {
   // 패널 다시 그리기는 이 함수를 부르지 않으므로 서로 되풀이하지 않는다.
   // keepScroll: 분석 완료·토글·폴더 복귀처럼 보던 자리에서 주석만 바뀌는 호출은 첫 보이는 줄과 그 오프셋을 지킨다
   // (showText 는 자기 스크롤 복원이 있어 false).
-  function applyNotes(keepScroll = true) {
+  // rebuild: 언어가 바뀌어 같은 주석도 글자(위치 추정 표시)가 달라졌으니 영역을 다시 만든다 (스크롤 기준은 지우기 전에 잡는다).
+  function applyNotes(keepScroll = true, rebuild = false) {
     const s = curAnalysis();
     const ed = view === 'diff' ? diff?.getModifiedEditor() : view === 'editor' ? editor : null;
     const res = s && s.notesOn && shownDoc ? s.results.get(`file:${shownDoc.rel}`) || s.results.get('changes') : null;
     const at = keepScroll && ed ? scrollAnchor(ed) : null;
+    if (rebuild) notesLayer?.clear();
     let hidden = 0;
     if (notesLayer && ed && res) {
       const r = notesForFile(res.result, shownDoc.rel, shownDoc.text);
@@ -504,7 +553,7 @@ export function createCodePanel({ api, host, newTerminal }) {
 
   function renderFolders() {
     const list = options();
-    folderSel.replaceChildren(...(list.length ? list.map((d) => node('option', { value: d, title: d }, d)) : [node('option', { value: '' }, '열린 작업 폴더 없음')]));
+    folderSel.replaceChildren(...(list.length ? list.map((d) => node('option', { value: d, title: d }, d)) : [node('option', { value: '' }, t('code.view.noFolderOption'))]));
     folderSel.disabled = !list.length;
     if (current) folderSel.value = current;
   }
@@ -551,20 +600,20 @@ export function createCodePanel({ api, host, newTerminal }) {
     pollWanted = pollWanted || withPoll;
     treeBusy = true;
     updateAnalyzeControls();
-    setStatus('불러오는 중…');
+    setStatus(() => t('code.view.loading'));
     try {
-      const t = await api.codeTree(root);
+      const res = await api.codeTree(root);
       if (fg !== folderGen || my !== treeSeq) return;
       const poll = pollWanted;
       pollWanted = false;
-      treeInfo = t;
+      treeInfo = res;
       treeError = '';
-      if (t.git) { tree = buildTree(t.files); fileSet = new Set(t.files); fileByLower = new Map(t.files.map((f) => [f.toLowerCase(), f])); } else { tree = null; fileSet = new Set(); fileByLower = new Map(); }
+      if (res.git) { tree = buildTree(res.files); fileSet = new Set(res.files); fileByLower = new Map(res.files.map((f) => [f.toLowerCase(), f])); } else { tree = null; fileSet = new Set(); fileByLower = new Map(); }
       renderTree();
       if (!open) renderMain();
-      if (!t.git) { gitPanel.setUnavailable(GIT_TEXT[t.reason] || '지원하지 않는 폴더입니다'); setStatus(GIT_TEXT[t.reason] || '지원하지 않는 폴더입니다', true); return; }
+      if (!res.git) { gitPanel.setUnavailable(gitText(res.reason)); setStatus(() => gitText(res.reason), true); return; }
       if (poll) await pollCore();
-      else setStatus(`${clock()} 갱신`);
+      else setUpdated();
     } catch (e) {
       if (fg === folderGen && my === treeSeq) {
         treeError = errText(e);
@@ -585,7 +634,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     keepFocus(treeEl, '.code-node', () => {
       treeEl.replaceChildren();
       noteEl.hidden = !treeInfo?.truncated;
-      noteEl.textContent = treeInfo?.truncated ? '파일이 많아 20000개까지만 표시합니다' : '';
+      noteEl.textContent = treeInfo?.truncated ? t('code.view.treeTruncated') : '';
       if (tree) treeEl.append(...treeItems(tree.children, 0));
     });
   }
@@ -600,7 +649,7 @@ export function createCodePanel({ api, host, newTerminal }) {
         const btn = node('button', { class: 'code-node code-folder-node', type: 'button', 'data-path': n.path, 'aria-expanded': String(isOpen), title: n.path, onclick: () => toggleFolder(n.path) },
           node('span', { class: 'code-caret', 'aria-hidden': 'true' }, isOpen ? '▾' : '▸'),
           node('span', { class: 'code-name' }, n.name),
-          dirty.has(n.path) ? node('span', { class: 'code-dot', title: '변경된 파일이 있음', role: 'img', 'aria-label': '변경된 파일이 있음' }, '●') : null);
+          dirty.has(n.path) ? node('span', { class: 'code-dot', title: t('code.view.dirty'), role: 'img', 'aria-label': t('code.view.dirty') }, '●') : null);
         btn.style.setProperty('--depth', depth);
         li.append(btn);
         if (isOpen) li.append(node('ul', { class: 'code-children' }, treeItems(n.children, depth + 1)));
@@ -609,7 +658,7 @@ export function createCodePanel({ api, host, newTerminal }) {
         const btn = node('button', { class: 'code-node code-file', type: 'button', 'data-path': n.path, title: n.path, 'aria-current': open?.rel === n.path ? 'true' : null, onclick: () => openFile(n.path) },
           node('span', { class: 'code-caret', 'aria-hidden': 'true' }),
           node('span', { class: 'code-name' }, n.name),
-          letter ? node('span', { class: 'code-badge', 'data-code': letter, title: LETTER_TITLE[letter] || '', 'aria-label': LETTER_TITLE[letter] || letter }, letter) : null);
+          letter ? node('span', { class: 'code-badge', 'data-code': letter, title: letterTitle(letter), 'aria-label': letterTitle(letter) || letter }, letter) : null);
         btn.style.setProperty('--depth', depth);
         li.append(btn);
       }
@@ -639,12 +688,12 @@ export function createCodePanel({ api, host, newTerminal }) {
   function renderTouched() {
     const list = current ? touchedBy.get(keyOf(current))?.items() ?? [] : [];
     keepFocus(touchedEl, '.code-touch', () => {
-      touchedEl.replaceChildren(...(list.length ? list.map((t) => node('li', {},
-        node('button', { class: 'code-touch', type: 'button', 'data-path': t.rel, title: t.rel, 'aria-current': open?.rel === canon(t.rel) ? 'true' : null, onclick: () => openFile(t.rel) },
-          node('span', { class: 'code-mark', 'data-kind': t.kind, role: 'img', 'aria-label': t.kind === 'edit' ? '수정' : '읽기' }, t.kind === 'edit' ? '●' : '○'),
-          node('span', { class: 'code-name' }, baseOf(t.rel)),
-          node('span', { class: 'code-meta' }, `${t.cli === 'codex' ? 'Codex' : 'Claude'} · ${hm(t.at)}`),
-          node('span', { class: 'code-dir' }, dirOf(t.rel))))) : [node('li', { class: 'code-none' }, '아직 없습니다')]));
+      touchedEl.replaceChildren(...(list.length ? list.map((it) => node('li', {},
+        node('button', { class: 'code-touch', type: 'button', 'data-path': it.rel, title: it.rel, 'aria-current': open?.rel === canon(it.rel) ? 'true' : null, onclick: () => openFile(it.rel) },
+          node('span', { class: 'code-mark', 'data-kind': it.kind, role: 'img', 'aria-label': t(it.kind === 'edit' ? 'code.view.touchEdit' : 'code.view.touchRead') }, it.kind === 'edit' ? '●' : '○'),
+          node('span', { class: 'code-name' }, baseOf(it.rel)),
+          node('span', { class: 'code-meta' }, `${it.cli === 'codex' ? 'Codex' : 'Claude'} · ${hm(it.at)}`),
+          node('span', { class: 'code-dir' }, dirOf(it.rel))))) : [node('li', { class: 'code-none' }, t('code.view.touchNone'))]));
     });
   }
 
@@ -657,15 +706,15 @@ export function createCodePanel({ api, host, newTerminal }) {
 
   // ───────── 파일 열기·보기 ─────────
   function renderFileHead() {
-    pathEl.textContent = open ? (open.staged ? `${open.rel} (스테이징된 내용)` : open.rel) : '';
+    pathEl.textContent = open ? (open.staged ? t('code.view.stagedSuffix', { rel: open.rel }) : open.rel) : '';
     updateToggle();
   }
 
   // 파일을 안 고른 상태의 안내 글. 알릴 것이 없으면(고르기만 하면 되면) null — 로고를 보인다.
   function idleMessage() {
-    if (!options().length) return '작업 폴더를 열거나 「폴더 열기…」로 폴더를 고르세요';
-    if (treeInfo && !treeInfo.git) return GIT_TEXT[treeInfo.reason] || '지원하지 않는 폴더입니다';
-    if (!treeInfo) return treeError ? `⚠ ${treeError}` : '불러오는 중…';
+    if (!options().length) return t('code.view.noFolder');
+    if (treeInfo && !treeInfo.git) return gitText(treeInfo.reason);
+    if (!treeInfo) return treeError ? `⚠ ${treeError}` : t('code.view.loading');
     return null;
   }
 
@@ -755,7 +804,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     else at = { line: Math.min(Math.max(Number.isInteger(item.line) ? item.line : 1, 1), total), moved: false };
     revealAt(view === 'diff' ? diff.getModifiedEditor() : editor, at.line);
     const s = curAnalysis();
-    if (s) { s.jumpNote = at.moved ? `위치 추정: ${open.rel}:${at.line}` : ''; renderAnalysis(); }
+    if (s) { s.jumpAt = at.moved ? `${open.rel}:${at.line}` : ''; renderAnalysis(); }
     return at.line;
   }
 
@@ -781,7 +830,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     if (!monaco) {
       try { monaco = await loadMonaco(); } catch (e) {
         console.error('[code] 모나코 로드 실패', e);
-        if (g === gen && open === o) { release(); setMessage('코드 편집기를 불러오지 못했습니다'); }
+        if (g === gen && open === o) { release(); setMessage(t('code.view.editorFailed')); }
         return;
       }
       if (g !== gen || open !== o) return;
@@ -801,13 +850,14 @@ export function createCodePanel({ api, host, newTerminal }) {
       if (typeof b === 'string') { r = { kind: 'text', text: '', mtimeMs: null }; o.gone = true; }
     }
     o.kind = r.kind;
+    o.size = r.size; // large 안내의 크기 (언어가 바뀌면 안내를 다시 만든다)
     // 안내만 보이는 파일(바이너리·큰 파일·폴더)의 시각은 첫 갱신 때 기억한다 (그래야 매번 다시 읽지 않는다).
     o.mtimeMs = r.kind === 'text' ? r.mtimeMs : r.kind === 'missing' ? null : undefined;
     if (r.kind !== 'text') {
       o.text = null; o.base = null;
       pendingJump = null;
       release();
-      setMessage(FILE_NOTE[r.kind]?.(r) ?? '표시할 수 없는 파일입니다');
+      setMessage(FILE_NOTE[r.kind]?.(r) ?? t('code.view.fileUnsupported'));
       return;
     }
     o.text = r.text;
@@ -828,7 +878,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     renderFileHead();
     markCurrent();
     revealInTree(rel);
-    setMessage('불러오는 중…');
+    setMessage(t('code.view.loading'));
     try {
       await readOpen(root, o, g, false);
     } catch (e) {
@@ -882,7 +932,7 @@ export function createCodePanel({ api, host, newTerminal }) {
     // HEAD 가 달라졌다(Pull·터미널의 git pull·checkout 등): 새로 들어온 파일·지워진 파일이 트리에 반영되게 목록을 다시 받는다 (첫 값은 비교 대상이 아니다).
     const headMoved = !!gs && gs.ok !== false && !!gs.oid && lastOid !== null && lastOid !== gs.oid;
     if (gs && gs.ok !== false && gs.oid) lastOid = gs.oid;
-    setStatus(`${clock()} 갱신`);
+    setUpdated();
     if (o && o.kind !== 'error' && g === gen && open === o && !o.loading) await syncOpen(root, o, g, r.mtimeMs, headMoved);
     if (fg === folderGen) renderAnalysis(); // 변경 상태·열린 파일 시각이 달라졌으면 「분석 후 코드가 바뀜」을 반영
     await reloadTreeIfNew(r.changes, fg);
@@ -954,6 +1004,23 @@ export function createCodePanel({ api, host, newTerminal }) {
 
   // ───────── 바깥에 내놓는 것 ─────────
   renderFolders(); renderTouched(); renderMain(); renderAnalysis();
+
+  // 언어가 바뀜(창을 새로고침하지 않는다): 한 번 만든 글자를 다시 쓰고, 오래 보이는 목록·상태·안내를 새 언어로 다시 그린다.
+  // 이미 쌓인 활동 기록·분석 오류·Git 안내 같은 잠깐 보이는 글은 다음 갱신 때 바뀐다. 코드 화면이 감춰져 있어도 같은 DOM 이라 그대로 그린다.
+  function relabel() {
+    paintLabels();
+    terminal.relabel();
+    gitPanel.relabel();
+    if (statusSrc) setStatus(statusSrc, statusEl.classList.contains('err'));
+    renderFolders(); renderTouched(); renderTree(); renderFileHead(); renderMain();
+    if (open && !open.loading && FILE_NOTE[open.kind]) setMessage(FILE_NOTE[open.kind](open)); // 바이너리·큰 파일 같은 안내가 남아 있는 파일
+    applyNotes(true, true);
+    renderAnalysis(); // 범위 이름·「위치 추정」 줄은 분석 상태에서 다시 만든다
+    analysis.relabel(); // 본문·상태 줄은 지문이 같아 건너뛰므로 비우고 다시 그린다
+    updateModelTitle();
+    syncBottom(); updateAnalyzeControls(); updateReopen();
+  }
+  onLangChange(relabel);
 
   return {
     // 코드 화면이 보인다: 처음이면 폴더를 정하고(activeCwd 가 목록에 있으면 그 폴더) 10초 갱신을 켠다.

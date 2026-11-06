@@ -1,4 +1,5 @@
 import { OfficeLife } from '../../office/life.js';
+import { t } from '../../../shared/i18n.js';
 
 // 새 테마의 생활 동작만 가변 배치도에 맞춘다.
 export class CustomLife extends OfficeLife {
@@ -24,7 +25,7 @@ export class CustomLife extends OfficeLife {
         const end = a.path?.at(-1) || a.seat || a;
         return Math.hypot(end.x - p.x, end.y - p.y) >= 80;
       }));
-      if (seat && this.moveTo(seat, { label: '스킬 협업', action: 'collaborate' }, actor)) return;
+      if (seat && this.moveTo(seat, { label: t('office.interaction.skillCollab'), action: 'collaborate' }, actor)) return;
     }
     if (options.length) {
       const offset = Math.floor(this.random() * options.length);

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'">
-  <title>Agent Office 펫</title>
+  <title data-i18n="pet.window.title">Agent Office 펫</title>
   <link rel="stylesheet" href="pet.css">
 </head>
 <body>
@@ -24,8 +24,8 @@
       </div>
       <div id="usage-foot">
         <span id="usage-updated"></span>
-        <button id="usage-refresh" type="button" aria-label="사용량 다시 읽기">⟳</button>
-        <button id="usage-toggle" type="button" aria-expanded="true">∨ 사용량</button>
+        <button id="usage-refresh" type="button" aria-label="사용량 다시 읽기" data-i18n-aria-label="pet.usage.refresh">⟳</button>
+        <button id="usage-toggle" type="button" aria-expanded="true" data-i18n="pet.usage.toggleOpen">∨ 사용량</button>
       </div>
     </section>
     <div id="pets"></div>

@@ -8,6 +8,7 @@ const {
   sheetVersionOf, spriteVersion, sanitizeInUse, sanitizeCollab, fitPetSize,
 } = require('./petRules.cjs');
 const { imageSize } = require('./petImport.cjs');
+const { t, onLangChange } = require('../shared/i18n.js');
 
 const SHEET_HEAD_BYTES = 64 * 1024; // 목록에서 시트 크기를 볼 때 읽는 앞부분
 const PERM_ID_RE = /^[0-9a-f-]{36}$/i;
@@ -104,6 +105,7 @@ function createPetController({
   let watchTimer = null;
 
   const alive = () => !!win && !win.isDestroyed();
+  const offLang = onLangChange(() => { if (alive()) win.setTitle(t('pet.window.title')); }); // 창이 떠 있으면 제목도 새 언어로
   // 지금 펫 카드로 권한을 받을 수 있는가: 펫이 켜져 있고 창이 떠서 다 불러와졌고, 렌더러가 반복해서 죽는 중이 아닐 때.
   const canAnswer = () => !disposed && config.pet.mode !== 'off' && alive() && loaded && Date.now() >= crashUntil && !process.env.AGENT_OFFICE_SMOKE;
 
@@ -221,7 +223,7 @@ function createPetController({
       skipTaskbar: true,
       alwaysOnTop: true,
       focusable: false,
-      title: 'Agent Office 펫',
+      title: t('pet.window.title'),
       webPreferences: {
         preload: path.join(__dirname, 'preload-pet.cjs'),
         contextIsolation: true,
@@ -309,6 +311,7 @@ function createPetController({
 
   function shutdown() {
     disposed = true;
+    offLang();
     destroy();
   }
 
@@ -409,13 +412,13 @@ function createPetController({
 
   function menuItems() {
     return [{
-      label: '펫',
+      label: t('pet.menu.pet'),
       submenu: [
-        ...[['always', '상시 표시'], ['alerts', '알림만 표시'], ['off', '끄기']].map(([m, label]) => ({
+        ...[['always', t('pet.menu.always')], ['alerts', t('pet.menu.alerts')], ['off', t('pet.menu.off')]].map(([m, label]) => ({
           label, type: 'radio', checked: config.pet.mode === m, click: () => setMode(m),
         })),
         { type: 'separator' },
-        { label: '펫 위치 초기화', click: resetPosition },
+        { label: t('pet.menu.resetPosition'), click: resetPosition },
       ],
     }];
   }

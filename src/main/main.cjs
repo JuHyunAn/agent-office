@@ -34,6 +34,7 @@ const { statusSnapshot } = require('./statusShape.cjs');
 const { createModelCatalog } = require('./modelCatalog.cjs');
 const { normAgent, agentById, agentName, AGENT_IDS } = require('../shared/agents.js');
 const { collabRules } = require('./collabRules.cjs');
+const { t, setLang, normLang } = require('../shared/i18n.js');
 const getWeather = createWeatherService();
 // 점검 실행은 사용자 데이터(최근 폴더·설정)를 건드리지 않도록 별도 폴더를 쓸 수 있다.
 if (process.env.AGENT_OFFICE_USER_DATA) app.setPath('userData', process.env.AGENT_OFFICE_USER_DATA);
@@ -161,13 +162,13 @@ async function status() {
       if (!loc('codex')) return {};
       const [version, auth] = await Promise.all([codexCli.version(loc('codex')), codexCli.authStatus(loc('codex'), { appVersion: app.getVersion() })]);
       return { version, auth };
-    })().catch((e) => ({ auth: { loggedIn: false, error: `Codex 상태를 확인하지 못했습니다: ${String(e?.message || e).slice(0, 120)}` } })),
+    })().catch((e) => ({ auth: { loggedIn: false, error: t('main.status.codexFailed', { detail: String(e?.message || e).slice(0, 120) }) } })),
     ...others.map((id) => (async () => {
       setLoc(id, await agentCli.locate(id)); // 새로 찾으면(예: 앱 안 설치 직후) 「미설치」로 굳은 모델 목록 조회를 다시 한다
       if (!loc(id)) return {};
       const [version, auth] = await Promise.all([agentCli.version(loc(id)), agentCli.authStatus(id, loc(id))]);
       return { version, auth };
-    })().catch((e) => ({ auth: { loggedIn: false, error: `${agentName(id)} 상태를 확인하지 못했습니다: ${String(e?.message || e).slice(0, 120)}` } }))),
+    })().catch((e) => ({ auth: { loggedIn: false, error: t('main.status.agentFailed', { name: agentName(id), detail: String(e?.message || e).slice(0, 120) }) } }))),
   ]);
   const { version, auth } = cl;
   if (auth.loggedIn || loc('codex')) collabModels(); // 협업 탭을 열기 전에 미리 받아 둔다 (Claude 쪽은 5초 안팎 걸림)
@@ -186,12 +187,12 @@ async function status() {
 }
 
 function checkFolder(cwd) {
-  if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error(`폴더가 없습니다: ${cwd}`);
+  if (!cwd || !fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) throw new Error(t('main.error.noFolder', { cwd }));
 }
 
 // 작업 폴더 선택 대화상자 — 탭 열기(dialog:pickFolder)와 코드 화면(code:pick)이 함께 쓴다. 취소하면 null.
 async function pickFolder() {
-  const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: '작업 폴더 선택' });
+  const r = await dialog.showOpenDialog(win, { properties: ['openDirectory'], title: t('main.dialog.pickFolder') });
   return r.canceled ? null : r.filePaths[0];
 }
 
@@ -201,7 +202,7 @@ const codeRoots = createCodeRoots();
 async function needCodex(opts) {
   // Codex 앱이 업데이트되면 CLI 폴더가 바뀐다 — 기억한 경로가 사라졌으면 다시 찾는다.
   if (!loc('codex') || (!loc('codex').cmdShim && !fs.existsSync(loc('codex').file))) setLoc('codex', await codexCli.locate(), opts);
-  if (!loc('codex')) throw new Error('Codex 를 찾지 못했습니다 (Codex 앱 또는 npm install -g @openai/codex)');
+  if (!loc('codex')) throw new Error(t('main.notFound.codexInstall'));
   return loc('codex');
 }
 
@@ -210,7 +211,7 @@ async function needCodex(opts) {
 async function needMuse() {
   const l = loc('muse');
   if (!l || l.cmdShim || !fs.existsSync(l.file)) setLoc('muse', await agentCli.locate('muse'));
-  if (!loc('muse')) throw new Error('Muse Code 를 찾지 못했습니다');
+  if (!loc('muse')) throw new Error(t('main.notFound.muse'));
   return loc('muse');
 }
 
@@ -229,7 +230,7 @@ async function createCodexPty({ tabId, cwd, cols, rows }) {
 const COLLAB_CHATS = {
   claude: async ({ room, roomId, onEvent }) => {
     if (!loc('claude')) setLoc('claude', await claudeCli.locate());
-    if (!loc('claude')) throw new Error('Claude Code 를 찾지 못했습니다');
+    if (!loc('claude')) throw new Error(t('main.notFound.claude'));
     return new ClaudeChat({ loc: loc('claude'), cwd: room.cwd, settingsPath: sessionSettingsPath, systemPrompt: collabRules(room.roster, 'claude'), env: cleanEnv({ AGENT_OFFICE_TAB: roomId }), onEvent });
   },
   codex: async ({ room, roomId, onEvent }) => {
@@ -238,7 +239,7 @@ const COLLAB_CHATS = {
   },
   grok: async ({ room, roomId, onEvent }) => {
     if (!loc('grok')) setLoc('grok', await agentCli.locate('grok'));
-    if (!loc('grok')) throw new Error('Grok Build 를 찾지 못했습니다');
+    if (!loc('grok')) throw new Error(t('main.notFound.grok'));
     ensureGrokHooks();
     return new GrokChat({ loc: loc('grok'), cwd: room.cwd, systemPrompt: collabRules(room.roster, 'grok'), env: cleanEnv(), onEvent: (ev) => { trackGrokSession(grokRooms, roomId, ev); onEvent(ev); } });
   },
@@ -251,10 +252,10 @@ const COLLAB_CHATS = {
   // 로그인 전에는 agy -p 가 로그인을 60초 기다리므로, 실행기를 만들 때(방마다 한 번) 로그인 여부부터 확인한다.
   antigravity: async ({ room, roomId, onEvent }) => {
     if (!loc('antigravity')) setLoc('antigravity', await agentCli.locate('antigravity'));
-    if (!loc('antigravity')) throw new Error('Antigravity CLI 를 찾지 못했습니다');
+    if (!loc('antigravity')) throw new Error(t('main.notFound.antigravity'));
     const auth = await agentCli.authStatus('antigravity', loc('antigravity'), { timeoutMs: 15000 });
-    if (auth.timedOut) throw new Error('Gemini 로그인 상태를 확인하지 못했습니다 (시간 초과)'); // 로그인 필요와는 다른 문제 — 잠시 뒤 다시 시도하면 된다
-    if (!auth.loggedIn) throw new Error(auth.error || 'Gemini 로그인이 필요합니다 (진입 화면에서 로그인)');
+    if (auth.timedOut) throw new Error(t('main.agy.authTimeout')); // 로그인 필요와는 다른 문제 — 잠시 뒤 다시 시도하면 된다
+    if (!auth.loggedIn) throw new Error(auth.error || t('main.agy.loginEnter'));
     ensureAgyHooks();
     return new AgyChat({ loc: loc('antigravity'), cwd: room.cwd, systemPrompt: collabRules(room.roster, 'antigravity'), env: cleanEnv({ AGENT_OFFICE_TAB: roomId }), onEvent, onUsage: (u) => usage?.addTurnUsage('antigravity', u) });
   },
@@ -268,26 +269,26 @@ function validRoster(roster) {
   if (roster == null) return [...DEFAULT_ROSTER];
   const ok = Array.isArray(roster) && roster.length >= 2 && new Set(roster).size === roster.length
     && roster.every((id) => typeof id === 'string' && agentById(id)?.caps?.collab === true && Object.hasOwn(COLLAB_CHATS, id));
-  if (!ok) throw new Error('잘못된 협업 참여자');
+  if (!ok) throw new Error(t('main.error.badRoster'));
   return [...roster];
 }
 
 async function collabSend({ roomId, agent, cwd, text, model, effort, turn, roster }) {
-  if (!TAB_RE.test(String(roomId))) throw new Error('잘못된 탭 ID');
-  if (!Object.hasOwn(COLLAB_CHATS, agent)) throw new Error('잘못된 참여자');
+  if (!TAB_RE.test(String(roomId))) throw new Error(t('main.error.badTabId'));
+  if (!Object.hasOwn(COLLAB_CHATS, agent)) throw new Error(t('main.error.badParticipant'));
   let room = rooms.get(roomId);
   if (!room) {
     const members = validRoster(roster); // 이미 있는 방은 처음 정한 참여자를 유지한다
-    if (!members.includes(agent)) throw new Error('잘못된 참여자');
+    if (!members.includes(agent)) throw new Error(t('main.error.badParticipant'));
     checkFolder(cwd); room = { cwd, gen: 0, roster: members }; rooms.set(roomId, room);
   }
-  if (!room.roster.includes(agent)) throw new Error('잘못된 참여자');
+  if (!room.roster.includes(agent)) throw new Error(t('main.error.badParticipant'));
   const gen = room.gen;
   if (!room[agent]) {
     const onEvent = (ev) => send('collab:event', { roomId, agent, ...ev });
     const chat = await COLLAB_CHATS[agent]({ room, roomId, onEvent });
     // CLI 를 찾는 동안 중단·탭 닫기가 들어왔으면 실행하지 않는다 (아무도 보지 않는 Bypass 프로세스를 남기지 않게).
-    if (rooms.get(roomId) !== room || room.gen !== gen) throw new Error('중단됨');
+    if (rooms.get(roomId) !== room || room.gen !== gen) throw new Error(t('main.error.stopped'));
     room[agent] ||= chat;
   }
   room[agent].send(String(text), { model, effort }, Number.isInteger(turn) ? turn : null);
@@ -297,7 +298,7 @@ async function collabSend({ roomId, agent, cwd, text, model, effort, turn, roste
 const collabModels = createModelCatalog({
   claude: async () => {
     if (!loc('claude')) setLoc('claude', await claudeCli.locate(), { reset: false }); // 모델 목록 조회 자신이 찾는 경우 — 자기 조회를 버리지 않는다
-    if (!loc('claude')) return { error: 'Claude Code 를 찾지 못했습니다' };
+    if (!loc('claude')) return { error: t('main.notFound.claude') };
     const dir = app.getPath('userData');
     const noHooks = path.join(dir, 'model-list-settings.json'); // hook 을 꺼서 목록 조회가 사무실에 세션으로 잡히지 않게
     fs.writeFileSync(noHooks, JSON.stringify({ disableAllHooks: true }));
@@ -307,29 +308,29 @@ const collabModels = createModelCatalog({
   },
   codex: async () => {
     const cx = await needCodex({ reset: false }).catch(() => null);
-    if (!cx) return { error: 'Codex 를 찾지 못했습니다' };
+    if (!cx) return { error: t('main.notFound.codex') };
     const list = await codexCli.models(cx);
-    return { list, error: list?.length ? '' : 'codex debug models 응답을 읽지 못했습니다' };
+    return { list, error: list?.length ? '' : t('main.models.codexUnreadable') };
   },
   // Muse 는 모델 목록 조회가 없다 — 키를 넣지 않으면 화면이 moderator.js 의 고정 선택지를 경고 없이 쓴다 (키가 있고 null 이면 「목록을 받지 못함」 경고가 뜬다).
   // `grok models` 출력에서 읽는다. 설치되지 않았으면 다시 조회하지 않는다 (선택 상자를 열 때마다 되풀이하지 않게).
   grok: async () => {
     if (!loc('grok')) setLoc('grok', await agentCli.locate('grok'), { reset: false });
-    if (!loc('grok')) return { error: 'Grok Build 를 찾지 못했습니다', final: true };
+    if (!loc('grok')) return { error: t('main.notFound.grok'), final: true };
     const r = await claudeCli.runClaude(loc('grok'), ['models'], 15000);
     const text = `${r.stdout || ''}\n${r.stderr || ''}`;
-    if (/not authenticated/i.test(text)) return { error: 'Grok 로그인이 필요합니다' };
+    if (/not authenticated/i.test(text)) return { error: t('main.grok.loginRequired') };
     const list = agentCli.parseGrokModels(r.stdout);
-    return { list, error: list.length ? '' : 'grok models 응답을 읽지 못했습니다' };
+    return { list, error: list.length ? '' : t('main.models.grokUnreadable') };
   },
   // `agy models` 출력에서 읽는다 (미로그인이면 exit 1 + 「Please sign in」). 설치되지 않았으면 다시 조회하지 않는다.
   antigravity: async () => {
     if (!loc('antigravity')) setLoc('antigravity', await agentCli.locate('antigravity'), { reset: false });
-    if (!loc('antigravity')) return { error: 'Antigravity CLI 를 찾지 못했습니다', final: true };
+    if (!loc('antigravity')) return { error: t('main.notFound.antigravity'), final: true };
     const r = await claudeCli.runClaude(loc('antigravity'), ['models'], 15000);
-    if (/please sign in/i.test(`${r.stdout || ''}\n${r.stderr || ''}`)) return { error: 'Gemini 로그인이 필요합니다' };
+    if (/please sign in/i.test(`${r.stdout || ''}\n${r.stderr || ''}`)) return { error: t('main.agy.loginRequired') };
     const list = agentCli.parseAgyModels(r.stdout);
-    return { list, error: list.length ? '' : 'Gemini 모델 목록을 받지 못했습니다' }; // 출력 해석 실패와 Gemini 없음을 한 문구로
+    return { list, error: list.length ? '' : t('main.models.geminiUnreadable') }; // 출력 해석 실패와 Gemini 없음을 한 문구로
   },
 }, { onFail: (id, error) => console.warn(`[collab] ${id} 모델 목록 조회 실패`, error) });
 
@@ -375,7 +376,7 @@ function collabRunning() {
 }
 
 async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli, shell }) {
-  if (!TAB_RE.test(String(tabId))) throw new Error('잘못된 탭 ID');
+  if (!TAB_RE.test(String(tabId))) throw new Error(t('main.error.badTabId'));
   if (mode === 'shell') {
     // 코드 화면 하단 터미널: 등록된 폴더에서 PowerShell·Git Bash 만 — 화면이 보낸 문자열은 셸 종류(고정 두 값)와 폴더 선택에만 쓰고 인자에는 넣지 않는다. 세션이 아니므로 AGENT_OFFICE_TAB 은 싣지 않는다.
     await startShellPty({ ptys, env: cleanEnv(), tabId, cwd, cols, rows, shell, roots: codeRoots, checkFolder, findBash: claudeCli.findGitBash });
@@ -383,9 +384,9 @@ async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli
   }
   if (mode === 'install') {
     // 설치: 레지스트리에 적힌 공식 설치 명령(PowerShell)을 홈 폴더에서 띄운다 — 화면이 보낸 문자열은 실행하지 않고 AI id 만 받는다. normAgent 는 모르는 값을 Claude 로 바꾸므로 쓰지 않는다.
-    if (typeof cli !== 'string' || !AGENT_IDS.includes(cli)) throw new Error('알 수 없는 AI 입니다');
+    if (typeof cli !== 'string' || !AGENT_IDS.includes(cli)) throw new Error(t('main.error.unknownAgent'));
     const cmd = agentCli.installCommand(cli);
-    if (!cmd) throw new Error('이 운영체제에서는 앱 안 설치를 지원하지 않습니다 — 설치 안내를 따라 주세요');
+    if (!cmd) throw new Error(t('main.error.installUnsupported'));
     ptys.create({ tabId, cwd: os.homedir(), cols, rows, file: cmd.file, args: cmd.args, env: cleanEnv(agentCli.INSTALL_ENV[cli] || {}) });
     return { sessionId: null };
   }
@@ -396,15 +397,15 @@ async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli
       await needCodex();
     } else if (id === 'claude') {
       if (!loc('claude')) setLoc('claude', await claudeCli.locate());
-      if (!loc('claude')) throw new Error('Claude Code 를 찾지 못했습니다');
+      if (!loc('claude')) throw new Error(t('main.notFound.claude'));
     } else if (id === 'muse') {
       await needMuse();
     } else if (agentCli.has(id)) {
       if (!loc(id)) setLoc(id, await agentCli.locate(id));
-      if (!loc(id)) throw new Error(`${agentName(id)} 을(를) 찾지 못했습니다`);
+      if (!loc(id)) throw new Error(t('main.notFound.agent', { name: agentName(id) }));
     }
     const args = id === 'claude' || id === 'codex' ? LOGIN_ARGS[id] : agentCli.has(id) ? agentCli.loginArgs(id) : null;
-    if (!args) throw new Error('로그인 명령을 알 수 없는 AI 입니다');
+    if (!args) throw new Error(t('main.error.loginUnknown'));
     const cmd = claudeCli.commandFor(loc(id), args);
     ptys.create({ tabId, cwd: os.homedir(), cols, rows, file: cmd.file, args: cmd.args, env: id === 'claude' || id === 'antigravity' ? cleanEnv({ AGENT_OFFICE_TAB: tabId }) : cleanEnv() }); // 로그인 화면의 agy 세션 hook 도 로그인 탭으로 걸러지게 탭 ID 를 싣는다
     return { sessionId: null };
@@ -416,7 +417,7 @@ async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli
       await needMuse();
     } else {
       if (!loc(cli)) setLoc(cli, await agentCli.locate(cli));
-      if (!loc(cli)) throw new Error(`${agentName(cli)} 을(를) 찾지 못했습니다`);
+      if (!loc(cli)) throw new Error(t('main.notFound.agent', { name: agentName(cli) }));
     }
     checkFolder(cwd);
     // 세션 단위로 hook 을 넣을 수 없는 Grok·Antigravity 는 공식 위치의 앱 전용 hook 을 자동으로 맞춘다 (확인 창 없음).
@@ -431,12 +432,12 @@ async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli
   }
   if (cli === 'codex') return createCodexPty({ tabId, cwd, cols, rows });
   if (!loc('claude')) setLoc('claude', await claudeCli.locate());
-  if (!loc('claude')) throw new Error('Claude Code 를 찾지 못했습니다');
+  if (!loc('claude')) throw new Error(t('main.notFound.claude'));
   checkFolder(cwd);
 
   let sessionId = null;
   if (mode === 'resume') {
-    if (!UUID_RE.test(String(resumeId))) throw new Error('잘못된 세션 ID');
+    if (!UUID_RE.test(String(resumeId))) throw new Error(t('main.error.badSessionId'));
   } else {
     sessionId = crypto.randomUUID();
   }
@@ -449,19 +450,15 @@ async function createTabPty({ tabId, cwd, mode, resumeId, label, cols, rows, cli
 async function setGlobalHooks(enabled) {
   const file = hookSettings.globalSettingsPath();
   const detail = enabled
-    ? `${file} 에 이 앱의 hook ${hookSettings.EVENTS.length}개를 추가합니다.\n\n`
-      + '• 기존 설정은 같은 폴더에 백업한 뒤 수정합니다.\n'
-      + '• VS Code·터미널 등 다른 곳에서 실행 중인 Claude Code 도 이 앱으로 이벤트를 보냅니다.\n'
-      + '• 앱이 꺼져 있으면 이벤트는 무시되고 Claude 작업에는 영향이 없습니다.\n'
-      + '• 이미 실행 중인 세션은 다시 시작해야 반영될 수 있습니다.'
-    : `${file} 에서 이 앱이 추가한 hook 만 제거합니다. 다른 설정은 그대로 둡니다.`;
+    ? t('main.hooks.addDetail', { file, count: hookSettings.EVENTS.length })
+    : t('main.hooks.removeDetail', { file });
   const r = await dialog.showMessageBox(win, {
     type: 'question',
-    buttons: [enabled ? '추가' : '제거', '취소'],
+    buttons: [enabled ? t('main.hooks.addButton') : t('main.hooks.removeButton'), t('main.dialog.cancel')],
     defaultId: 1,
     cancelId: 1,
-    title: '다른 곳의 Claude Code 세션 보기',
-    message: enabled ? '사용자 설정에 hook 을 추가할까요?' : '사용자 설정에서 hook 을 제거할까요?',
+    title: t('main.hooks.title'),
+    message: enabled ? t('main.hooks.addMessage') : t('main.hooks.removeMessage'),
     detail,
   });
   if (r.response !== 0) return { cancelled: true, global: hookSettings.readGlobalStatus(hook.port, config.token) };
@@ -547,11 +544,11 @@ async function quitFromTray() {
   if (running) {
     const opts = {
       type: 'question',
-      buttons: ['종료', '취소'],
+      buttons: [t('main.quit.button'), t('main.dialog.cancel')],
       defaultId: 1,
       cancelId: 1,
-      title: 'Agent Office 종료',
-      message: `실행 중인 Claude Code·Codex 세션 ${running}개가 함께 종료됩니다. 종료할까요?`,
+      title: t('main.quit.title'),
+      message: t('main.quit.message', { running }),
     };
     const r = win && win.isVisible() ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
     if (r.response !== 0) return;
@@ -568,10 +565,10 @@ function createTray() {
 
 function trayMenu() {
   return Menu.buildFromTemplate([
-    { label: 'Agent Office 열기', click: showWindow },
+    { label: t('main.tray.open'), click: showWindow },
     { type: 'separator' },
     ...(pet ? [...pet.menuItems(), { type: 'separator' }] : []),
-    { label: '종료', click: () => { quitFromTray(); } },
+    { label: t('main.tray.quit'), click: () => { quitFromTray(); } },
   ]);
 }
 
@@ -697,6 +694,7 @@ if (!app.requestSingleInstanceLock()) {
     });
 
     config = loadConfig();
+    setLang(config.lang); // 트레이·대화상자 문구가 저장된 언어로 (없으면 기본 한국어)
     usage = createUsageService({
       locateClaude: () => loc('claude'), locateCodex: () => loc('codex'), userDataDir: app.getPath('userData'), appVersion: app.getVersion(),
       // 그 밖의 AI: 아직 못 찾았거나 지워진 실행 파일이면 다시 찾는다 (Muse 런처는 업데이트하며 옛 실행 파일을 지운다). 설치되지 않았으면 null → 칸을 숨긴다.
@@ -739,6 +737,14 @@ if (!app.requestSingleInstanceLock()) {
     const { handleMain, onMain } = createMainGuard(ipcMain, () => win);
 
     handleMain('app:status', () => status());
+    // 화면이 언어를 바꿨다고 알린다 — 메인이 만드는 문구·트레이 메뉴가 그 언어를 따른다 (펫 창 제목은 pet.cjs 가 언어 변경을 듣는다).
+    handleMain('lang:set', ({ lang } = {}) => {
+      const next = normLang(lang);
+      setLang(next);
+      if (config.lang !== next) { config.lang = next; saveConfig(config); }
+      tray?.setContextMenu(trayMenu());
+      return { lang: next };
+    });
     // 활성 탭이 바뀔 때 메인 화면이 알린다 — 사용량 패널의 세션 줄이 이 탭을 기준으로 한다.
     onMain('pet:focus', (f) => {
       if (!f || typeof f !== 'object') return;
@@ -812,14 +818,14 @@ if (!app.requestSingleInstanceLock()) {
     const PET_IMPORT_MAX = 50; // 한 번에 고를 수 있는 개수 (지나치게 많이 골라 오래 멈추지 않게)
     handleMain('pets:import', async (kind) => {
       if (!pet || (kind !== 'zip' && kind !== 'folder')) return { error: petImport.ERR.generic };
-      if (petImporting) return { error: '이미 가져오는 중입니다' };
+      if (petImporting) return { error: t('main.pets.busy') };
       petImporting = true;
       try {
         const r = await dialog.showOpenDialog(win, kind === 'zip'
-          ? { title: '펫 zip 선택 (여러 개 가능)', properties: ['openFile', 'multiSelections'], filters: [{ name: '펫 zip', extensions: ['zip'] }] }
-          : { title: '펫 폴더 선택 (여러 개 가능)', properties: ['openDirectory', 'multiSelections'] });
+          ? { title: t('main.pets.zipTitle'), properties: ['openFile', 'multiSelections'], filters: [{ name: t('main.pets.zipFilter'), extensions: ['zip'] }] }
+          : { title: t('main.pets.folderTitle'), properties: ['openDirectory', 'multiSelections'] });
         if (r.canceled || !r.filePaths.length) return { cancelled: true };
-        if (r.filePaths.length > PET_IMPORT_MAX) return { error: `한 번에 ${PET_IMPORT_MAX}개까지 가져올 수 있습니다` };
+        if (r.filePaths.length > PET_IMPORT_MAX) return { error: t('main.pets.tooMany', { max: PET_IMPORT_MAX }) };
         const results = [];
         for (const src of r.filePaths) results.push({ name: path.basename(src), ...(await importOnePet(kind, src)) }); // 차례로 — 같은 이름 -2 판정이 겹치지 않게
         if (results.some((x) => x.ok)) pet.refreshUserPets();
@@ -865,7 +871,7 @@ if (!app.requestSingleInstanceLock()) {
     pet.refresh();
     pet.setUsage(usage.snapshot());
   }).catch((err) => {
-    dialog.showErrorBox('Agent Office 시작 실패', String(err && err.stack || err));
+    dialog.showErrorBox(t('main.startFailed'), String(err && err.stack || err));
     app.quit();
   });
 

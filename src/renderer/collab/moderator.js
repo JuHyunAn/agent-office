@@ -2,19 +2,21 @@
 // 프로세스 실행은 메인(collabAgents.cjs)이 맡고, 여기서는 「누구에게 무엇을 보낼지」만 정한다 (화면 없이 테스트 가능).
 
 import { AGENTS } from '../../shared/agents.js';
+import { t } from '../../shared/i18n.js';
 
-export const NAMES = { user: '나', ...Object.fromEntries(AGENTS.map((a) => [a.id, a.name])), system: '안내' };
+// 화면 표시 이름 — getter 라 언어가 바뀌면 새 말을 돌려준다. (프롬프트의 [사용자] 표기는 promptFor 가 따로 쓴다 — 번역하지 않는다)
+export const NAMES = { get user() { return t('collab.name.user'); }, ...Object.fromEntries(AGENTS.map((a) => [a.id, a.name])), get system() { return t('collab.name.system'); } };
 // 이름 표에 없는 id(테스트의 가짜 AI 등)는 id 그대로 보여 준다.
 export const nameOf = (id) => (Object.hasOwn(NAMES, id) ? NAMES[id] : id);
 export const OWNERS = [
   { value: 'claude', label: 'Claude' },
   { value: 'codex', label: 'Codex' },
-  { value: 'ask', label: '구현 전에 물어보기' },
+  { value: 'ask', get label() { return t('collab.owner.ask'); } },
 ];
 // 구현 담당 선택지: 참여 AI + 「구현 전에 물어보기」 (참여자가 Claude·Codex 두 명이면 OWNERS 와 같다)
-export const ownerOptions = (roster) => [...roster.map((id) => ({ value: id, label: nameOf(id) })), { value: 'ask', label: '구현 전에 물어보기' }];
+export const ownerOptions = (roster) => [...roster.map((id) => ({ value: id, label: nameOf(id) })), { value: 'ask', label: t('collab.owner.ask') }];
 // 받는 사람 선택지
-export const targetsOf = (roster) => [{ value: 'all', label: '모두에게' }, ...roster.map((id) => ({ value: id, label: `${nameOf(id)} 에게` }))];
+export const targetsOf = (roster) => [{ value: 'all', label: t('collab.target.all') }, ...roster.map((id) => ({ value: id, label: t('collab.target.to', { name: nameOf(id) }) }))];
 // @ 로 부르는 이름: 표시 이름의 소문자(Gemini → @gemini). 영문·숫자가 아닌 이름이면 id 그대로.
 const aliasOf = (id) => { const n = nameOf(id).toLowerCase(); return /^[a-z0-9]+$/.test(n) ? n : id; };
 // 입력 맨 앞의 @이름 으로 받는 사람 지정 → { to: id, text }(@이름을 뗀 글), 없으면 null. 내부 id(@antigravity)도 계속 받는다. id·이름은 영문 소문자·숫자라 정규식 이스케이프가 필요 없다.
@@ -24,25 +26,27 @@ export function mentionOf(roster, text) {
   const said = m[1].toLowerCase();
   return { to: roster.find((id) => id === said || aliasOf(id) === said), text: text.slice(m[0].length) || text };
 }
-export const agreedText = (roster) => `${roster.length === 2 ? '두 AI' : '참여 AI 모두'} 합의 완료 — 최종 답변 표시를 확인하세요`;
-export const placeholderOf = (roster) => `메시지 입력 · Enter 보내기 · Shift+Enter 줄바꿈 · Esc 중단 · ${roster.map((id) => `@${aliasOf(id)}`).join(' / ')} 로 지정 · 답변 중에 보내면 지금 답변에 반영해요${roster.includes('codex') ? ' (Codex 는 하던 작업이 끝난 지점에서)' : ''}`;
+export const agreedText = (roster) => t(roster.length === 2 ? 'collab.status.agreedTwo' : 'collab.status.agreedAll');
+export const placeholderOf = (roster) => t('collab.placeholder.base', { mentions: roster.map((id) => `@${aliasOf(id)}`).join(' / ') }) + (roster.includes('codex') ? ` ${t('collab.placeholder.codexNote')}` : '');
 // 탭에 저장된 참여 AI: 2명 이상이면 그대로, 아니면 기본(Claude·Codex)
 export const rosterOf = (agents) => (Array.isArray(agents) && agents.length >= 2 ? agents : ['claude', 'codex']);
 // CLI 에서 목록을 받아오지 못했을 때 쓰는 기본 선택지 (받아오면 화면이 CLI 목록으로 바꾼다).
+// 「자동」 선택지 — label 이 getter 라 언어가 바뀌면 새 말이 된다 (모든 선택지가 같은 객체를 쓴다).
+export const AUTO_OPTION = { value: 'auto', get label() { return t('collab.model.auto'); } };
 export const MODEL_OPTIONS = {
-  claude: [{ value: 'auto', label: '자동' }, { value: 'opus', label: 'Opus' }, { value: 'fable', label: 'Fable' }, { value: 'sonnet', label: 'Sonnet' }],
-  codex: [{ value: 'auto', label: '자동' }, { value: 'gpt-6.1-sol', label: 'GPT-6.1 Sol' }, { value: 'gpt-6-astra', label: 'GPT-6 Astra' }],
-  grok: [{ value: 'auto', label: '자동' }, { value: 'grok-4.7', label: 'Grok 4.7' }], // 자동 = CLI 기본 모델 (AUTO_MODELS 에는 없음)
+  claude: [AUTO_OPTION, { value: 'opus', label: 'Opus' }, { value: 'fable', label: 'Fable' }, { value: 'sonnet', label: 'Sonnet' }],
+  codex: [AUTO_OPTION, { value: 'gpt-6.1-sol', label: 'GPT-6.1 Sol' }, { value: 'gpt-6-astra', label: 'GPT-6 Astra' }],
+  grok: [AUTO_OPTION, { value: 'grok-4.7', label: 'Grok 4.7' }], // 자동 = CLI 기본 모델 (AUTO_MODELS 에는 없음)
   // Muse: 모델 목록 조회가 없는 고정 선택지 (공식 문서 — muse-wonder 는 미리보기, 한국 미제공). 자동 = CLI 기본 모델 (AUTO_MODELS 에는 없음)
-  muse: [{ value: 'auto', label: '자동' }, { value: 'muse-spark-1.3', label: 'Muse Spark 1.3' }, { value: 'muse-spark-1.2', label: 'Muse Spark 1.2' }, { value: 'muse-wonder-1.0', label: 'Muse Wonder 1.0' }],
+  muse: [AUTO_OPTION, { value: 'muse-spark-1.3', label: 'Muse Spark 1.3' }, { value: 'muse-spark-1.2', label: 'Muse Spark 1.2' }, { value: 'muse-wonder-1.0', label: 'Muse Wonder 1.0' }],
 };
 export const EFFORT_LABEL = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra High', max: 'Max', ultra: 'Ultra' };
 // 모델 목록에서 고를 수 있는 추론 단계: 모델이 자동이면 전체 합집합, 아니면 그 모델의 것. 단계가 없으면 [] (Gemini 는 단계가 모델 이름에 들어 있다 — 화면이 단계 상자를 숨긴다).
 export const effortLevels = (list, model) => (model === 'auto' ? [...new Set(list.flatMap((m) => m.efforts))] : list.find((m) => m.value === model)?.efforts || []);
-export const EFFORT_OPTIONS = [{ value: 'auto', label: '자동' }, { value: 'high', label: 'High' }, { value: 'xhigh', label: 'Extra High' }];
+export const EFFORT_OPTIONS = [AUTO_OPTION, { value: 'high', label: 'High' }, { value: 'xhigh', label: 'Extra High' }];
 // 단계를 따로 고르지 않는 AI (Gemini — 단계가 모델 이름에 들어 있다): 모델 목록을 받기 전에도 단계 상자는 「자동」 하나라 숨긴다.
 export const EFFORT_IN_MODEL = new Set(['antigravity']);
-export const MODEL_LABEL = Object.fromEntries(Object.values(MODEL_OPTIONS).flat().map((o) => [o.value, o.label]));
+export const MODEL_LABEL = Object.fromEntries(Object.values(MODEL_OPTIONS).flat().filter((o) => o !== AUTO_OPTION).map((o) => [o.value, o.label]));
 
 // [질문] 줄: 앞의 불릿(-, *, •)과 굵게(**, __) 꾸밈도 허용한다. 인용(>)은 상대 질문을 옮겨 적은 것이라 제외.
 const QUESTION_HEAD = String.raw`^\s*(?:[-*•]\s+)?(?:\*\*|__)?\[\s*질문\s*\](?:\*\*|__)?`;
@@ -148,7 +152,7 @@ export class Moderator {
   // roster: 참여 AI id 배열 (순서 = 한 바퀴 도는 순서). 주어지지 않으면 [claude, codex], 주어졌는데 잘못되면 오류를 던진다.
   constructor({ send, stop, steer = null, onChange = () => {}, now = () => Date.now(), roster = ['claude', 'codex'] }) {
     if (!Array.isArray(roster) || roster.length < 2 || new Set(roster).size !== roster.length
-      || roster.some((id) => typeof id !== 'string' || !id || RESERVED_IDS.includes(id))) throw new Error('잘못된 협업 참여자');
+      || roster.some((id) => typeof id !== 'string' || !id || RESERVED_IDS.includes(id))) throw new Error(t('collab.error.badRoster'));
     Object.assign(this, { sendFn: send, stopFn: stop, steerFn: steer, onChange, now });
     this.roster = Object.freeze([...roster]);
     this.messages = [];
@@ -317,7 +321,7 @@ export class Moderator {
       const targets = [this.interjection, ...(ev.ok && !ev.stopped ? lost.map((m) => m.target) : [])].filter(Boolean);
       const interjected = targets.includes('all') ? 'all' : targets.at(-1) || null; this.interjection = null;
       if (ev.stopped || this.status === 'stopped') { this.status = 'stopped'; }
-      else if (!ev.ok) { this.status = 'error'; this.pending = []; this.push({ from: 'system', text: `${nameOf(agent)} 오류: ${ev.error || '알 수 없음'}` }); }
+      else if (!ev.ok) { this.status = 'error'; this.pending = []; this.push({ from: 'system', text: t('collab.error.agent', { name: nameOf(agent), error: ev.error || t('collab.error.unknown') }) }); }
       else if (interjected) {
         // 답변 중에 사용자가 끼어들었으면 자동 이어가기·[완료]·[질문] 과 관계없이 그 메시지부터 답한다 (모두에게면 나머지 → 답하던 쪽 순서로 전원).
         this.round = newRound(this.messages.length);

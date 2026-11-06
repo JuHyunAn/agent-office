@@ -110,3 +110,17 @@ test('첫 호출 HTTP 실패에도 낮·밤은 유지된다', async () => {
   env.setWeather(await weather());
   assert.equal(env.snapshot().night, false); assert.equal(env.snapshot().condition, 'unknown');
 });
+
+test('영어 모드: 상태줄 문구가 영어로 나오고 언어가 바뀌면 캐시가 다시 만들어진다', async () => {
+  const { setLang } = await import('../src/shared/i18n.js');
+  const env = new OfficeEnvironment({ now: () => noon });
+  env.setWeather({ available: true, condition: 'rain', temperature: 9.4, cloudCover: 80, observedAt: noon });
+  try {
+    assert.match(env.snapshot().label, /서울 12:00 · 낮 · 비 · 9°/);
+    setLang('en');
+    assert.equal(env.snapshot().label, 'Seoul 12:00 · Day · Rain · 9°');
+    env.setWeather(null);
+    assert.equal(env.snapshot().label, 'Seoul 12:00 · Day · Waiting for weather');
+  } finally { setLang('ko'); }
+  assert.match(env.snapshot().label, /날씨 연결 대기/);
+});

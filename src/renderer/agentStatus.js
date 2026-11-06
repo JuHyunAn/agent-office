@@ -1,5 +1,6 @@
 // AI 연결 상태를 화면용 목록으로 바꾸는 순수 함수 (DOM·IPC 없음 — 테스트가 직접 부른다).
 import { AGENTS, agentById } from '../shared/agents.js';
+import { t } from '../shared/i18n.js';
 
 // 메인 status 에서 AI 별 상태를 꺼낸다. st.agents 가 있으면 그것을, 없으면 옛 키(claude·codex·auth·codexAuth)를 쓴다.
 // 반환: AGENTS 순서의 [{ id, def, found, version, path, auth, state }] — state: missing(미설치) · connected · error · login(로그인 필요)
@@ -27,11 +28,11 @@ export function accountText(entry) {
   if (entry.state === 'connected') {
     const a = entry.auth;
     const plan = a.plan || a.subscriptionType;
-    return `${a.email || a.methodLabel || '로그인됨'}${plan ? ` · ${plan}` : ''}`;
+    return `${a.email || a.methodLabel || t('app.agents.acctLoggedIn')}${plan ? ` · ${plan}` : ''}`;
   }
-  if (entry.state === 'login') return '로그인 필요';
-  if (entry.state === 'error') return '상태 확인 실패';
-  return '설치되어 있지 않음';
+  if (entry.state === 'login') return t('app.agents.acctNeedLogin');
+  if (entry.state === 'error') return t('app.agents.acctError');
+  return t('app.agents.acctMissing');
 }
 
 // 처음 고를 AI: 기억한 것이 목록에 있으면 그것, 아니면 연결 안 된 첫 항목(마저 설정하도록), 모두 연결됐으면 첫 항목

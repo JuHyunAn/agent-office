@@ -1,6 +1,8 @@
 // 바탕화면 펫 화면: 종류(등록된 AI)마다 캔버스 하나. 상태는 메인이 보내 주고, 여기서는 그리기·드래그·클릭만 한다.
 import { ROWS, CELL, SHEETS, SLEEP_SHEET, SLEEP_AFTER_MS, gazeCell, visiblePets, petState, bubbleOf, cardOf, usageRowText, updatedText, refreshButton, sessionText } from './model.js';
 import { AGENT_IDS, agentName } from '../../shared/agents.js';
+import { t, onLangChange } from '../../shared/i18n.js';
+import { initLang } from '../i18n-dom.js';
 import { drawCharacter } from '../themes/pixel-office/sprites.js';
 import { loadResidentSprites, drawResidentCharacter } from '../themes/pixel-office/resident-sprite.js';
 
@@ -12,6 +14,7 @@ let dpr = calcDpr();
 const USAGE_TICK_MS = 60000; // 사용량 패널의 남은 시간 문구를 다시 계산하는 간격
 const MAX_WINDOW_H = 600; // 메인이 받아 주는 창 높이 상한 (pet.cjs 의 fit)
 const MIN_USAGE_BODY_H = 60; // 창이 모자라도 패널 본문은 이만큼은 남긴다
+initLang({ sync: true }); // 메인 창이 바꾼 언어를 storage 이벤트로 따라간다 (펫 창은 lang:set 을 부르지 않는다)
 const wrap = document.querySelector('#wrap'); // 창 크기를 재는 기준 (사용량 패널 + 펫)
 const root = document.querySelector('#pets');
 const now = () => (typeof window.__petNow === 'function' ? window.__petNow() : Date.now()); // 점검에서 시간 경과를 흉내 낼 수 있게
@@ -487,10 +490,10 @@ function createCard() {
   const head = part('div', 'pet-card-head');
   const preview = part('div', 'pet-card-preview');
   const more = part('div', 'pet-card-more');
-  const hint = part('div', 'pet-card-hint', '그 터미널에서 답해 주세요');
+  const hint = part('div', 'pet-card-hint', t('pet.card.hint'));
   const actions = part('div', 'pet-card-actions');
-  const allow = part('button', 'pet-card-allow', '허용');
-  const deny = part('button', 'pet-card-deny', '거부');
+  const allow = part('button', 'pet-card-allow', t('pet.card.allow'));
+  const deny = part('button', 'pet-card-deny', t('pet.card.deny'));
   allow.type = 'button';
   deny.type = 'button';
   actions.append(allow, deny);
@@ -539,7 +542,10 @@ function renderCard(p, c) {
   u.preview.textContent = c.preview; // 승인 대상 전체를 줄임 없이 보인다 (cardOf 의 canAnswer 는 길이·줄 수 제한을 이미 지켰다)
   u.preview.hidden = !c.preview;
   u.root.classList.toggle('hint', !c.canAnswer); // 안내 카드는 미리보기를 4줄까지만 (답할 수 있는 카드는 전문)
-  u.more.textContent = c.more > 0 ? `외 ${c.more}건` : '';
+  u.more.textContent = c.more > 0 ? t('pet.card.more', { n: c.more }) : '';
+  u.hint.textContent = t('pet.card.hint'); // 언어가 바뀌면 다시 그릴 때 글자도 바꾼다
+  u.allow.textContent = t('pet.card.allow');
+  u.deny.textContent = t('pet.card.deny');
   u.more.hidden = c.more <= 0;
   u.actions.hidden = !c.canAnswer;
   u.hint.hidden = c.canAnswer;
@@ -746,7 +752,7 @@ function renderUsage() {
     const open = usage.expanded;
     U.root.dataset.open = String(open);
     U.body.hidden = !open;
-    U.toggle.textContent = open ? '∨ 사용량' : '∧ 사용량';
+    U.toggle.textContent = t(open ? 'pet.usage.toggleOpen' : 'pet.usage.toggleClosed');
     U.toggle.setAttribute('aria-expanded', String(open));
     usageRows = [];
     if (open) {
@@ -858,5 +864,12 @@ window.pet.onUsage((s) => {
   const section = (x) => ({ rows: Array.isArray(x?.rows) ? x.rows : [], error: typeof x?.error === 'string' ? x.error : null, updatedAt: Number.isFinite(x?.updatedAt) ? x.updatedAt : null });
   usage = { expanded: s.expanded !== false, ...Object.fromEntries(AGENT_IDS.map((k) => [k, section(s[k])])), session: s.session || null, refresh: s.refresh || {} };
   renderUsage();
+  reportSize();
+});
+
+// 언어가 바뀌면(메인 창에서 전환 → storage 이벤트) 카드·사용량 패널의 글자를 새 언어로 다시 그린다.
+onLangChange(() => {
+  render();
+  if (usage) renderUsage();
   reportSize();
 });

@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { setLang } from '../src/shared/i18n.js';
 
 // 사용자·시스템 git 설정이 결과를 흔들지 않게 격리한다 (codeRepo.test.js 와 같은 방식).
 // useConfigOnly: 사용자 정보가 없는 저장소에서 컴퓨터 이름으로 추측하지 않고 확실히 실패하게 한다.
@@ -2114,7 +2115,7 @@ test('errorOf: 문장이 끝나는 곳에서 줄을 바꾸고 「주세요」 �
 });
 
 test('문구 규칙: 소스의 문구에서 「주세요」 뒤에는 항상 마침표가 온다 (주석 제외)', () => {
-  for (const rel of ['src/main/codeGit.cjs', 'src/main/codeAnalysis.cjs', 'src/renderer/code/gitModel.js', 'src/renderer/code/gitPanel.js']) {
+  for (const rel of ['src/main/codeGit.cjs', 'src/main/codeAnalysis.cjs', 'src/renderer/code/gitModel.js', 'src/renderer/code/gitPanel.js', 'src/shared/i18n/ko/code.js']) {
     const text = fs.readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
     const bad = text.split(/\r?\n/).map((l, i) => [i + 1, l]).filter(([, l]) => /주세요(?!\.)/.test(l.replace(/(^|\s)\/\/ .*$/, '')));
     assert.deepEqual(bad, [], `${rel}: 「주세요」 뒤에 마침표가 없다`);
@@ -2541,4 +2542,21 @@ test('pull: 받을 것이 없으면 upToDate:true, 받으면 upToDate 없음', {
   remoteCommit('r.txt', 'r\n');
   assert.deepEqual(await ops.pull(repo), { ok: true });
   assert.deepEqual(await ops.pull(repo), { ok: true, upToDate: true });
+});
+
+test('언어: 영어 모드에서는 오류 문구만 영어가 되고 판별(code)은 그대로다', () => {
+  setLang('en');
+  try {
+    const fail = (stderr, extra = {}) => ({ kind: 'fail', message: 'git failed', stderr, stdout: '', ...extra });
+    const auth = errorOf(fail("fatal: Authentication failed for 'https://example.com/a.git'"));
+    assert.equal(auth.code, 'auth');
+    assert.equal(auth.error, 'Remote authentication failed.\nLog in with git push in the terminal below.');
+    assert.equal(errorOf(fail("fatal: Authentication failed for 'https://example.com/a.git'"), 'push').code, 'auth');
+    assert.equal(errorOf({ kind: 'timeout', net: true }).error, 'The remote operation timed out.\nIf a login window was open, please try again.');
+    // 번역 전 원인 글(raw)이 있으면 문구의 접두어를 떼지 않고 그것을 쓴다
+    assert.equal(errorOf({ kind: 'fail', message: 'git failed:\nboom', raw: 'boom', stderr: '', stdout: '' }).error, 'git failed:\nboom');
+  } finally {
+    setLang('ko');
+  }
+  assert.equal(errorOf({ kind: 'timeout', net: true }).error, '원격 작업 시간이 초과되었습니다.\n로그인 창이 열려 있었다면 다시 시도해 주세요.');
 });

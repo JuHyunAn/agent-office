@@ -1,13 +1,14 @@
 'use strict';
 
 // 펫 가져오기: 인터넷에서 받은 zip·폴더를 검사해 userData/pets/<id> 로 설치한다 (electron 에 기대지 않는 순수 모듈).
-// 원칙은 「애매하면 거부」. 오류는 정해진 한국어 문구만 error 로 돌려주고, 원문 메시지는 detail 로만 따로 둔다 (메인 로그용).
+// 원칙은 「애매하면 거부」. 오류는 정해진 문구(t())만 error 로 돌려주고, 원문 메시지는 detail 로만 따로 둔다 (메인 로그용).
 const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 const { setTimeout: delay } = require('node:timers/promises');
 const { PET_ID_RE, MAX_SHEET_BYTES, SHEETS, readPet, spriteVersion } = require('./petRules.cjs');
+const { t } = require('../shared/i18n.js');
 
 const MAX_ZIP_BYTES = 32 * 1024 * 1024;
 const MAX_JSON_BYTES = 64 * 1024;
@@ -17,23 +18,9 @@ const EOCD_SEARCH = 65557; // EOCD 22B + 주석 최대 65535B
 const MAX_SHEET_CANDIDATES = 4; // pet.json 이 없을 때 크기를 확인해 볼 그림 파일 수 상한
 const SLEEP = { width: 1536, height: 208 };
 
-const ERR = {
-  generic: '펫을 가져오지 못했습니다',
-  zipBig: 'zip 파일이 너무 큽니다 (32MB 이하만 가져올 수 있습니다)',
-  zipBad: '올바른 zip 파일이 아닙니다',
-  zipUnsupported: '지원하지 않는 zip 형식입니다 (암호화·ZIP64 등)',
-  zipMany: '파일이 너무 많습니다',
-  badName: '허용되지 않는 파일 이름이 들어 있습니다',
-  layout: '폴더 구조가 맞지 않습니다 (최상위 폴더 하나까지만 허용됩니다)',
-  broken: '압축 파일 안의 내용이 손상되었거나 선언과 다릅니다',
-  bigFile: '파일이 너무 큽니다',
-  badJson: 'pet.json 을 읽을 수 없습니다',
-  noSheet: '펫 그림 파일(png·webp)을 찾을 수 없습니다',
-  ambiguous: '펫 그림을 하나로 정할 수 없습니다 (pet.json 이 필요합니다)',
-  badSize: '그림 크기가 1536x1872(9줄) 또는 1536x2288(11줄)이 아닙니다',
-  badVersion: '펫 정보의 그림 버전과 실제 그림 크기가 맞지 않습니다',
-  install: '펫을 설치하지 못했습니다',
-};
+// 오류 문구는 읽는 순간의 언어로 만든다 (getter) — 테스트·비교는 ERR.xxx 를 그대로 쓴다.
+const ERR = {};
+for (const k of ['generic', 'zipBig', 'zipBad', 'zipUnsupported', 'zipMany', 'badName', 'layout', 'broken', 'bigFile', 'badJson', 'noSheet', 'ambiguous', 'badSize', 'badVersion', 'install']) Object.defineProperty(ERR, k, { enumerable: true, get: () => t(`pet.import.${k}`) });
 
 class PetImportError extends Error {}
 const fail = (message) => { throw new PetImportError(message); };

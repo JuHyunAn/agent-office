@@ -1,5 +1,6 @@
 // 펫 화면의 순수 규칙 (DOM 에 기대지 않아 테스트할 수 있다).
 import { AGENT_IDS } from '../../shared/agents.js';
+import { t, locale } from '../../shared/i18n.js';
 
 // Codex 펫 형식(openai/skills hatch-pet): 버전 1 = 1536x1872 (8열 x 9행), 버전 2 = 1536x2288 (8열 x 11행, 9·10행은 커서를 바라보는 16방향), 칸 192x208.
 // 행마다 쓰는 칸 수와 칸별 시간(ms).
@@ -111,18 +112,17 @@ export function cardOf(kindState = {}) {
 
 const MIN_MS = 60000;
 const DAY_MS = 24 * 60 * MIN_MS;
-const RESET_AT_FORMAT = new Intl.DateTimeFormat('ko-KR', { weekday: 'short', hour: 'numeric', minute: '2-digit', hour12: true });
 
 // 24시간 안에 리셋: 「리셋 2시간 13분 후」「리셋 13분 후」「곧 리셋」(1분 미만).
 function formatResetIn(ms) {
-  if (ms < MIN_MS) return '곧 리셋';
+  if (ms < MIN_MS) return t('pet.usage.resetSoon');
   const h = Math.floor(ms / (60 * MIN_MS));
   const m = Math.floor((ms % (60 * MIN_MS)) / MIN_MS);
-  return `리셋 ${h ? `${h}시간 ` : ''}${m ? `${m}분 ` : ''}후`;
+  return t('pet.usage.resetIn', { h, m });
 }
 
 // 24시간 넘게 남은 리셋: 「(토) 오전 7:00 재설정」.
-const formatResetAt = (at) => `${RESET_AT_FORMAT.format(at)} 재설정`;
+const formatResetAt = (at) => t('pet.usage.resetAt', { when: new Intl.DateTimeFormat(locale(), { weekday: 'short', hour: 'numeric', minute: '2-digit', hour12: true }).format(at) });
 
 // 사용량 한 줄의 글: pct = 「58% 사용」「리셋됨」「알 수 없음」, reset = 재설정 문구 (없으면 빈 글).
 // 리셋 시각이 지났으면 (패널을 다시 읽기 전이라도) 값은 이미 지난 창의 것이라 「리셋됨」으로 본다.
@@ -130,37 +130,37 @@ export function usageRowText(row, now) {
   const at = Number.isFinite(row?.resetsAt) ? row.resetsAt : null;
   const gone = at !== null && at <= now;
   let reset = '';
-  if (gone) reset = '리셋됨';
+  if (gone) reset = t('pet.usage.resetDone');
   else if (at !== null) reset = at - now <= DAY_MS ? formatResetIn(at - now) : formatResetAt(at);
-  else if (typeof row?.resetsText === 'string' && row.resetsText) reset = `${row.resetsText} 재설정`;
-  let pct = '알 수 없음';
-  if (gone) pct = '리셋됨';
-  else if (Number.isFinite(row?.percent)) pct = `${row.percent}% 사용`;
+  else if (typeof row?.resetsText === 'string' && row.resetsText) reset = t('pet.usage.resetAt', { when: row.resetsText });
+  let pct = t('pet.usage.unknown');
+  if (gone) pct = t('pet.usage.resetDone');
+  else if (Number.isFinite(row?.percent)) pct = t('pet.usage.percentUsed', { pct: row.percent });
   else if (typeof row?.valueText === 'string' && row.valueText) pct = row.valueText; // 한도가 아닌 수치 줄 (「토큰 22.9k · $0.04」)
   return { pct, reset };
 }
 
 // 「방금 갱신」「n분 전 갱신」「n시간 전 갱신」「갱신 전」.
 export function updatedText(updatedAt, now) {
-  if (!Number.isFinite(updatedAt)) return '갱신 전';
+  if (!Number.isFinite(updatedAt)) return t('pet.usage.updatedNever');
   const diff = Math.max(0, now - updatedAt);
-  if (diff < MIN_MS) return '방금 갱신';
-  if (diff < 60 * MIN_MS) return `${Math.floor(diff / MIN_MS)}분 전 갱신`;
-  return `${Math.floor(diff / (60 * MIN_MS))}시간 전 갱신`;
+  if (diff < MIN_MS) return t('pet.usage.updatedNow');
+  if (diff < 60 * MIN_MS) return t('pet.usage.updatedMin', { n: Math.floor(diff / MIN_MS) });
+  return t('pet.usage.updatedHour', { n: Math.floor(diff / (60 * MIN_MS)) });
 }
 
 // ⟳ 버튼: 읽는 중이거나 다음 허용 시각 전이면 막고, 이유를 title 로 알린다.
 export function refreshButton(refresh, now) {
-  if (refresh?.busy) return { disabled: true, title: '사용량을 읽는 중이에요' };
+  if (refresh?.busy) return { disabled: true, title: t('pet.usage.refreshBusy') };
   if (Number.isFinite(refresh?.nextAllowedAt) && now < refresh.nextAllowedAt) {
-    return { disabled: true, title: `${Math.ceil((refresh.nextAllowedAt - now) / MIN_MS)}분 뒤 다시 갱신할 수 있어요` };
+    return { disabled: true, title: t('pet.usage.refreshWait', { n: Math.ceil((refresh.nextAllowedAt - now) / MIN_MS) }) };
   }
-  return { disabled: false, title: '사용량 다시 읽기' };
+  return { disabled: false, title: t('pet.usage.refresh') };
 }
 
 // 세션 줄 「{label} · 요청 {n}회 · 컨텍스트 {p}%」 (컨텍스트를 모르면 '—').
 export function sessionText(s) {
-  return `${s.label} · 요청 ${s.requests}회 · 컨텍스트 ${Number.isFinite(s.contextPercent) ? `${s.contextPercent}%` : '—'}`;
+  return t('pet.usage.session', { label: s.label, requests: s.requests, context: Number.isFinite(s.contextPercent) ? `${s.contextPercent}%` : '—' });
 }
 
 // 말풍선: 가장 최근 알림의 「문구 · 탭 이름」, 없으면 null.

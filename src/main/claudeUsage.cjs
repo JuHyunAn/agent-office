@@ -10,6 +10,7 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const claudeCli = require('./claudeCli.cjs');
 const { cleanEnv } = require('./env.cjs');
+const { t: tr } = require('../shared/i18n.js');
 
 // 화면 제어 문자를 글로 펼친다: 오른쪽 이동 \x1b[nC 는 공백 n개(Claude 가 공백 대신 쓴다), 그 밖의 CSI 는 줄바꿈, OSC·문자 집합 지정은 제거.
 function flatten(raw) {
@@ -76,8 +77,8 @@ function parseUsage(text, now = Date.now(), localTz = undefined) {
       resetsText: resetsAt == null && !stale ? `${resetText} (${tz})` : null, observedAt: now,
     });
   };
-  for (const m of t.matchAll(SESSION_RE)) put('session', '세션', m[1], m[2], m[3]);
-  for (const m of t.matchAll(WEEK_RE)) put('week', '주간', m[1], m[2], m[3]);
+  for (const m of t.matchAll(SESSION_RE)) put('session', tr('run.usage.session'), m[1], m[2], m[3]);
+  for (const m of t.matchAll(WEEK_RE)) put('week', tr('run.usage.week'), m[1], m[2], m[3]);
   for (const m of t.matchAll(MODEL_RE)) put(`model:${m[1].trim()}`, m[1].trim(), m[2], m[3], m[4]);
   const order = (r) => (r.id === 'session' ? 0 : r.id === 'week' ? 1 : 2);
   return [...rows.values()].sort((a, b) => order(a) - order(b));
@@ -127,7 +128,7 @@ function readClaudeUsage({ loc, cwd, timeoutMs = 25000, signal, onRaw }) {
         name: 'xterm-256color', cols: 120, rows: 50, cwd, env: { ...cleanEnv(), DISABLE_AUTOUPDATER: '1', CLAUDE_CODE_SKIP_PROMPT_HISTORY: '1' }, // 사용자 입력 기록(history.jsonl)에 /usage·/exit 를 남기지 않는다 (실측)
       });
     } catch (e) {
-      resolve({ error: `Claude 를 실행하지 못했습니다: ${String(e && e.message || e).slice(0, 80)}` });
+      resolve({ error: tr('run.claude.failedToRun', { msg: String(e && e.message || e).slice(0, 80) }) });
       return;
     }
 
@@ -146,7 +147,7 @@ function readClaudeUsage({ loc, cwd, timeoutMs = 25000, signal, onRaw }) {
     let onExited = null;
 
     term.onData((d) => { raw += d; lastDataAt = Date.now(); if (onRaw) onRaw(d); });
-    term.onExit(() => { exited = true; if (onExited) onExited(); if (!finishing) finish(snapshot() || { error: 'Claude 가 예기치 않게 끝났습니다' }); });
+    term.onExit(() => { exited = true; if (onExited) onExited(); if (!finishing) finish(snapshot() || { error: tr('run.claude.endedUnexpectedly') }); });
 
     // 지금까지 화면에서 읽은 값. 세션·주간을 모두 찾았는지(complete)도 함께 본다.
     function parsed() {
@@ -194,7 +195,7 @@ function readClaudeUsage({ loc, cwd, timeoutMs = 25000, signal, onRaw }) {
       if (signal) signal.removeEventListener('abort', onAbort);
       closeTerm(hard).then(() => { deleteSessionFile(cwd, sessionId); resolve(res); });
     }
-    function onAbort() { finish({ error: '중단됨' }, true); }
+    function onAbort() { finish({ error: tr('run.aborted') }, true); }
     if (signal) {
       if (signal.aborted) { onAbort(); return; }
       signal.addEventListener('abort', onAbort, { once: true });
@@ -203,7 +204,7 @@ function readClaudeUsage({ loc, cwd, timeoutMs = 25000, signal, onRaw }) {
     function checkTrustSelected(mark) {
       if (finishing) return;
       const after = flatten(raw.slice(mark)).replace(/\s+/g, '');
-      if (!after.includes(`❯${TRUST_TEXT}`)) { finish({ error: '신뢰 질문 처리 실패' }); return; }
+      if (!after.includes(`❯${TRUST_TEXT}`)) { finish({ error: tr('run.usage.trustFailed') }); return; }
       term.write('\r');
       trust = 'done';
       base = raw.length;
@@ -213,7 +214,7 @@ function readClaudeUsage({ loc, cwd, timeoutMs = 25000, signal, onRaw }) {
 
     timer = setInterval(() => {
       const now = Date.now();
-      if (now - startedAt >= timeoutMs) { finish(snapshot() || { error: '시간 초과' }); return; }
+      if (now - startedAt >= timeoutMs) { finish(snapshot() || { error: tr('run.timeout') }); return; }
       if (phase === 'boot') {
         if (trust === 'sent') return;
         const plain = flatten(raw.slice(base)).replace(/\s+/g, '');
@@ -238,7 +239,7 @@ function readClaudeUsage({ loc, cwd, timeoutMs = 25000, signal, onRaw }) {
         const { rows, complete } = parsed();
         // 모델별 줄은 세션·주간보다 늦게 다시 그려지므로 출력이 잠잠해질 때까지 기다린다 (최대 12초).
         if (complete && now - lastDataAt >= 1200) { finish({ rows, at: now }); return; }
-        if (now - typedAt >= 12000) finish(rows.length ? { rows, at: now } : { error: '사용량 화면을 읽지 못했습니다' });
+        if (now - typedAt >= 12000) finish(rows.length ? { rows, at: now } : { error: tr('run.usage.screenUnreadable') });
       }
     }, 200);
   });

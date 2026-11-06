@@ -2,6 +2,7 @@ import { drawPixelBuilding } from './building.js';
 import { drawCityscape } from './cityscape.js';
 import { createCityNeon, neonIsOff } from './city-neon.js';
 import { PIXEL_DETAIL } from './raster.js';
+import { t } from '../../../shared/i18n.js';
 
 // 최초 시안의 도시와 유리 외벽을 실제 바닥 외곽선에 맞춰 합성한다.
 const PLATES = {
@@ -17,7 +18,7 @@ function loadImage(key) {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => { images.set(key, image); resolve(); };
-    image.onerror = () => reject(new Error(`도시 배경을 불러오지 못했습니다: ${key}`));
+    image.onerror = () => reject(new Error(t('theme.err.cityLoad', { key })));
     image.src = PLATES[key].url;
   });
 }
@@ -77,7 +78,7 @@ export function createExterior({ width, height, project }) {
           drawCityscape(c, { width, height }, (ctx, block) => neon.draw(ctx, block, unlit));
           drawPixelBuilding(c, { faces: TOWER_FACES, project, width, height });
         } else {
-          if (!image) throw new Error('도시 배경 준비가 완료되지 않았습니다');
+          if (!image) throw new Error(t('theme.err.cityNotReady'));
           c.imageSmoothingEnabled = true; c.imageSmoothingQuality = 'high';
           c.drawImage(image, 0, 0, width, height);
           drawAligned(c, image, PLATES[variant].anchors, target);

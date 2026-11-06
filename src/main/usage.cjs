@@ -11,6 +11,7 @@ const path = require('node:path');
 const codexCli = require('./codexCli.cjs');
 const { readClaudeUsage } = require('./claudeUsage.cjs');
 const { AGENT_IDS } = require('../shared/agents.js');
+const { t: tr } = require('../shared/i18n.js');
 
 const MANUAL_GAP_MS = 5 * 60 * 1000; // 수동 갱신 최소 간격
 const HOUR_MS = 60 * 60 * 1000;
@@ -79,8 +80,8 @@ function parseGrokUsage(json, observedAt) {
   const cost = usd === null ? '' : ` · $${usd < 0.005 ? '<0.01' : usd.toFixed(2)}`;
   const n = (v) => (num(v) === null ? 0 : Math.trunc(v));
   return [
-    { id: 'session', label: '이번 세션', percent: null, resetsAt: null, resetsText: null, valueText: `토큰 ${fmtTokens(total)}${cost}`, observedAt },
-    { id: 'calls', label: '모델 호출', percent: null, resetsAt: null, resetsText: null, valueText: `${n(s.modelCalls)}회 · ${n(s.turnCount)}턴`, observedAt },
+    { id: 'session', label: tr('run.usage.thisSession'), percent: null, resetsAt: null, resetsText: null, valueText: `${tr('run.usage.tokens', { tokens: fmtTokens(total) })}${cost}`, observedAt },
+    { id: 'calls', label: tr('run.usage.modelCalls'), percent: null, resetsAt: null, resetsText: null, valueText: tr('run.usage.callsTurns', { calls: n(s.modelCalls), turns: n(s.turnCount) }), observedAt },
   ];
 }
 
@@ -299,7 +300,7 @@ function createUsageService({
       merge(grokRows, rows, 'grok');
       grokError = null;
     } else {
-      grokError = 'Grok 사용량을 읽지 못했습니다'; // 기존 값은 그대로 둔다
+      grokError = tr('run.usage.grokReadFailed'); // 기존 값은 그대로 둔다
     }
     emit();
   }
@@ -316,12 +317,12 @@ function createUsageService({
     let json;
     if (r.code === 0) { try { json = JSON.parse(r.stdout); } catch { /* 아래에서 형식 오류 */ } }
     if (json === undefined) {
-      if (MUSE_LOGIN_RE.test(`${r.stdout}\n${r.stderr}`)) { museRows.clear(); museError = 'Muse 로그인 필요 (구독 계정)'; return; }
-      museError = r.code === 0 ? 'Muse 사용량 형식을 읽지 못했습니다' : 'Muse 사용량을 읽지 못했습니다';
+      if (MUSE_LOGIN_RE.test(`${r.stdout}\n${r.stderr}`)) { museRows.clear(); museError = tr('run.usage.museLogin'); return; }
+      museError = r.code === 0 ? tr('run.usage.museFormat') : tr('run.usage.museReadFailed');
       return;
     }
     const rows = parseMuseUsage(json, now());
-    if (!rows.length) { museError = 'Muse 사용량 형식을 읽지 못했습니다'; return; }
+    if (!rows.length) { museError = tr('run.usage.museFormat'); return; }
     museRows.clear(); // 구독 한도 전체를 다시 읽은 것이라 예전 줄은 남기지 않는다
     merge(museRows, rows, 'muse');
     museError = null;
@@ -332,7 +333,7 @@ function createUsageService({
     if (!locateAntigravity) return;
     const loc = await locateAntigravity();
     if (disposed || !loc) return;
-    if (!agyTurns) agyError = '사용량 조회 명령 없음 · 협업 대화 토큰만 표시';
+    if (!agyTurns) agyError = tr('run.usage.agyNoCommand');
   }
 
   // 협업 대화 한 턴의 usage ({ total_tokens, ... }) 를 앱 실행 동안 누적한다. 지금은 Antigravity 만 (탭 세션 사용량은 출처가 없다).
@@ -340,7 +341,7 @@ function createUsageService({
     if (disposed || cli !== 'antigravity' || !u || typeof u !== 'object') return;
     agyTokens += num(u.total_tokens) ?? ['input_tokens', 'output_tokens', 'thinking_tokens'].reduce((a, k) => a + (num(u[k]) ?? 0), 0);
     agyTurns++;
-    merge(agyRows, [{ id: 'collab', label: '협업 대화', percent: null, resetsAt: null, resetsText: null, valueText: `토큰 ${fmtTokens(agyTokens)} · ${agyTurns}턴`, observedAt: now() }], 'collab');
+    merge(agyRows, [{ id: 'collab', label: tr('run.usage.collab'), percent: null, resetsAt: null, resetsText: null, valueText: tr('run.usage.tokensTurns', { tokens: fmtTokens(agyTokens), turns: agyTurns }), observedAt: now() }], 'collab');
     agyError = null;
     emit();
   }
@@ -356,7 +357,7 @@ function createUsageService({
     const prevSig = hasSid ? sessions.get(payload.session_id)?.statusSig : noSessionSig;
     if (sig !== prevSig) lastClaudeActivityAt = t;
     if (!hasSid) noSessionSig = sig;
-    for (const [key, id, label] of [['five_hour', 'session', '세션'], ['seven_day', 'week', '주간']]) {
+    for (const [key, id, label] of [['five_hour', 'session', tr('run.usage.session')], ['seven_day', 'week', tr('run.usage.week')]]) {
       const w = payload.rate_limits?.[key];
       if (!w || typeof w.used_percentage !== 'number' || !Number.isFinite(w.used_percentage)) continue;
       const resets = Number(w.resets_at);
@@ -383,7 +384,7 @@ function createUsageService({
     if (!manual && (claudeAutoOff || (lastClaudeRunAt != null && lastClaudeActivityAt <= lastClaudeRunAt))) return; // 자동은 직전 실행 뒤 활동이 있을 때만
     const loc = await locateClaude();
     if (disposed) return; // 찾는 사이 앱이 끝났으면 숨긴 claude 를 새로 띄우지 않는다
-    if (!loc) { if (manual) claudeError = 'Claude Code 를 찾지 못했습니다'; return; }
+    if (!loc) { if (manual) claudeError = tr('run.usage.claudeNotFound'); return; }
     lastClaudeRunAt = now();
     abort = new AbortController();
     const r = await readClaude({ loc, cwd: path.join(userDataDir, 'usage-probe'), signal: abort.signal });

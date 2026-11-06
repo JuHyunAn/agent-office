@@ -4,7 +4,7 @@ import layout from '../src/renderer/themes/pixel-office/layout.js';
 import theme from '../src/renderer/themes/pixel-office/theme.js';
 import { Navigation } from '../src/renderer/office/navigation.js';
 import { OfficeCamera } from '../src/renderer/office/camera.js';
-import { OfficeLife } from '../src/renderer/office/life.js';
+import { OfficeLife, COFFEE_MENU } from '../src/renderer/office/life.js';
 import { OfficeEngine } from '../src/renderer/office/engine.js';
 
 const run = (object, ms) => { for (let i = 0; i < ms; i += 50) object.update(50); };
@@ -295,4 +295,38 @@ test('상주 캐릭터의 시설 예약은 겹치지 않고 내 캐릭터가 이
   life.interact(id);
   assert.equal(life.player.interaction.id, id);
   assert.ok(life.residents.every(a => a.currentItem !== id && a.interaction?.id !== id));
+});
+
+test('영어 모드: 상주 캐릭터 이름·음료·방 이름이 바로 바뀐다', async () => {
+  const { setLang } = await import('../src/shared/i18n.js');
+  const life = new OfficeLife(layout, new OfficeEngine(layout));
+  try {
+    assert.deepEqual(life.residents.map(a => a.label), ['모카', '덱스', '유니', '루프', '코코']);
+    setLang('en');
+    assert.deepEqual(life.residents.map(a => a.label), ['Mocha', 'Dex', 'Uni', 'Loop', 'Coco']);
+    assert.equal(life.player.label, 'Me');
+    assert.equal(life.snapshot()[0].label, 'Me');
+    assert.equal(layout.rooms.dev.label, 'Dev Room');
+    assert.equal(layout.interactions.find(i => i.id === 'vending').label, 'Drink Machine');
+    assert.equal(theme.name, 'Pixel Office · City');
+    life.giveDrink(life.player, COFFEE_MENU[0]);
+    assert.equal(life.player.heldItem.label, 'Americano');
+  } finally { setLang('ko'); }
+  assert.equal(layout.rooms.dev.label, '개발실');
+  assert.equal(theme.name, '픽셀 오피스 · 도시 배경');
+});
+
+test('쉬는 동안의 작업 문구는 언어를 바꾸면 바로 바뀌고, 다른 문구를 넣으면 키가 지워진다', async () => {
+  const { setLang } = await import('../src/shared/i18n.js');
+  const life = new OfficeLife(layout, new OfficeEngine(layout));
+  try {
+    assert.equal(life.player.task, '바닥을 클릭해 이동하세요');
+    setLang('en');
+    assert.equal(life.player.task, 'Click the floor to move');
+    assert.equal(life.snapshot()[0].task, 'Click the floor to move');
+    life.player.task = '직접 넣은 문구';
+    assert.equal(life.player.taskKey, null);
+    setLang('ko');
+    assert.equal(life.player.task, '직접 넣은 문구');
+  } finally { setLang('ko'); }
 });

@@ -8,6 +8,7 @@ const SEATED = new Set(['sit', 'type', 'read', 'run']);
 import { OfficeCamera } from './camera.js';
 import { OfficeLife } from './life.js';
 import { OfficeEnvironment } from './environment.js';
+import { t } from '../../shared/i18n.js';
 
 export class OfficeView {
   constructor(canvas, engine, theme, { tooltip, onState } = {}) {
@@ -154,7 +155,7 @@ export class OfficeView {
     const item = this.theme.hitTest?.(scene.x, scene.y);
     const success = item ? this.life.interact(item.id) : this.life.moveTo(this.theme.unproject(scene.x, scene.y));
     if (!success) {
-      this.life.player.bubble = { text: '이쪽은 지나갈 수 없어요', kind: 'info', until: this.life.time + 2000 };
+      this.life.player.bubble = { text: t('office.view.blocked'), kind: 'info', until: this.life.time + 2000 };
     }
     this.notify();
   }
@@ -164,7 +165,7 @@ export class OfficeView {
     const state = { zoom: Math.round(this.camera.zoom * 100), minZoom: Math.round(this.camera.minZoom * 100), playerTask: this.life?.player.task || '',
       environment: this.environmentSnapshot(),
       interactionMenu: this.life?.menu || null,
-      heldItem: this.life?.player.heldItem ? `${this.life.player.heldItem.label} · ${Math.ceil((this.life.player.heldItem.until - this.life.time) / 1000)}초` : '',
+      heldItem: this.life?.player.heldItem ? t('office.view.heldItem', { label: this.life.player.heldItem.label, sec: Math.ceil((this.life.player.heldItem.until - this.life.time) / 1000) }) : '',
       headcount: headcount ?? this.engine.snapshot().filter(a => a.status !== 'leaving').length };
     const key = JSON.stringify(state);
     if (key !== this.lastState) { this.lastState = key; this.onState(state); }
@@ -266,7 +267,7 @@ export class OfficeView {
       if (d < bestD) { best = a; bestD = d; }
     }
     let content;
-    if (best) content = `${best.label} · ${best.isPlayer ? '내 캐릭터' : best.isAmbient ? '상주 캐릭터' : best.sessionLabel || '에이전트'}\n${best.task || '-'}${best.skill ? `\n사용 스킬: ${best.skill}` : ''}\n상태: ${STATUS[best.status] || best.status}`;
+    if (best) content = `${best.label} · ${best.isPlayer ? t('office.view.me') : best.isAmbient ? t('office.view.resident') : best.sessionLabel || t('office.agent.generic')}\n${best.task || '-'}${best.skill ? '\n' + t('office.view.skillUsed', { skill: best.skill }) : ''}\n${t('office.view.status', { status: STATUS[best.status] ? t(STATUS[best.status]) : best.status })}`;
     else {
       const item = this.theme.hitTest?.(lx, ly);
       if (item) content = `${item.label}\n${item.description}`;
@@ -276,10 +277,10 @@ export class OfficeView {
         if (entry) {
           const [key, room] = entry;
           const occupants = agents.filter(a => !a.isPlayer && !a.isAmbient && a.status !== 'leaving' && a.x >= room.x && a.x <= room.x + room.w && a.y >= room.y && a.y <= room.y + room.h);
-          content = `${room.label}\n에이전트 ${occupants.length}명`;
+          content = `${room.label}\n${t('office.view.agentCount', { n: occupants.length })}`;
           if (key === 'skills') {
             const skills = agents.filter(a => a.skill && a.status !== 'leaving');
-            content += skills.length ? '\n' + skills.map(a => `${a.label}: ${a.skill}`).join('\n') : '\n스킬 호출을 기다리고 있어요';
+            content += skills.length ? '\n' + skills.map(a => `${a.label}: ${a.skill}`).join('\n') : '\n' + t('office.view.waitingSkill');
           }
         }
       }
@@ -295,7 +296,7 @@ export class OfficeView {
 }
 
 const STATUS = {
-  arriving: '출근 중', working: '작업 중', reporting: '보고 중', sharing: '결과 공유 중',
-  resting: '휴식 중', away: '잠깐 휴식', idle: '대기', leaving: '퇴근 중',
-  walking: '산책 중',
+  arriving: 'office.status.arriving', working: 'office.status.working', reporting: 'office.status.reporting', sharing: 'office.status.sharing',
+  resting: 'office.status.resting', away: 'office.status.away', idle: 'office.status.idle', leaving: 'office.status.leaving',
+  walking: 'office.status.walking',
 };

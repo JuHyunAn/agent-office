@@ -6,14 +6,16 @@ import { readOffice } from './storage.js';
 import { MATERIALS } from './catalog.js';
 import { loadDrinkImages } from '../pixel-office/drink-images.js';
 import { resolveEnvironment } from './environment.js';
+import { t as tr } from '../../../shared/i18n.js'; // drawScene 의 t(시간) 와 겹치지 않게
 
-let initial = exampleDocument(), loadError = null, saved = false;
+let initial = exampleDocument(), loadFailed = false, saved = false;
 try { if (typeof localStorage !== 'undefined') { const stored = readOffice(localStorage); if (stored) { initial = stored; saved = true; } } }
-catch { loadError = '저장된 사무실을 읽지 못해 예제 배치를 표시했어요. 기존 저장 내용은 덮어쓰지 않았어요.'; }
+catch { loadFailed = true; }
 const art = createArt(); art.setDocument(initial);
 let background = null, backgroundSource = null;
 const theme = {
-  id: 'custom-office', name: '커스터마이징', art, layout: makeLayout(initial), applied: initial, loadError,
+  id: 'custom-office', get name() { return tr('theme.name.custom-office'); }, art, layout: makeLayout(initial), applied: initial,
+  get loadError() { return loadFailed ? tr('theme.custom.loadError') : null; },
   agentHead: 40, agentHitRadius: 30, background: '#e9eee7',
   get viewport() { return art.viewport; },
   project(x, y) { const p = art.project(x, y); return { x: p.x * 2, y: p.y * 2 }; },

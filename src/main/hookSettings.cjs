@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { t } = require('../shared/i18n.js');
 
 const MARK = 'agent-office';
 const EVENTS = [
@@ -101,7 +102,7 @@ function readGlobalStatus(currentPort, currentToken, file = globalSettingsPath()
       path: file,
     };
   } catch (e) {
-    return { installed: false, port: null, portMatches: null, tokenMatches: null, path: file, error: `설정 파일을 읽지 못했습니다: ${e.message}` };
+    return { installed: false, port: null, portMatches: null, tokenMatches: null, path: file, error: t('main.hooks.readFailed', { detail: e.message }) };
   }
 }
 

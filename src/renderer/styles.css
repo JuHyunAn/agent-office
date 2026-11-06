@@ -43,6 +43,11 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .pill.on { color: #688267; border-color: #d0dac5; background: #eff2e7; }
 .pill.warn { color: #aa8050; border-color: #e1d0ab; background: #f7efda; }
 #agents-pill { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+/* 언어 전환 「한 | EN」 — 지금 언어를 굵게 */
+.lang-toggle span[data-l] { opacity: .55; }
+.lang-toggle .lang-sep { opacity: .4; margin: 0 5px; }
+.lang-toggle[data-lang="ko"] span[data-l="ko"], .lang-toggle[data-lang="en"] span[data-l="en"] { opacity: 1; font-weight: 700; }
+.gate-lang { position: absolute; top: 12px; right: 12px; }
 .theme-pick { color: var(--muted); display: flex; gap: 6px; align-items: center; }
 .theme-pick { font-size: 11px; }
 .theme-pick select { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 4px; padding: 5px 6px; font-size: 11px; }
@@ -436,7 +441,7 @@ body.code-mode .custom-builder { display: none; }
   position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; overflow: auto;
   background: #efe7d6; background-image: radial-gradient(#d8ccb6 1px, transparent 1px); background-size: 16px 16px;
 }
-.gate-card { width: min(920px, 94vw); margin: auto; background: var(--panel); border: 1px solid #c8bba3; border-radius: 6px; box-shadow: 8px 8px #d8cbb3; padding: 38px 32px; text-align: center; }
+.gate-card { position: relative; width: min(920px, 94vw); margin: auto; background: var(--panel); border: 1px solid #c8bba3; border-radius: 6px; box-shadow: 8px 8px #d8cbb3; padding: 38px 32px; text-align: center; }
 .gate-logo { display: grid; place-items: center; height: 66px; }
 .gate-logo .brand-mark { transform: scale(2); }
 .gate h1 { margin: 10px 0 6px; font: bold 28px Consolas, monospace; letter-spacing: -1px; }

@@ -1,5 +1,6 @@
 // 코드 분석 하단 패널: 요약 · 읽는 순서 · 검색 키워드 탭과 상태 줄. 화면(DOM)만 다룬다 — 분석 실행·검색·이동은 바깥(panel.js)이 한다.
 // 결과·검색 내용은 모두 textContent 로만 표시한다.
+import { t } from '../../shared/i18n.js';
 
 function node(tag, props = {}, ...children) {
   const n = document.createElement(tag);
@@ -12,13 +13,13 @@ function node(tag, props = {}, ...children) {
   return n;
 }
 
-const TABS = [['summary', '요약'], ['order', '읽는 순서'], ['keywords', '검색 키워드']];
+const TABS = [['summary', 'code.ca.tabSummary'], ['order', 'code.ca.tabOrder'], ['keywords', 'code.ca.tabKeywords']];
 const HIT_MAX = 200;
-const NONE = '항목 없음';
+const none = () => t('code.ca.none');
 
 const secText = (ms) => {
   const s = Math.max(1, Math.round(ms / 1000));
-  return s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
+  return s >= 60 ? t('code.ca.minSec', { m: Math.floor(s / 60), s: s % 60 }) : t('code.ca.sec', { s });
 };
 const mmss = (ms) => {
   const s = Math.max(0, Math.floor(ms / 1000));
@@ -28,26 +29,26 @@ const mmss = (ms) => {
 // view = { status: 'running'|'done'|'error'|'confirm'|'stopped', scopeLabel, scopes: [{ key, label, title }] | null, active, result, cached, model, ms, costUsd,
 //          error, confirm: { files, chars }, startedAt, notesOn, hiddenNotes, stale, jumpNote, canStart }
 // 결과가 있을 때의 오류·중단은 상태 줄이 아니라 본문 위 한 줄(banner)로 알리고, 상태 줄은 그 결과의 정보를 그대로 둔다.
-const bannerOf = (v) => (v.result && (v.status === 'error' || v.status === 'stopped') ? (v.status === 'error' ? `⚠ ${v.error}` : v.error || '중단했습니다') : '');
+const bannerOf = (v) => (v.result && (v.status === 'error' || v.status === 'stopped') ? (v.status === 'error' ? `⚠ ${v.error}` : v.error || t('code.analysis.stopped')) : '');
 
 // 상태 줄 = 경고(말줄임에 먼저 잘리지 않게 앞쪽에 강조) + 본 문구
 function statusParts(v) {
-  if (v.status === 'running') return { warn: '', text: `분석 중… ${mmss(Date.now() - v.startedAt)}` };
-  if (v.status === 'confirm') return { warn: '', text: '크기 확인이 필요합니다' };
+  if (v.status === 'running') return { warn: '', text: t('code.ca.running', { time: mmss(Date.now() - v.startedAt) }) };
+  if (v.status === 'confirm') return { warn: '', text: t('code.ca.needConfirm') };
   if (!v.result) {
-    if (v.status === 'stopped') return { warn: '', text: v.error || '중단했습니다' };
+    if (v.status === 'stopped') return { warn: '', text: v.error || t('code.analysis.stopped') };
     if (v.status === 'error') return { warn: '', text: `⚠ ${v.error}` };
   }
   const parts = [];
-  if (v.cached) parts.push('변경 없음 — 이전 결과');
+  if (v.cached) parts.push(t('code.ca.cachedResult'));
   else {
     if (v.model) parts.push(v.model);
     parts.push(secText(v.ms));
-    if (typeof v.costUsd === 'number') parts.push(`API 환산 약 $${v.costUsd.toFixed(2)}`);
+    if (typeof v.costUsd === 'number') parts.push(t('code.ca.apiCost', { cost: v.costUsd.toFixed(2) }));
   }
   const warn = [];
-  if (v.stale) warn.push('분석 후 코드가 바뀜');
-  if (v.hiddenNotes > 0) warn.push(`주석 ${v.hiddenNotes}개는 위치를 찾지 못해 숨김`);
+  if (v.stale) warn.push(t('code.ca.stale'));
+  if (v.hiddenNotes > 0) warn.push(t('code.ca.hiddenNotes', { n: v.hiddenNotes }));
   if (v.jumpNote) warn.push(v.jumpNote);
   return { warn: warn.join(' · '), text: parts.join(' · ') };
 }
@@ -67,21 +68,37 @@ export function createAnalysisPanel({ onJump, onSearch, onStop, onClose, onToggl
   const idOf = (o) => { if (!o) return 0; if (!ids.has(o)) ids.set(o, nextId++); return ids.get(o); };
 
   const scopeEl = node('span', { class: 'ca-scope' });
-  const scopeSel = node('select', { class: 'ca-scope-sel', 'aria-label': '분석 범위', hidden: true, onchange: () => onScope(scopeSel.value) });
-  const tabBtns = TABS.map(([id, label]) => node('button', { class: 'ca-tab', type: 'button', role: 'tab', 'data-tab': id, onclick: () => setTab(id) }, label));
-  const tabsEl = node('div', { class: 'ca-tabs', role: 'tablist', 'aria-label': '분석 결과' }, tabBtns);
-  const notesBtn = node('button', { class: 'ca-notes', type: 'button', 'aria-pressed': 'true', title: '코드 줄 사이 주석을 보이거나 숨깁니다', onclick: () => onToggleNotes(notesBtn.getAttribute('aria-pressed') !== 'true') }, '주석 표시');
+  const scopeSel = node('select', { class: 'ca-scope-sel', hidden: true, onchange: () => onScope(scopeSel.value) });
+  const tabBtns = TABS.map(([id]) => node('button', { class: 'ca-tab', type: 'button', role: 'tab', 'data-tab': id, onclick: () => setTab(id) }));
+  const tabsEl = node('div', { class: 'ca-tabs', role: 'tablist' }, tabBtns);
+  const notesBtn = node('button', { class: 'ca-notes', type: 'button', 'aria-pressed': 'true', onclick: () => onToggleNotes(notesBtn.getAttribute('aria-pressed') !== 'true') });
   const statusEl = node('span', { class: 'ca-status' });
   const warnEl = node('span', { class: 'ca-warn' });
   const statusTextEl = node('span', { class: 'ca-st' });
   statusEl.append(warnEl, statusTextEl);
-  const actBtn = node('button', { class: 'ca-act', type: 'button', onclick: () => (view?.status === 'running' ? onStop() : onRerun()) }, '다시 분석');
-  const closeBtn = node('button', { class: 'ca-close', type: 'button', 'aria-label': '분석 패널 닫기', title: '닫기', onclick: () => onClose() }, '×');
+  const actBtn = node('button', { class: 'ca-act', type: 'button', onclick: () => (view?.status === 'running' ? onStop() : onRerun()) });
+  const closeBtn = node('button', { class: 'ca-close', type: 'button', onclick: () => onClose() }, '×');
   const bodyEl = node('div', { class: 'ca-body', role: 'tabpanel' });
   // 위쪽 경계: 끌어서 패널 높이 조절 (layout.js setupAnalysisResizer)
-  const resizer = node('div', { class: 'ca-resizer', role: 'separator', 'aria-orientation': 'horizontal', 'aria-label': '분석 패널 높이 조절', title: '끌어서 높이 조절 · 두 번 클릭하면 기본 높이' });
+  const resizer = node('div', { class: 'ca-resizer', role: 'separator', 'aria-orientation': 'horizontal' });
   const headEl = node('div', { class: 'ca-head' }, scopeEl, scopeSel, tabsEl, notesBtn, statusEl, actBtn, closeBtn);
-  const el = node('section', { class: 'code-analysis', 'aria-label': '코드 분석', hidden: true }, resizer, headEl, bodyEl);
+  const el = node('section', { class: 'code-analysis', hidden: true }, resizer, headEl, bodyEl);
+
+  // 한 번만 만드는 요소의 글자·툴팁·접근성 이름. 만들 때 한 번, 언어가 바뀔 때 다시 쓴다 (actBtn 의 글자는 update 가 상태에 맞게 쓴다).
+  function paintLabels() {
+    el.setAttribute('aria-label', t('code.ca.panel'));
+    scopeSel.setAttribute('aria-label', t('code.ca.scope'));
+    tabsEl.setAttribute('aria-label', t('code.ca.resultsAria'));
+    TABS.forEach(([, key], i) => { tabBtns[i].textContent = t(key); });
+    notesBtn.textContent = t('code.ca.notes');
+    notesBtn.title = t('code.ca.notesTitle');
+    actBtn.textContent = t('code.ca.rerun');
+    closeBtn.setAttribute('aria-label', t('code.ca.closeAria'));
+    closeBtn.title = t('code.ca.close');
+    resizer.setAttribute('aria-label', t('code.ca.resizeAria'));
+    resizer.title = t('code.view.dragHeight');
+  }
+  paintLabels();
 
   function setTab(id) {
     if (tab === id) return;
@@ -111,11 +128,11 @@ export function createAnalysisPanel({ onJump, onSearch, onStop, onClose, onToggl
   }
 
   function drawSummary(r) {
-    return r.summary ? node('p', { class: 'ca-summary' }, r.summary) : empty(NONE);
+    return r.summary ? node('p', { class: 'ca-summary' }, r.summary) : empty(none());
   }
 
   function drawOrder(r) {
-    if (!r.readingOrder.length) return empty(NONE);
+    if (!r.readingOrder.length) return empty(none());
     return node('ol', { class: 'ca-list' }, r.readingOrder.map((it, i) => node('li', {},
       node('button', { class: 'ca-item', type: 'button', title: `${it.file}:${it.line}`, onclick: () => onJump(it) },
         node('span', { class: 'ca-num' }, String(i + 1)),
@@ -125,19 +142,19 @@ export function createAnalysisPanel({ onJump, onSearch, onStop, onClose, onToggl
 
   function drawHits() {
     const s = search;
-    if (s.state === 'loading') return node('p', { class: 'ca-note' }, '검색 중…');
+    if (s.state === 'loading') return node('p', { class: 'ca-note' }, t('code.ca.searching'));
     if (s.state === 'error') return node('p', { class: 'ca-note err' }, `⚠ ${s.error}`);
-    if (!s.matches.length) return node('p', { class: 'ca-note' }, '일치 없음');
+    if (!s.matches.length) return node('p', { class: 'ca-note' }, t('code.ca.noMatch'));
     const shown = s.matches.slice(0, HIT_MAX);
     return node('div', { class: 'ca-hits' },
       shown.map((m, i) => node('button', { class: 'ca-hit', type: 'button', 'data-key': `hit|${i}`, title: `${m.path}:${m.line}`, onclick: () => onJump({ file: m.path, line: m.line }) },
         node('span', { class: 'ca-loc' }, `${m.path}:${m.line}`),
         node('span', { class: 'ca-text' }, m.text))),
-      s.truncated || s.matches.length > HIT_MAX ? node('p', { class: 'ca-note' }, `일치가 많아 ${HIT_MAX}개까지만 표시합니다`) : null);
+      s.truncated || s.matches.length > HIT_MAX ? node('p', { class: 'ca-note' }, t('code.ca.hitsCapped', { max: HIT_MAX })) : null);
   }
 
   function drawKeywords(r) {
-    if (!r.keywords.length) return empty(NONE);
+    if (!r.keywords.length) return empty(none());
     return node('div', { class: 'ca-keywords' }, r.keywords.map((g, gi) => node('div', { class: 'ca-group' },
       node('div', { class: 'ca-feature' }, g.feature),
       node('div', { class: 'ca-terms' }, g.terms.map((t) => node('button', {
@@ -171,12 +188,12 @@ export function createAnalysisPanel({ onJump, onSearch, onStop, onClose, onToggl
     let content;
     if (v.status === 'confirm' && v.confirm) {
       content = node('div', { class: 'ca-confirm' },
-        node('p', { class: 'ca-confirm-text' }, `대상 ${v.confirm.files}개, 변경 ${v.confirm.chars}자로 크기가 큽니다. 사용량이 많이 들 수 있습니다`),
+        node('p', { class: 'ca-confirm-text' }, t('code.ca.confirmText', { files: v.confirm.files, chars: v.confirm.chars })),
         node('div', { class: 'ca-confirm-btns' },
-          node('button', { class: 'ca-confirm-btn', type: 'button', disabled: v.canStart === false, onclick: () => onConfirm() }, '그래도 분석'),
-          node('button', { class: 'ca-cancel-btn', type: 'button', onclick: () => onCancel() }, '취소')));
+          node('button', { class: 'ca-confirm-btn', type: 'button', disabled: v.canStart === false, onclick: () => onConfirm() }, t('code.ca.confirmGo')),
+          node('button', { class: 'ca-cancel-btn', type: 'button', onclick: () => onCancel() }, t('code.ca.cancel'))));
     } else if (!r) {
-      content = empty(v.status === 'running' ? '분석 중입니다…' : v.status === 'error' ? `⚠ ${v.error}` : v.error || NONE);
+      content = empty(v.status === 'running' ? t('code.ca.runningBody') : v.status === 'error' ? `⚠ ${v.error}` : v.error || none());
     } else if (tab === 'order') content = drawOrder(r);
     else if (tab === 'keywords') content = drawKeywords(r);
     else content = drawSummary(r);
@@ -210,7 +227,7 @@ export function createAnalysisPanel({ onJump, onSearch, onStop, onClose, onToggl
     drawStatus(v);
     statusEl.classList.toggle('err', v.status === 'error' && !v.result);
     actBtn.hidden = v.status === 'confirm';
-    actBtn.textContent = v.status === 'running' ? '중단' : '다시 분석';
+    actBtn.textContent = t(v.status === 'running' ? 'code.ca.stop' : 'code.ca.rerun');
     actBtn.disabled = v.status !== 'running' && v.canStart === false;
     syncTimer();
     // 본문은 내용이 달라졌을 때만 다시 그린다 (10초 갱신마다 초점·스크롤이 흐트러지지 않게)
@@ -237,5 +254,7 @@ export function createAnalysisPanel({ onJump, onSearch, onStop, onClose, onToggl
     // 코드 화면을 숨기면 타이머를 멈추고, 다시 보이면 지금 시각으로 그린다.
     stopTimer() { suspended = true; stopTimer(); },
     refresh() { suspended = false; update(); },
+    // 언어가 바뀜: 한 번 만든 글자를 다시 쓰고, 상태 줄·본문은 지문(bodyKey)을 비워 새 언어로 다시 그린다 (보던 스크롤·초점은 지킨다).
+    relabel() { paintLabels(); bodyKey = ''; update(); },
   };
 }

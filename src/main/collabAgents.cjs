@@ -19,6 +19,7 @@ const codexCli = require('./codexCli.cjs');
 const { GROK_TOOL_NAMES, pickGrokInput } = require('./grokTools.cjs');
 const { AGY_TOOL_NAMES, pickAgyInput } = require('./agyTools.cjs');
 const museCli = require('./museCli.cjs');
+const { t } = require('../shared/i18n.js');
 
 const SAFE = /^[A-Za-z0-9._:-]{1,80}$/;
 const EFFORT_RE = /^[a-z]{2,12}$/; // 단계 이름은 Claude 가 알려 준 목록(low … max)에서 온다
@@ -32,8 +33,8 @@ function pick(input) {
 }
 
 function claudeChatArgs({ settingsPath, sessionId, resume, model, effort, systemPrompt }) {
-  if (!SAFE.test(String(model))) throw new Error('잘못된 모델');
-  if (effort != null && !EFFORT_RE.test(String(effort))) throw new Error('잘못된 노력 단계');
+  if (!SAFE.test(String(model))) throw new Error(t('run.badModel'));
+  if (effort != null && !EFFORT_RE.test(String(effort))) throw new Error(t('run.badEffort'));
   return ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--replay-user-messages',
     '--model', model, ...(effort ? ['--effort', effort] : []), '--dangerously-skip-permissions', '--settings', settingsPath,
     ...(systemPrompt ? ['--append-system-prompt', systemPrompt] : []),
@@ -68,7 +69,7 @@ function parseClaudeLine(j) {
   if (j.type === 'assistant' && Array.isArray(j.message?.content)) {
     return j.message.content.filter((c) => c.type === 'tool_use').map((c) => ({ type: 'tool', name: c.name, input: pick(c.input) }));
   }
-  if (j.type === 'result') return [j.subtype === 'success' && !j.is_error ? { type: 'done', ok: true } : { type: 'done', ok: false, error: String(j.result || j.subtype || '실패').slice(0, 300) }];
+  if (j.type === 'result') return [j.subtype === 'success' && !j.is_error ? { type: 'done', ok: true } : { type: 'done', ok: false, error: String(j.result || j.subtype || t('run.failed')).slice(0, 300) }];
   return [];
 }
 
@@ -79,8 +80,8 @@ function parseCodexLine(j) {
   if (!j || typeof j !== 'object') return [];
   if (j.type === 'thread.started') return [{ type: 'session', sessionId: j.thread_id }];
   if (j.type === 'turn.completed') return [{ type: 'done', ok: true }];
-  if (j.type === 'turn.failed') return [{ type: 'done', ok: false, error: String(j.error?.message || '실패').slice(0, 300) }];
-  if (j.type === 'error') return [{ type: 'notice', text: String(j.message || '오류').slice(0, 300) }];
+  if (j.type === 'turn.failed') return [{ type: 'done', ok: false, error: String(j.error?.message || t('run.failed')).slice(0, 300) }];
+  if (j.type === 'error') return [{ type: 'notice', text: String(j.message || t('run.error')).slice(0, 300) }];
   const it = j.item;
   if (!it) return [];
   if (j.type === 'item.completed' && it.type === 'agent_message') return [{ type: 'text', text: String(it.text || ''), block: true }];
@@ -155,15 +156,15 @@ function claudeModels({ loc, settingsPath, cwd, env, spawn = nodeSpawn, kill = k
       if (!list) onError(reason);
       resolve(list);
     };
-    timer = setTimeout(() => finish(null, `${timeoutMs / 1000}초 안에 응답이 없습니다`), timeoutMs);
+    timer = setTimeout(() => finish(null, t('run.noResponseSec', { sec: timeoutMs / 1000 })), timeoutMs);
     p.stdout.on('data', lineReader((j) => {
       if (j.type === 'control_response' && j.response?.request_id === id) {
-        finish(j.response.subtype === 'success' ? parseClaudeModels(j.response.response?.models) : null, String(j.response.error || '시작 요청 실패').slice(0, 200));
+        finish(j.response.subtype === 'success' ? parseClaudeModels(j.response.response?.models) : null, String(j.response.error || t('run.initFailed')).slice(0, 200));
       }
     }));
     p.stderr?.on?.('data', (d) => { err = (err + d).slice(-400); });
-    p.on('error', (e) => finish(null, `실행 실패: ${e.message}`));
-    p.on('exit', (code) => finish(null, `응답 전에 종료 (코드 ${code})${err.trim() ? `: ${err.trim().split('\n').pop()}` : ''}`));
+    p.on('error', (e) => finish(null, t('run.launchFailed', { msg: e.message })));
+    p.on('exit', (code) => finish(null, `${t('run.exitedBeforeReply', { code })}${err.trim() ? `: ${err.trim().split('\n').pop()}` : ''}`));
     p.stdin.write(JSON.stringify({ type: 'control_request', request_id: id, request: { subtype: 'initialize' } }) + '\n');
   });
 }
@@ -205,8 +206,8 @@ class ClaudeChat {
     }));
     let err = '';
     p.stderr.on('data', (d) => { err = (err + d).slice(-600); });
-    p.on('error', (e) => this.exited(p, `Claude 를 실행하지 못했습니다: ${e.message}`));
-    p.on('exit', (code) => this.exited(p, `Claude 가 종료되었습니다 (코드 ${code})${err.trim() ? `: ${err.trim().split('\n').pop()}` : ''}`));
+    p.on('error', (e) => this.exited(p, t('run.claude.failedToRun', { msg: e.message })));
+    p.on('exit', (code) => this.exited(p, `${t('run.claude.exited', { code })}${err.trim() ? `: ${err.trim().split('\n').pop()}` : ''}`));
   }
 
   exited(p, message) {
@@ -330,7 +331,7 @@ class CodexChat {
       const args = codexCli.execArgs({ resumeId: this.threadId, model: run.cfg.model, effort: run.cfg.effort, hooks: this.hooks });
       p = spawnCli(this.spawnFn, this.loc, args, { cwd: this.cwd, env: this.env });
     } catch (e) { // 미뤄 띄울 때는 타이머·exit 핸들러 안이라 던지면 아무도 받지 않는다 — 턴을 오류로 끝낸다
-      run.finished = true; emit({ type: 'done', ok: false, error: `Codex 를 실행하지 못했습니다: ${e.message}` }); return;
+      run.finished = true; emit({ type: 'done', ok: false, error: t('run.codex.failedToRun', { msg: e.message }) }); return;
     }
     run.p = p; this.live.add(p);
     const finish = (ev) => { if (run.finished) return; run.finished = true; emit(ev); };
@@ -361,12 +362,12 @@ class CodexChat {
         && run.queue.length && !run.open.size && !run.collab) this.carryOn(run, false);
     }));
     p.stderr.on('data', (d) => { err = (err + d).slice(-600); });
-    p.on('error', (e) => { this.live.delete(p); this.stale.delete(p); finish({ type: 'done', ok: false, error: `Codex 를 실행하지 못했습니다: ${e.message}` }); next(); });
+    p.on('error', (e) => { this.live.delete(p); this.stale.delete(p); finish({ type: 'done', ok: false, error: t('run.codex.failedToRun', { msg: e.message }) }); next(); });
     // exit 가 stdout 의 turn.completed 보다 먼저 오면 여기서 끝난다 — 남은 queue 는 버리고 진행자가 다음 차례로 넘긴다.
     p.on('exit', (code) => {
       this.live.delete(p); this.stale.delete(p);
       const tail = err.trim() ? `: ${err.trim().split('\n').pop().slice(0, 200)}` : '';
-      finish(code === 0 ? { type: 'done', ok: true } : { type: 'done', ok: false, error: `Codex 가 응답 없이 종료되었습니다 (코드 ${code})${tail}` });
+      finish(code === 0 ? { type: 'done', ok: true } : { type: 'done', ok: false, error: `${t('run.codex.exitedNoReply', { code })}${tail}` });
       next();
     });
     p.stdin.end(this.threadId || !this.systemPrompt ? run.text : `${this.systemPrompt}\n\n${run.text}`);
@@ -417,7 +418,7 @@ class CodexChat {
 //  - 프롬프트는 --prompt-file 로 넘긴다 (stdin 은 읽지 않음 — 한글·큰따옴표·% 가 셸을 거치지 않아 깨지지 않는다). 파일은 프로세스가 끝나면 반드시 지운다.
 //    (Antigravity 는 프롬프트 파일 옵션이 없어 -p 인자로 넘기고, 긴 프롬프트만 이 파일을 읽게 한다.)
 //  - 출력 줄마다 하위 클래스의 parse 가 이벤트로 바꾼다. 'end' 이벤트는 턴이 끝났다는 내부 표시라 대화창에 내보내지 않는다.
-//  - 하위 클래스가 채울 것: subj·obj(오류 문구의 AI 이름과 조사)·filePrefix(프롬프트 파일 이름) · buildArgs({ file, resume, model, effort }) · parse(j) · failText(tail, errText)
+//  - 하위 클래스가 채울 것: failedToRun(msg)·endedWithError()(오류 문구 — AI 이름과 조사까지 문장 단위 번역)·filePrefix(프롬프트 파일 이름) · buildArgs({ file, resume, model, effort }) · parse(j) · failText(tail, errText)
 const GROK_EFFORT_RE = /^(low|medium|high|xhigh)$/;
 const GROK_EXIT_WAIT_MS = 300; // exit 가 stdout 의 마지막 줄(end)보다 먼저 올 수 있어 close 를 이만큼 기다린 뒤 끝낸다
 const GROK_END_GRACE_MS = 3000; // end 줄을 받은 뒤 프로세스가 이 안에 끝나지 않으면 정상으로 끝내고 프로세스를 죽인다
@@ -485,7 +486,7 @@ class FileTurnChat {
       } catch (e) { if (e.code === 'EEXIST') run.wrote = false; throw e; } // 이미 있는 파일은 덮어쓰지도 지우지도 않는다
       run.p = spawnCli(this.spawnFn, this.loc, args, { cwd: this.cwd, env: this.env, stdio: ['ignore', 'pipe', 'pipe'] });
     } catch (e) {
-      run.error = `${this.obj} 실행하지 못했습니다: ${e.message}`; finish(); return;
+      run.error = this.failedToRun(e.message); finish(); return;
     }
     const p = run.p;
     if (this.announceOnSpawn && this.announcedId !== this.sessionId) { this.announcedId = this.sessionId; emit({ type: 'session', sessionId: this.sessionId }); }
@@ -495,7 +496,7 @@ class FileTurnChat {
       if (!ev) return;
       if (ev.type === 'end') {
         run.ended = true; run.endOk = ev.ok !== false;
-        if (!run.endOk) run.error = String(ev.reason || ev.text || '').slice(0, 300) || `${this.subj} 오류로 끝났습니다`;
+        if (!run.endOk) run.error = String(ev.reason || ev.text || '').slice(0, 300) || this.endedWithError();
         else if (ev.text && !run.sawText) emit({ type: 'text', text: ev.text }); // 조각 출력 없이 최종 응답만 온 경우
         // 끝 줄을 받았는데 프로세스가 끝나지 않으면(자식이 파이프를 쥐고 있는 경우 등) 잠시 기다렸다가 정상으로 끝내고 죽인다
         clearTimeout(run.endTimer); // 끝 줄이 또 오면 유예를 다시 잰다 (앞 타이머를 남기지 않는다)
@@ -508,7 +509,7 @@ class FileTurnChat {
       emit(ev);
     }));
     p.stderr?.on?.('data', (d) => { tail = String(d).trim().split('\n').pop().slice(0, 200) || tail; run.errText = (run.errText + d).slice(-600); });
-    p.on('error', (e) => { run.error ||= `${this.obj} 실행하지 못했습니다: ${e.message}`; finish(); cleanup(); });
+    p.on('error', (e) => { run.error ||= this.failedToRun(e.message); finish(); cleanup(); });
     p.on('close', () => { finish(); cleanup(); }); // 중단·닫기로 먼저 끝난 실행도 프로세스가 끝나면 프롬프트 파일을 다시 지운다
     p.on('exit', () => { if (!run.finished) { run.timer = setTimeout(finish, GROK_EXIT_WAIT_MS); run.timer.unref?.(); } });
   }
@@ -550,14 +551,14 @@ function parseGrokLine(j) {
   if (j.type === 'text') return { type: 'text', text: String(j.data ?? '') };
   if (j.type === 'tool_call') return { type: 'tool', name: GROK_TOOL_NAMES[j.toolName] || String(j.toolName || j.title || 'tool').slice(0, 80), input: pick(pickGrokInput(j.rawInput)) };
   if (j.type === 'end') return { type: 'end', stopReason: String(j.stopReason ?? '') };
-  if (j.type === 'error') return { type: 'notice', text: String(j.message || '오류').slice(0, 300) };
+  if (j.type === 'error') return { type: 'notice', text: String(j.message || t('run.error')).slice(0, 300) };
   return null;
 }
 
 class GrokChat extends FileTurnChat {
-  get subj() { return 'Grok 이'; }
+  failedToRun(msg) { return t('run.grok.failedToRun', { msg }); }
 
-  get obj() { return 'Grok 을'; }
+  endedWithError() { return t('run.grok.endedWithError'); }
 
   get filePrefix() { return 'grok'; }
 
@@ -565,7 +566,7 @@ class GrokChat extends FileTurnChat {
 
   parse(j) { return parseGrokLine(j); }
 
-  failText(tail) { return tail || 'Grok 이 응답 없이 끝났습니다'; }
+  failText(tail) { return tail || t('run.grok.noReply'); }
 }
 
 // Muse Code 협업: 턴마다 `muse exec --json` 을 실행하고 같은 --session-id 로 대화를 이어 간다 (muse 1.4.14 실측, 인자·줄 해석은 museCli.cjs).
@@ -574,7 +575,7 @@ class GrokChat extends FileTurnChat {
 //  - cmd.exe 경유(cmdShim) 위치는 JSON 인자가 깨지므로 만들 때 거절한다 (실행 파일 muse-bin-*.exe 를 직접 써야 한다).
 class MuseChat extends FileTurnChat {
   constructor(opts) {
-    if (opts?.loc?.cmdShim) throw new Error('Muse 실행 파일(muse-bin-*.exe)을 찾지 못했습니다 — Muse 를 다시 설치하세요');
+    if (opts?.loc?.cmdShim) throw new Error(t('run.muse.noExe'));
     super(opts);
     this.hooks = opts.hooks || [];
     this.extraArgs = opts.extraArgs || [];
@@ -587,9 +588,9 @@ class MuseChat extends FileTurnChat {
     super.send(text, opts, turn);
   }
 
-  get subj() { return 'Muse 가'; }
+  failedToRun(msg) { return t('run.muse.failedToRun', { msg }); }
 
-  get obj() { return 'Muse 를'; }
+  endedWithError() { return t('run.muse.endedWithError'); }
 
   get filePrefix() { return 'muse'; }
 
@@ -600,8 +601,8 @@ class MuseChat extends FileTurnChat {
   parse(j) { return museCli.parseMuseLine(j, this.sessionId, this.seenTools); }
 
   failText(tail, errText) {
-    if (museCli.LOGIN_HINT_RE.test(errText) || museCli.LOGIN_HINT_RE.test(tail)) return 'Muse 로그인이 필요합니다 (결제 수단·구독이 있는 Meta 계정)';
-    return tail || 'Muse 가 응답 없이 끝났습니다';
+    if (museCli.LOGIN_HINT_RE.test(errText) || museCli.LOGIN_HINT_RE.test(tail)) return t('run.muse.loginNeeded');
+    return tail || t('run.muse.noReply');
   }
 }
 
@@ -651,7 +652,7 @@ class AgyChat extends FileTurnChat {
   // onUsage(usage): 턴이 끝날 때 result.usage 객체를 받는다 (사용량 단계에서 연결)
   // cmd.exe 경유(cmdShim) 위치는 프롬프트 인자(개행·따옴표)가 깨지므로 만들 때 거절한다.
   constructor(opts) {
-    if (opts?.loc?.cmdShim) throw new Error('Antigravity CLI 실행 파일(agy.exe)을 찾지 못했습니다');
+    if (opts?.loc?.cmdShim) throw new Error(t('run.agy.noExe'));
     super(opts);
     this.onUsage = opts.onUsage;
     this.agyId = null; // agy 가 정한 대화 ID — 이것이 있고 첫 턴이 성공했을 때만 --conversation 으로 이어 간다
@@ -671,9 +672,9 @@ class AgyChat extends FileTurnChat {
     super.send(text, opts, turn);
   }
 
-  get subj() { return 'Gemini 가'; }
+  failedToRun(msg) { return t('run.agy.failedToRun', { msg }); }
 
-  get obj() { return 'Gemini 를'; }
+  endedWithError() { return t('run.agy.endedWithError'); }
 
   get filePrefix() { return 'agy'; }
 
@@ -712,10 +713,10 @@ class AgyChat extends FileTurnChat {
   }
 
   failText(tail, errText) {
-    if (AGY_LOGIN_RE.test(errText) || AGY_LOGIN_RE.test(tail)) return 'Gemini 로그인이 필요합니다 (진입 화면에서 로그인)';
+    if (AGY_LOGIN_RE.test(errText) || AGY_LOGIN_RE.test(tail)) return t('run.agy.loginNeeded');
     const m = String(errText).match(AGY_ERROR_RE); // 잘린 JSON 일 수 있어 JSON.parse 대신 정규식으로 읽는다
     if (m) return m[1].replace(/\\(.)/g, '$1').slice(0, 200);
-    return tail || 'Gemini 가 응답 없이 끝났습니다';
+    return tail || t('run.agy.noReply');
   }
 }
 

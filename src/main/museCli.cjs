@@ -3,6 +3,7 @@
 const nodeFs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { t } = require('../shared/i18n.js');
 
 // Muse Code(muse 1.4.14, 2026-11-02 실측) 실행 파일 위치·사무실 hook 인자·협업 exec 인자·exec JSONL 해석.
 // 실측: 런처 shim(muse.cmd)은 PowerShell 런처라 JSON 인자가 cmd.exe 인용에 깨진다 → 탭·협업·hook 은 실행 파일(muse-bin-<버전>.exe)을 직접 쓴다.
@@ -46,8 +47,8 @@ function curlPath(systemRoot = process.env.SystemRoot || 'C:\\Windows') {
 // curl.exe 는 절대 경로 (curlPath) — 안전한 경로가 아니면 null. --url-query 때문에 curl 7.87 이상이 필요하다 (Windows 기본 curl 8.x — 실측 8.19).
 function hookCommand({ port, token, tab }, { systemRoot } = {}) {
   const p = Number(port);
-  if (!Number.isInteger(p) || p < 1 || p > 65535) throw new Error('잘못된 hook 포트');
-  if (!SAFE.test(String(token)) || !SAFE.test(String(tab))) throw new Error('잘못된 hook 값');
+  if (!Number.isInteger(p) || p < 1 || p > 65535) throw new Error(t('main.muse.badHookPort'));
+  if (!SAFE.test(String(token)) || !SAFE.test(String(tab))) throw new Error(t('main.muse.badHookValue'));
   const curl = curlPath(systemRoot);
   if (!curl) return null;
   return `${curl} -sS --noproxy 127.0.0.1 -m 3 -H Content-Type:application/json --data-binary @- --url-query k=${token} --url-query src=session --url-query cli=muse --url-query tab=${tab} http://127.0.0.1:${p}/hook`;
@@ -64,7 +65,7 @@ function hookArgs({ port, token, tab }, opts) {
 
 // 협업 대화: 화면 없이 한 턴씩 실행한다. 같은 --session-id 로 다시 실행하면 대화가 이어진다 (실측). 프롬프트는 파일로 넘긴다 (한글·따옴표·%·개행 안전).
 function execArgs({ promptFile, sessionId, model, effort, hooks = [] }) {
-  if (!UUID_RE.test(String(sessionId))) throw new Error('잘못된 세션 ID');
+  if (!UUID_RE.test(String(sessionId))) throw new Error(t('main.error.badSessionId'));
   return ['exec', '--json', '--prompt-file', promptFile, '--session-id', sessionId, '--approval-mode', 'never',
     ...(model && model !== 'auto' && SAFE.test(String(model)) ? ['--model', model] : []),
     ...(effort && EFFORT_RE.test(String(effort)) ? ['--reasoning-effort', effort] : []),

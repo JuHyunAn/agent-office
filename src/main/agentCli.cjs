@@ -6,6 +6,7 @@ const path = require('node:path');
 const claudeCli = require('./claudeCli.cjs');
 const museCli = require('./museCli.cjs');
 const { agentById } = require('../shared/agents.js');
+const { t } = require('../shared/i18n.js');
 
 // Claude·Codex 외의 AI(Grok·Muse·Antigravity)의 CLI 찾기·버전·로그인 상태·로그인/탭 인자 (공식 문서 + 2026-11-02 로컬 실측).
 // 새 AI 는 src/shared/agents.js 항목과 여기 ADAPTERS 를 함께 추가한다.
@@ -109,7 +110,7 @@ async function authStatus(id, loc, { timeoutMs = AUTH_TIMEOUT_MS, runner = (l, a
   if (a.loggedOut.test(out)) return { loggedIn: false };
   if (r.code === 0) return { loggedIn: true };
   const first = out.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').split(/\r?\n/).map((s) => s.trim()).find(Boolean);
-  return { loggedIn: false, error: '로그인 상태를 확인하지 못했습니다: ' + (first || '응답이 없습니다').slice(0, 120), ...(first ? {} : { timedOut: true }) };
+  return { loggedIn: false, error: t('main.agent.authFailed', { detail: (first || t('main.agent.noResponse')).slice(0, 120) }), ...(first ? {} : { timedOut: true }) };
 }
 
 function loginArgs(id) {
@@ -136,7 +137,7 @@ function parseGrokModels(text) {
     const m = line.match(GROK_MODEL_LINE);
     if (!m || seen.has(m[1])) continue;
     seen.add(m[1]);
-    out.push({ value: m[1], label: m[1], description: /default/i.test(m[2] || '') ? '기본' : '', efforts: ['low', 'medium', 'high', 'xhigh'] });
+    out.push({ value: m[1], label: m[1], description: /default/i.test(m[2] || '') ? t('main.agent.modelDefault') : '', efforts: ['low', 'medium', 'high', 'xhigh'] });
   }
   return out;
 }

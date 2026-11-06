@@ -1,4 +1,5 @@
 import { polygon, line } from '../pixel-office/raster.js';
+import { t as tr, getLang } from '../../../shared/i18n.js';
 
 // 승인된 소도시 시안의 좌표와 배율을 유지한다.
 const W=1600,H=1120,S=.82,OX=100,OY=140,G=-156;
@@ -335,7 +336,7 @@ for(const y of [-3200,-2630,-1560,-1010])for(let x=-2940;x<4700;x+=440)addHouse(
 for(const x of [-2940,-2350,-1370,-890,2550,3640,4100])for(let y=-260;y<2830;y+=520)addHouse(x+(seed%2)*17,y+(seed%3)*12,++seed);
 for(const y of [2360,3260,3810,4370])for(let x=-2940;x<4700;x+=450)addHouse(x+(seed%2)*15,y+(seed%3)*13,++seed);
 const lawsonIndex=houses.findIndex(h=>h.seed===65&&h.x===1471&&h.y===-1010);
-if(lawsonIndex<0)throw new Error('교체할 주택 위치를 찾지 못했습니다.');
+if(lawsonIndex<0)throw new Error(tr('theme.err.houseNotFound'));
 const[lawson]=houses.splice(lawsonIndex,1);
 // 작은 정원과 재질·높이·상점 전면을 달리해 반복을 줄인다.
 for(const h of houses){
@@ -387,7 +388,7 @@ function lowerStory(q){
   f(a+4,a+10,G+32,-53,'#dce5d5');f((a+bb)/2-1,(a+bb)/2+1,G+29,-49,'#7a9697');
   f(a-6,bb+6,G+21,G+27,'#d7d3b9');
   if(i%3===0){f(a+8,bb-8,G+45,G+48,'#d7c6a7');f(a+17,a+29,G+50,G+69,'#758d86');}
-  if(door){f(a,bb,G+10,-37,'#587883');f(a+6,bb-6,G+15,-43,'#9dbfc0');f((a+bb)/2-2,(a+bb)/2+2,G+15,-43,'#d4dcc6');const label=p((w.x1+w.x2)/2,w.y1,-28);q.fillStyle='#e7dfc8';q.font='10px "Malgun Gothic"';q.textAlign='center';q.fillText('오피스',label.x,label.y);}
+  if(door){f(a,bb,G+10,-37,'#587883');f(a+6,bb-6,G+15,-43,'#9dbfc0');f((a+bb)/2-2,(a+bb)/2+2,G+15,-43,'#d4dcc6');const label=p((w.x1+w.x2)/2,w.y1,-28);q.fillStyle='#e7dfc8';q.font='10px "Malgun Gothic"';q.textAlign='center';q.fillText(tr('theme.sign.office'),label.x,label.y);}
   line(q,p(w.x1,w.y1,-16),p(w.x2,w.y2,-16),tone('#e9e0c5'));
  }
 }
@@ -411,7 +412,7 @@ return {town,windows,foreground,drawForeground(ctx){
 }
 
 export function scenery(environment,t=0){
- const key=Boolean(environment.night)+':'+['rain','snow','fog','cloudy'].includes(environment.condition);
+ const key=Boolean(environment.night)+':'+['rain','snow','fog','cloudy'].includes(environment.condition)+':'+getLang(); // 글자가 구워지므로 언어가 바뀌면 같은 경로로 다시 만든다
  if(cached?.key!==key){releaseScenery();cached={key,...build(environment)};}
  const updateWindows=source=>{const wc=cached.windows.getContext('2d');wc.setTransform(1,0,0,1,0,0);wc.clearRect(0,0,1600,1000);wc.setTransform(1/S,0,0,1/S,-OX/S,-OY/S);wc.drawImage(source,0,0,W,H);};
  if(!['rain','snow'].includes(environment.condition)){

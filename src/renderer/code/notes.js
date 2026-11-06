@@ -1,3 +1,5 @@
+import { t } from '../../shared/i18n.js';
+
 // 코드 줄 사이 주석: 모나코 view zone 으로 코드 줄 위에 해설 상자를 끼워 넣는다. 화면(DOM)과 모나코만 다루고, 어떤 주석을 어느 줄에 둘지는 바깥(panel.js)이 정한다.
 // 모나코 사실(실측): 새 모델을 붙이면 영역은 사라진다 · 영역 안 DOM 은 마우스를 받지 못해 클릭은 편집기 onMouseDown(CONTENT_VIEW_ZONE) 으로 받는다 ·
 // 영역을 더하면 모나코가 노드 폭을 100% 로 덮어쓴다(= 긴 줄이 있으면 넓어짐) → 더한 뒤에 폭을 다시 지정한다 · layoutZone 은 더할 때 넘긴 객체의 heightInPx 를 다시 읽는다.
@@ -17,7 +19,7 @@ export function createNotesLayer(monaco) {
   function fill(el, note, collapsed) {
     const title = document.createElement('div');
     title.className = 'can-title';
-    title.textContent = `${collapsed ? '▸' : '▾'} L${note.line} ${note.title}${note.moved ? ' (위치 추정)' : ''}`;
+    title.textContent = `${collapsed ? '▸' : '▾'} L${note.line} ${note.title}${note.moved ? ` ${t('code.notes.moved')}` : ''}`;
     const kids = [title];
     if (!collapsed) {
       const body = document.createElement('div');

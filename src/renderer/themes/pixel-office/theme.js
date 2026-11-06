@@ -5,6 +5,7 @@ import { loadDrinkImages } from './drink-images.js';
 import { createExterior, loadCityImages } from './exterior.js';
 import { polygon, line, PIXEL_DETAIL } from './raster.js';
 import { attentionFill } from '../attention.js';
+import { t as tr, onLangChange } from '../../../shared/i18n.js';
 
 const WIDTH = 1600;
 const HEIGHT = 1000;
@@ -14,7 +15,13 @@ const INK = '#4a4741';
 const atmosphere = createAtmosphere({ width: WIDTH, height: HEIGHT, detail: DETAIL, project: projectPoint });
 const exterior = createExterior({ width: WIDTH, height: HEIGHT, project: projectPoint });
 const FLOOR = { analysis: '#a9d0be', planning: '#d0b7df', lead: '#e8c48a', skills: '#a3cbdc', dev: '#9ec9d0', review: '#edb8ac', rest: '#b5d399', cafe: '#efc78b', ceo: '#d4bddc', restroom: '#b2d8e1' };
-const TITLES = { analysis: '분석 · 자료실', planning: '기획 · 아이디어실', lead: '팀장실', skills: '스킬 작업실', dev: '개발실', review: '검토실', rest: '그린 라운지', cafe: '카페 · 게임존', ceo: '대표실', restroom: '화장실' };
+// 방 표지판 글자 — 정적 캐시(objects)에 구워지므로 언어가 바뀌면 캐시를 다시 굽는다(아래 onLangChange).
+const TITLES = {
+  get analysis() { return tr('theme.sign.analysis'); }, get planning() { return tr('theme.sign.planning'); }, get lead() { return tr('theme.sign.lead'); },
+  get skills() { return tr('theme.sign.skills'); }, get dev() { return tr('theme.sign.dev'); }, get review() { return tr('theme.sign.review'); },
+  get rest() { return tr('theme.sign.rest'); }, get cafe() { return tr('theme.sign.cafe'); }, get ceo() { return tr('theme.sign.ceo'); },
+  get restroom() { return tr('theme.sign.restroom'); },
+};
 const ACCENTS = { analysis: '#438a76', planning: '#9d6eb1', lead: '#b88a4c', skills: '#517dbe', dev: '#427f9b', review: '#c77972' };
 const BUBBLES = {
   work: ['#fffbef', '#8e9e8c'], info: ['#fffbef', '#afa18a'],
@@ -460,7 +467,7 @@ function buildObjects() {
         if (item.menu === 'coffee') {
           const p = projectPoint(item.x + 80, item.y + 22, 47);
           ctx.fillStyle = '#f6dfb3'; ctx.fillRect(p.x - 18, p.y - 15, 48, 10);
-          text(ctx, '커피 · 음료', p.x - 15, p.y - 7, '#796f5d', '8px "Malgun Gothic", sans-serif');
+          text(ctx, tr('theme.sign.coffee'), p.x - 15, p.y - 7, '#796f5d', '8px "Malgun Gothic", sans-serif');
         }
       }
     });
@@ -491,7 +498,7 @@ function cacheObjects(items) {
       minX = Math.min(minX, x); minY = Math.min(minY, y); maxX = Math.max(maxX, x); maxY = Math.max(maxY, y);
     }
     if (maxX < 0) return item;
-    if (minX === 0 || minY === 0 || maxX === scratch.width - 1 || maxY === scratch.height - 1) throw new Error('가구 캐시 영역을 벗어났습니다');
+    if (minX === 0 || minY === 0 || maxX === scratch.width - 1 || maxY === scratch.height - 1) throw new Error(tr('theme.err.cacheBounds'));
     const sprite = document.createElement('canvas'); sprite.width = maxX - minX + 1; sprite.height = maxY - minY + 1;
     sprite.getContext('2d').drawImage(scratch, minX, minY, sprite.width, sprite.height, 0, 0, sprite.width, sprite.height);
     const x = p.x - 220 + minX / DETAIL, y = p.y - 220 + minY / DETAIL;
@@ -545,9 +552,16 @@ function bubble(ctx, a, p, t, occupied) {
   lines.forEach((value, i) => text(ctx, value, x + 9, y + 18 + i * 17, i ? '#5a766d' : '#4f514a', '13px "Malgun Gothic", sans-serif'));
 }
 
+// 언어가 바뀌면 방 표지판 캐시만 다시 굽는다. 새 캐시를 먼저 만들고 성공하면 바꾼다(실패하면 이전 캐시 유지).
+// 캐시가 아직 없거나(로드 전·반납됨) load() 진행 중이면 아무것도 하지 않는다 — load 가 끝날 때 현재 언어로 구워진다.
+onLangChange(() => {
+  if (!objects) return;
+  try { objects = cacheObjects(buildObjects()); } catch (e) { console.error('[theme] 표지판 다시 굽기 실패', e); }
+});
+
 export default {
   id: 'pixel-office',
-  name: '픽셀 오피스 · 도시 배경',
+  get name() { return tr('theme.name.pixel-office'); },
   exteriorVisible: true,
   layout,
   viewport: { width: WIDTH * 2, height: HEIGHT * 2 },
@@ -614,7 +628,7 @@ export default {
       const r = layout.rooms.skills, p = projectPoint(r.x + 245, r.y + 240);
       const step = Math.floor(t / 160) % 4;
       pixel.fillStyle = '#e6dc9e'; pixel.fillRect(p.x - 12 + step * 7, p.y - 4, 4, 4);
-      text(pixel, `${skillWorkers.length}명 스킬 협업 중`, p.x - 48, p.y - 20, '#f2edcb', '10px "Malgun Gothic", sans-serif');
+      text(pixel, tr('theme.sign.skillCollab', { n: skillWorkers.length }), p.x - 48, p.y - 20, '#f2edcb', '10px "Malgun Gothic", sans-serif');
     }
     const doors = layout.interactions.filter(i => i.door).map(item => ({ depth: item.x + item.w / 2 + item.y + (item.axis === 'y' ? item.d / 2 : 0), draw(c) {
       doorPanel(c, item, state.doors?.find(d => d.id === item.id)?.amount || 0);

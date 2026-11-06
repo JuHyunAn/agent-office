@@ -6,6 +6,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { t } = require('../shared/i18n.js');
 
 const BRANCH = 'main';
 const REMOTE = 'origin';
@@ -38,9 +39,6 @@ const lastLine = (s) => String(s || '').trim().split(/\r?\n/).pop().trim();
 // 하위 폴더에서 실행해도 `:/` 로 저장소 전체를 루트 기준 경로로 받는다 (실측)
 const STATUS_ARGS = ['status', '--porcelain=v2', '--branch', '-z', '-uall', '--', ':/'];
 
-const ERR_ROOT = '허용되지 않는 폴더입니다';
-const ERR_BAD = '잘못된 요청입니다';
-const ERR_NO_REMOTE = 'origin 원격이 없습니다';
 
 // ---------- 순수 함수 ----------
 
@@ -154,26 +152,28 @@ function parseLog(text) {
 }
 
 // 위에서부터 먼저 맞는 것. 판정 글은 stderr·stdout·message 를 모두 본다 (nothing to commit·[rejected] 는 stdout 에 나온다).
-// error 가 함수면 (stderr, 오류) 를 받아 문구를 만든다. no-src 는 같은 출력에 섞이는 failed to push some refs 보다 먼저 가른다.
+// 판별하는 정규식은 git 원문용이라 그대로이고, 세 번째 값(안내 문구)만 번역한다: 사전 키(문자열)이거나 (stderr, 오류) 를 받아 문구를 만드는 함수.
+// no-src 는 같은 출력에 섞이는 failed to push some refs 보다 먼저 가른다.
 const RULES = [
-  [/index\.lock|Another git process seems to be running|\.lock': File exists/, 'lock', '다른 git 작업이 저장소를 잠그고 있습니다.\n잠시 뒤 다시 시도해 주세요.\n실행 중인 git 이 없는데 계속되면 .git 폴더의 index.lock 을 확인해 주세요.'],
-  [/Please tell me who you are|Author identity unknown|unable to auto-detect email|no email was given/, 'no-identity', 'git 사용자 이름·이메일이 없습니다.\n터미널에서 git config 로 설정해 주세요.'],
-  [/Aborting commit due to empty commit message/, 'empty', '커밋 메시지를 입력해 주세요.'],
-  [/nothing to commit|nothing added to commit|no changes added to commit/, 'nothing', '커밋할 변경이 없습니다'],
-  [/unmerged files|unresolved conflict/, 'unmerged', '충돌이 해결되지 않았습니다.\n터미널에서 마무리해 주세요.'],
-  [/gpg failed to sign|failed to write commit object/, 'sign', '커밋 서명에 실패했습니다.\n터미널에서 확인해 주세요.'],
-  [/src refspec/, 'no-src', '로컬 main 브랜치가 없습니다'],
-  [/\[remote rejected\]/, 'remote-rejected', (stderr) => `원격이 푸시를 거부했습니다:\n${stderr.slice(-200)}`],
-  [/\[rejected\]|Updates were rejected/, 'rejected', '원격이 앞서 있어 푸시가 거절되었습니다.\nPull 또는 Commit & Sync 를 써 주세요.'],
+  [/index\.lock|Another git process seems to be running|\.lock': File exists/, 'lock', 'code.git.lock'],
+  [/Please tell me who you are|Author identity unknown|unable to auto-detect email|no email was given/, 'no-identity', 'code.git.noIdentity'],
+  [/Aborting commit due to empty commit message/, 'empty', 'code.git.emptyMessage'],
+  [/nothing to commit|nothing added to commit|no changes added to commit/, 'nothing', 'code.git.nothing'],
+  [/unmerged files|unresolved conflict/, 'unmerged', 'code.git.unmerged'],
+  [/gpg failed to sign|failed to write commit object/, 'sign', 'code.git.sign'],
+  [/src refspec/, 'no-src', 'code.git.noSrc'],
+  [/\[remote rejected\]/, 'remote-rejected', (stderr) => t('code.git.remoteRejected', { detail: stderr.slice(-200) })],
+  [/\[rejected\]|Updates were rejected/, 'rejected', 'code.git.rejected'],
   [/could not read Username|terminal prompts disabled|Authentication failed|Permission denied \(publickey\)|could not read Password/, 'auth',
-    (stderr, e) => (e?.viaGh ? '원격 인증에 실패했습니다.\n하단 터미널에서 gh auth login 으로 로그인해 주세요.' : '원격 인증에 실패했습니다.\n하단 터미널에서 git push 로 로그인해 주세요.')],
-  [/couldn't find remote ref/, 'no-remote-ref', '원격에 main 브랜치가 없습니다'],
-  [/does not appear to be a git repository|Could not read from remote repository|Could not resolve host|unable to access/, 'no-remote', '원격 저장소에 연결하지 못했습니다'],
-  [/would be overwritten by merge/, 'overwrite', '가져오는 변경이 커밋하지 않은 파일과 겹쳐 중단했습니다.\n터미널에서 확인해 주세요.'],
-  [/CONFLICT/, 'conflict', '충돌이 있습니다'],
+    (stderr, e) => t(e?.viaGh ? 'code.git.authGh' : 'code.git.authGit')],
+  [/couldn't find remote ref/, 'no-remote-ref', 'code.git.noRemoteRef'],
+  [/does not appear to be a git repository|Could not read from remote repository|Could not resolve host|unable to access/, 'no-remote', 'code.git.remoteUnreachable'],
+  [/would be overwritten by merge/, 'overwrite', 'code.git.overwrite'],
+  [/CONFLICT/, 'conflict', 'code.git.conflict'],
 ];
 
-const ruleError = (code) => RULES.find((r) => r[1] === code)[2];
+const ruleText = (rule, stderr, e) => (typeof rule[2] === 'function' ? rule[2](stderr, e) : t(rule[2]));
+const ruleError = (code) => ruleText(RULES.find((r) => r[1] === code));
 
 const REMOTE_MSG_MAX = 1000;
 const ANSI = /\u001b\[[0-9;]*[A-Za-z]/g;
@@ -198,15 +198,15 @@ function remoteMessage(stderr) {
   return lines.join('\n').slice(0, REMOTE_MSG_MAX);
 }
 
-// stderr 마지막 줄로만 가르는 안내: 파일 이름·hook·원격 메시지의 같은 글자에 속지 않게. RULES 보다 먼저 본다.
+// stderr 마지막 줄로만 가르는 안내: 파일 이름·hook·원격 메시지의 같은 글자에 속지 않게. RULES 보다 먼저 본다. 세 번째 값은 RULES 와 같은 규칙.
 const LAST_LINE_RULES = [
-  [/^fatal: refusing to merge unrelated histories$/, 'unrelated', '로컬과 원격의 커밋 기록이 서로 이어져 있지 않아 병합하지 않았습니다.\n같은 프로젝트가 맞다면 터미널에서 아래 명령으로 합쳐 주세요.\ngit pull --no-rebase --no-edit --ff --allow-unrelated-histories origin main'], // --ff: merge.ff=only 설정이 함께 있어도 병합되게
+  [/^fatal: refusing to merge unrelated histories$/, 'unrelated', 'code.git.unrelated'], // 안내 명령의 --ff: merge.ff=only 설정이 함께 있어도 병합되게
   [/^fatal: unable to access '.+': The requested URL returned error: 403$/, 'no-access', (stderr) => {
     const remote = remoteMessage(stderr);
-    return `원격이 접근을 거부했습니다. (403)\n저장소 권한·로그인 계정·토큰 범위·조직 SSO 를 확인해 주세요.${remote ? `\n원격 메시지:\n${remote}` : ''}`;
+    return `${t('code.git.noAccess')}${remote ? `\n${t('code.git.remoteMsg', { remote })}` : ''}`;
   }],
-  [/^fatal: repository '.+' not found$/, 'repo-not-found', '원격 저장소를 찾을 수 없습니다.\n저장소 주소나 로그인한 계정의 권한을 확인해 주세요.'],
-  [/^fatal: Not possible to fast-forward, aborting\.$/, 'ff-only', '빨리 감기만 허용하는 설정 때문에 병합하지 않았습니다.\n터미널에서 아래 명령으로 병합해 주세요.\ngit pull --no-rebase --no-edit --ff origin main'],
+  [/^fatal: repository '.+' not found$/, 'repo-not-found', 'code.git.repoNotFound'],
+  [/^fatal: Not possible to fast-forward, aborting\.$/, 'ff-only', 'code.git.ffOnly'],
 ];
 
 // git() 의 오류를 { code, error } 로. 커밋·푸시의 종료 코드 1 은 아래에서 먼저 가른다 (hook 등 다른 프로그램의 실패).
@@ -214,8 +214,7 @@ const LAST_LINE_RULES = [
 function errorOf(e, step) {
   const kind = e?.kind;
   if (kind === 'timeout') {
-    if (e.net) return { code: 'timeout', error: '원격 작업 시간이 초과되었습니다.\n로그인 창이 열려 있었다면 다시 시도해 주세요.' };
-    return { code: 'timeout', error: 'git 작업 시간이 초과되었습니다.\n잠금 파일이나 스테이징이 남았을 수 있으니\n터미널에서 git status 로 확인해 주세요.' };
+    return { code: 'timeout', error: t(e.net ? 'code.git.timeoutNet' : 'code.git.timeoutLocal') };
   }
   if (kind === 'no-git' || kind === 'unsafe' || kind === 'nodir') return { code: kind, error: e.message };
   const stderr = String(e?.stderr || '');
@@ -226,21 +225,23 @@ function errorOf(e, step) {
     if (/nothing to commit|nothing added to commit|no changes added to commit/.test(e.stdout || '')) return { code: 'nothing', error: ruleError('nothing') };
     if (last === 'Aborting commit due to empty commit message.') return { code: 'empty', error: ruleError('empty') };
     const shown = hookOutput(stderr);
-    return { code: 'hook', error: shown ? `커밋 전 검사(hook)가 실패했습니다:\n${shown}` : '커밋 전 검사(hook)가 실패했습니다.' };
+    return { code: 'hook', error: shown ? t('code.git.hookFailedDetail', { detail: shown }) : t('code.git.hookFailed') };
   }
   // 푸시 실패의 종료 코드 1: 네트워크·인증 실패는 128 이고(실측), 거절은 stdout 의 상태 줄, 로컬 main 없음은 src refspec 줄이 나온다. 그 밖에는 pre-push hook 이다 (hook 의 일반 출력은 stdout 으로 온다, 실측).
   if (step === 'push' && e?.exitCode === 1 && !PUSH_REJECTED.test(e.stdout || '') && !PUSH_NO_SRC.test(stderr)) {
-    return { code: 'fail', error: `git 실행 실패:\n${hookOutput(`${e.stdout || ''}\n${stderr}`)}` };
+    return { code: 'fail', error: t('code.git.runFailed', { detail: hookOutput(`${e.stdout || ''}\n${stderr}`) }) };
   }
   // 커밋 단계는 제외: 커밋 hook 이 같은 문장을 끝 줄로 내면 hook 원문이 사라지고 엉뚱한 병합 명령을 안내하게 된다.
-  if (step !== 'commit') for (const [re, code, error] of LAST_LINE_RULES) if (re.test(last)) return { code, error: typeof error === 'function' ? error(stderr) : error };
+  if (step !== 'commit') for (const rule of LAST_LINE_RULES) if (rule[0].test(last)) return { code: rule[1], error: ruleText(rule, stderr) };
   const text = `${stderr}\n${e?.stdout || ''}\n${e?.message || ''}`;
-  for (const [re, code, error] of RULES) {
+  for (const rule of RULES) {
+    const [re, code] = rule;
     if (code === 'lock' && e?.exitCode === 1) continue;
-    if (re.test(text)) return { code, error: typeof error === 'function' ? error(stderr, e) : error };
+    if (re.test(text)) return { code, error: ruleText(rule, stderr, e) };
   }
-  const shown = stderr || String(e?.message || '').replace(/^git 실행 실패:\s*/, '');
-  return { code: 'fail', error: `git 실행 실패:\n${shown.slice(-200)}` }; // 원인은 출력 끝에 온다
+  // raw: codeRepo 의 git() 가 붙인 번역 전 원인 글. 없으면(시험용 대역 등) 옛 한 줄 접두어를 뗀 message.
+  const shown = stderr || (typeof e?.raw === 'string' ? e.raw : String(e?.message || '').replace(/^git 실행 실패:\s*/, ''));
+  return { code: 'fail', error: t('code.git.runFailed', { detail: shown.slice(-200) }) }; // 원인은 출력 끝에 온다
 }
 
 // 파일 이름·hook·원격 메시지의 같은 글자에 속지 않게 stderr 마지막 줄만 본다. 병합이 시작됐다는 글이 stderr·stdout 어디든 있으면 인증 실패가 아니다.
@@ -259,12 +260,12 @@ const fail = (code, error, extra) => ({ ok: false, code, error, ...extra });
 // 쓰기·네트워크는 저장소(최상위 폴더)마다 한 번에 하나만 — 다른 하위 폴더에서 동시에 오면 busy.
 function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   const busyKeys = new Set();
-  const bad = () => fail('bad', ERR_BAD);
-  const noRoot = () => fail('root', ERR_ROOT);
+  const bad = () => fail('bad', t('code.err.bad'));
+  const noRoot = () => fail('root', t('code.err.root'));
 
   const fromError = (e, step) => {
     // 끝 줄만 본다: 원격이 보낸 메시지의 같은 글자에 속지 않게
-    if (e?.kind === 'fail' && /^fatal: not a git repository/.test(lastLine(e.stderr))) return fail('not-repo', '깃 저장소가 아닙니다');
+    if (e?.kind === 'fail' && /^fatal: not a git repository/.test(lastLine(e.stderr))) return fail('not-repo', t('code.err.notGit'));
     return { ok: false, ...errorOf(e, step) };
   };
 
@@ -313,7 +314,7 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
     if (!roots.has(root)) return noRoot();
     let key;
     try { key = rootKey((await info(root)).top); } catch (e) { return fromError(e); }
-    if (busyKeys.has(key)) return fail('busy', '다른 Git 작업이 진행 중입니다');
+    if (busyKeys.has(key)) return fail('busy', t('code.git.busy'));
     busyKeys.add(key);
     try { return await run(); } catch (e) { return fromError(e); } finally { busyKeys.delete(key); }
   }
@@ -321,9 +322,9 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
   // main 이 아니거나 병합 중이면 쓰기를 막는다
   function guard(st) {
     if (st.canWrite) return null;
-    if (st.reason === 'merging') return fail('merging', '병합 등 다른 git 작업이 진행 중입니다.\n터미널에서 마무리해 주세요.');
-    if (st.reason === 'detached') return fail('detached', '분리된 HEAD 입니다.\n터미널에서 main 으로 전환해 주세요.');
-    return fail('not-main', `main 브랜치에서만 커밋·푸시합니다. (현재: ${st.branch})\n다른 작업은 아래 터미널에서`);
+    if (st.reason === 'merging') return fail('merging', t('code.reason.merging'));
+    if (st.reason === 'detached') return fail('detached', t('code.reason.detached'));
+    return fail('not-main', t('code.reason.notMain', { branch: st.branch }));
   }
 
   // 잠금 때문에 실패한 로컬 쓰기만 다시 시도한다 (그 밖의 실패는 바로 던진다). run 은 몇 번째 시도인지(0부터)를 받는다.
@@ -339,7 +340,7 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
   const applyPaths = (root, args, paths) => git(root, [...args, '--pathspec-from-file=-', '--pathspec-file-nul'],
     { input: pathspecInput(paths.map(topPathspec)), timeoutMs: WRITE_TIMEOUT_MS, env: WRITE_ENV });
 
-  const changed = () => fail('changed', '변경 목록이 바뀌었습니다.\n다시 확인해 주세요.');
+  const changed = () => fail('changed', t('code.git.changed'));
   // 스테이징할 수 있는 경로: 아직 안 한 변경 중 git add 로 올릴 수 있는 것 (내용만 더러운 서브모듈은 제외)
   const stageablePaths = (st) => pathSet(st.changes.filter((c) => c.stageable !== false));
 
@@ -424,16 +425,16 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
       // MERGE_HEAD === FETCH_HEAD 라서 커밋 번호 비교만으로는 우리 것과 구분되지 않는다.
       const ours = pulling && /CONFLICT|Automatic merge failed|Not committing merge/.test(text);
       if (!ours || !mergeHead || mergeHead !== fetchHead) {
-        return fail('merging', '다른 작업의 병합이 진행 중이라 건드리지 않았습니다.\n터미널에서 확인해 주세요.');
+        return fail('merging', t('code.git.pullOther'));
       }
       try {
         await git(root, ['merge', '--abort'], { timeoutMs: WRITE_TIMEOUT_MS, env: WRITE_ENV });
-      } catch { return fail('abort-failed', '병합 취소에 실패했습니다.\n터미널에서 git merge --abort 를 실행해 주세요.'); }
-      if (/CONFLICT|Automatic merge failed/.test(text)) return fail('conflict', '충돌이 있어 병합을 취소했습니다.\n하단 터미널에서 git pull 로 해결해 주세요.');
-      return fail('merge-failed', `병합을 끝내지 못해 취소했습니다:\n${String(e.stderr || e.message || '').slice(-200)}`);
+      } catch { return fail('abort-failed', t('code.git.abortFailed')); }
+      if (/CONFLICT|Automatic merge failed/.test(text)) return fail('conflict', t('code.git.conflictAborted'));
+      return fail('merge-failed', t('code.git.mergeFailed', { detail: String(e.stderr || e.message || '').slice(-200) }));
     }
     const st = await read(root);
-    if (st.branch !== BRANCH) return fail('branch-changed', '작업 중 브랜치가 바뀌었습니다.\n터미널에서 확인해 주세요.');
+    if (st.branch !== BRANCH) return fail('branch-changed', t('code.git.branchChanged'));
     return { ok: true, st };
   }
 
@@ -447,14 +448,14 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
     if (!pulled.ok) return pulled.code === 'no-remote-ref' ? pushCore(root, st0) : pulled;
     if (pulled.st.ahead === 0) return { ok: true, pushed: false }; // 받을 것만 있었다: 쓰기 권한이 없어도 Sync 가 끝나고, 로그인 창도 뜨지 않게
     const pushed = await pushCore(root, pulled.st);
-    return pushed.ok ? pushed : { ...pushed, error: `가져왔지만 푸시하지 못했습니다.\n${pushed.error}` };
+    return pushed.ok ? pushed : { ...pushed, error: t('code.git.pushAfterPull', { error: pushed.error }) };
   }
 
   return {
     async state(root) {
       if (!roots.has(root)) return noRoot();
       try { return await read(root); } catch (e) {
-        if (e?.kind === 'timeout') return fail('timeout', 'git 상태 조회 시간이 초과되었습니다.\n잠시 뒤 다시 확인합니다.');
+        if (e?.kind === 'timeout') return fail('timeout', t('code.git.stateTimeout'));
         return fromError(e);
       }
     },
@@ -495,13 +496,13 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
     async commit(root, req) {
       if (!req || typeof req !== 'object') return bad();
       const { message, expected, stage, then } = req;
-      if (typeof message !== 'string' || !message.trim() || message.length > MESSAGE_MAX || message.includes('\0')) return fail('bad', '커밋 메시지를 입력해 주세요.');
+      if (typeof message !== 'string' || !message.trim() || message.length > MESSAGE_MAX || message.includes('\0')) return fail('bad', t('code.git.emptyMessage'));
       if (!isStrList(expected) || (stage != null && !isStrList(stage)) || !(then == null || then === 'push' || then === 'sync')) return bad();
       return withWrite(root, async () => {
         let st = await read(root);
         const denied = guard(st);
         if (denied) return denied;
-        if (then && !st.hasRemote) return fail('no-remote', ERR_NO_REMOTE); // 커밋하기 전에 거부
+        if (then && !st.hasRemote) return fail('no-remote', t('code.git.noOrigin')); // 커밋하기 전에 거부
         if (stage && stage.length) {
           const allowed = stageablePaths(st);
           if (!stage.every((p) => allowed.has(p))) return changed();
@@ -516,9 +517,9 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
           const ask = new Set(stage || []);
           const want = new Set(expected);
           if ([...have].some((p) => !want.has(p) && !ask.has(p)) || [...want].some((p) => !ask.has(p) && !have.has(p))) {
-            return fail('staged-changed', '스테이징 목록이 바뀌었습니다.\n확인한 뒤 다시 눌러 주세요.');
+            return fail('staged-changed', t('code.git.stagedChanged'));
           }
-          return cur.staged.length ? null : fail('nothing', '커밋할 변경이 없습니다');
+          return cur.staged.length ? null : fail('nothing', t('code.git.nothing'));
         };
         st = await read(root);
         const mismatch = recheck(st);
@@ -527,7 +528,7 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
           await retry(async (attempt) => {
             if (attempt > 0) { // 잠금을 기다리는 사이 다른 환경이 스테이징을 바꿨을 수 있다
               const again = recheck(await read(root));
-              if (again) throw Object.assign(new Error('스테이징 재확인 실패'), { recheck: again });
+              if (again) throw Object.assign(new Error('staged recheck failed'), { recheck: again });
             }
             return git(root, ['commit', '-F', '-'], { input: `${message.trim()}\n`, timeoutMs: WRITE_TIMEOUT_MS, env: WRITE_ENV });
           });
@@ -554,7 +555,7 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
     async fetch(root) {
       return withWrite(root, async () => {
         const st = await read(root);
-        if (!st.hasRemote) return fail('no-remote', ERR_NO_REMOTE);
+        if (!st.hasRemote) return fail('no-remote', t('code.git.noOrigin'));
         await netGit(root, ['fetch', REMOTE]);
         return { ok: true };
       });
@@ -565,7 +566,7 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
         const st = await read(root);
         const denied = guard(st);
         if (denied) return denied;
-        if (!st.hasRemote) return fail('no-remote', ERR_NO_REMOTE);
+        if (!st.hasRemote) return fail('no-remote', t('code.git.noOrigin'));
         const r = await pullCore(root);
         return r.ok ? (r.st.oid === st.oid ? { ok: true, upToDate: true } : { ok: true }) : r;
       });
@@ -580,8 +581,8 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
         const st = await read(root);
         const denied = guard(st);
         if (denied) return denied;
-        if (!st.hasRemote) return fail('no-remote', ERR_NO_REMOTE);
-        if (st.staged.length) return fail('staged-changed', '스테이징 목록이 바뀌었습니다.\n확인한 뒤 다시 눌러 주세요.');
+        if (!st.hasRemote) return fail('no-remote', t('code.git.noOrigin'));
+        if (st.staged.length) return fail('staged-changed', t('code.git.stagedChanged'));
         const left = st.changes.filter((c) => c.stageable !== false).length; // 이름 변경은 경로가 둘이어도 한 항목
         if (req?.hasMessage && left) return changed();
         const r = await syncCore(root);
@@ -594,7 +595,7 @@ function createGitOps({ git, rootKey, roots, sleep = (ms) => new Promise((resolv
         const st = await read(root);
         const denied = guard(st);
         if (denied) return denied;
-        if (!st.hasRemote) return fail('no-remote', ERR_NO_REMOTE);
+        if (!st.hasRemote) return fail('no-remote', t('code.git.noOrigin'));
         return pushCore(root, st);
       });
     },
